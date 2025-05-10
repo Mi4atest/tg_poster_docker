@@ -1,0 +1,16 @@
+aiogram>=3.0.0
+fastapi>=0.95.0
+uvicorn>=0.21.0
+sqlalchemy>=2.0.0
+pydantic>=2.0.0
+python-dotenv>=1.0.0
+vk-api>=11.9.9
+python-multipart>=0.0.6
+aiohttp>=3.8.4
+alembic>=1.10.0
+loguru>=0.7.0
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+instagrapi>=2.0.0
+moviepy>=1.0.3
+Pillow>=8.1.1

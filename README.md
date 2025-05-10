@@ -11,7 +11,7 @@ Docker-версия системы для автоматизированного
 
 1. Клонируйте репозиторий:
    ```bash
-   git clone https://github.com/yourusername/tg_poster_docker.git
+   git clone https://github.com/Mi4atest/tg_poster_docker.git
    cd tg_poster_docker
    ```
 

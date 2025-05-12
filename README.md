@@ -14,9 +14,12 @@ Docker-версия системы для автоматизированного
    git clone https://github.com/Mi4atest/tg_poster_docker.git
    cd tg_poster_docker
    ```
+   
 2. Уснатновите Docker:
-   ```sudo apt update && sudo apt install -y docker.io docker-compose```
-
+   ```bash
+   sudo apt update && sudo apt install -y docker.io docker-compose
+   ```
+   
 3. Создайте файл .env на основе примера:
    ```bash
    cp .env.example .env

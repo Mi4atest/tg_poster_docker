@@ -39,10 +39,10 @@ check_command() {
 # Функция для установки зависимостей
 install_dependencies() {
     log "Установка зависимостей..."
-    
+
     # Обновление списка пакетов
     sudo apt-get update
-    
+
     # Установка необходимых пакетов
     sudo apt-get install -y \
         apt-transport-https \
@@ -52,7 +52,7 @@ install_dependencies() {
         lsb-release \
         ufw \
         openssl
-    
+
     # Установка Docker, если он не установлен
     if ! check_command docker; then
         log "Установка Docker..."
@@ -63,7 +63,7 @@ install_dependencies() {
     else
         log_success "Docker уже установлен"
     fi
-    
+
     # Установка Docker Compose, если он не установлен
     if ! check_command docker-compose; then
         log "Установка Docker Compose..."
@@ -73,32 +73,32 @@ install_dependencies() {
     else
         log_success "Docker Compose уже установлен"
     fi
-    
+
     log_success "Зависимости установлены"
 }
 
 # Функция для настройки файла .env
 setup_env() {
     log "Настройка файла .env..."
-    
+
     if [ ! -f .env ]; then
         if [ -f .env.example ]; then
             cp .env.example .env
             log "Файл .env создан из шаблона .env.example"
-            
+
             # Генерация случайных паролей и ключей
             DB_PASSWORD=$(openssl rand -base64 12)
             SECRET_KEY=$(openssl rand -base64 32)
             WEBHOOK_SECRET=$(openssl rand -base64 24)
-            
+
             # Обновление файла .env
             sed -i "s/DB_PASSWORD=.*/DB_PASSWORD=$DB_PASSWORD/" .env
             sed -i "s/SECRET_KEY=.*/SECRET_KEY=$SECRET_KEY/" .env
             sed -i "s/WEBHOOK_SECRET=.*/WEBHOOK_SECRET=$WEBHOOK_SECRET/" .env
-            
+
             log_warning "Пожалуйста, отредактируйте файл .env и укажите свои токены и настройки"
             log_warning "Особенно важно указать TELEGRAM_BOT_TOKEN и ALLOWED_USER_IDS"
-            
+
             # Открываем файл .env для редактирования
             if command -v nano &> /dev/null; then
                 read -p "Хотите отредактировать файл .env сейчас? (y/n): " edit_env
@@ -115,17 +115,17 @@ setup_env() {
     else
         log_warning "Файл .env уже существует. Пропускаем создание"
     fi
-    
+
     log_success "Файл .env настроен"
 }
 
 # Функция для генерации SSL-сертификатов
 generate_ssl() {
     log "Генерация SSL-сертификатов..."
-    
+
     # Создаем директорию для сертификатов, если она не существует
     mkdir -p nginx/ssl
-    
+
     # Проверяем, существуют ли уже сертификаты
     if [ -f nginx/ssl/fullchain.pem ] && [ -f nginx/ssl/privkey.pem ]; then
         log_warning "SSL-сертификаты уже существуют. Пропускаем генерацию"
@@ -135,11 +135,11 @@ generate_ssl() {
           -keyout nginx/ssl/privkey.pem \
           -out nginx/ssl/fullchain.pem \
           -subj "/C=RU/ST=State/L=City/O=Organization/CN=localhost"
-        
+
         # Устанавливаем правильные разрешения
         chmod 600 nginx/ssl/privkey.pem
         chmod 644 nginx/ssl/fullchain.pem
-        
+
         log_success "SSL-сертификаты успешно сгенерированы"
     fi
 }
@@ -147,10 +147,10 @@ generate_ssl() {
 # Функция для настройки ModSecurity
 setup_modsecurity() {
     log "Настройка ModSecurity..."
-    
+
     # Создаем директорию для ModSecurity, если она не существует
     mkdir -p nginx/modsecurity
-    
+
     # Проверяем, существует ли уже конфигурация ModSecurity
     if [ -f nginx/modsecurity/main.conf ]; then
         log_warning "Конфигурация ModSecurity уже существует. Пропускаем создание"
@@ -200,120 +200,129 @@ SecRule REMOTE_ADDR "!@ipMatch 149.154.160.0/20,91.108.4.0/22" \
 SecRule REQUEST_URI "^/api/telegram/webhook" \
     "t:none"
 EOF
-        
+
         log_success "Конфигурация ModSecurity успешно создана"
     fi
 }
 
 # Функция для настройки брандмауэра
 setup_firewall() {
-    log "Настройка брандмауэра (UFW)..."
-    
-    # Проверка наличия UFW
-    if ! check_command ufw; then
-        sudo apt-get install -y ufw
+    log "Проверка наличия AntiZapret-VPN..."
+
+    # Проверяем, установлен ли AntiZapret-VPN
+    if [ -d "/root/antizapret" ]; then
+        log_warning "Обнаружен AntiZapret-VPN. Используем iptables вместо UFW."
+
+        # Запускаем скрипт настройки iptables
+        ./setup_iptables.sh
+    else
+        log "AntiZapret-VPN не обнаружен. Настройка брандмауэра (UFW)..."
+
+        # Проверка наличия UFW
+        if ! check_command ufw; then
+            sudo apt-get install -y ufw
+        fi
+
+        # Сброс правил UFW
+        sudo ufw --force reset
+
+        # Установка политики по умолчанию
+        sudo ufw default deny incoming
+        sudo ufw default allow outgoing
+
+        # Разрешение SSH (для удаленного доступа)
+        sudo ufw allow ssh
+
+        # Разрешение HTTP и HTTPS на нестандартных портах
+        sudo ufw allow 8080/tcp
+        sudo ufw allow 8443/tcp
+
+        # Разрешение доступа только с IP-адресов Telegram для webhook
+        for ip in 149.154.160.0/20 91.108.4.0/22; do
+            sudo ufw allow from $ip to any port 8443 proto tcp
+        done
+
+        # Блокировка всех остальных портов
+        sudo ufw deny 8002/tcp  # API
+        sudo ufw deny 5432/tcp  # PostgreSQL
+
+        # Включение UFW
+        sudo ufw --force enable
+
+        log_success "Брандмауэр настроен"
+        sudo ufw status verbose
     fi
-    
-    # Сброс правил UFW
-    sudo ufw --force reset
-    
-    # Установка политики по умолчанию
-    sudo ufw default deny incoming
-    sudo ufw default allow outgoing
-    
-    # Разрешение SSH (для удаленного доступа)
-    sudo ufw allow ssh
-    
-    # Разрешение HTTP и HTTPS
-    sudo ufw allow 80/tcp
-    sudo ufw allow 443/tcp
-    
-    # Разрешение доступа только с IP-адресов Telegram для webhook
-    for ip in 149.154.160.0/20 91.108.4.0/22; do
-        sudo ufw allow from $ip to any port 443 proto tcp
-    done
-    
-    # Блокировка всех остальных портов
-    sudo ufw deny 8002/tcp  # API
-    sudo ufw deny 5432/tcp  # PostgreSQL
-    sudo ufw deny 8080/tcp  # Nginx (старый порт)
-    
-    # Включение UFW
-    sudo ufw --force enable
-    
-    log_success "Брандмауэр настроен"
-    sudo ufw status verbose
 }
 
 # Функция для запуска контейнеров
 start_containers() {
     log "Запуск контейнеров..."
-    
+
     # Остановка контейнеров, если они уже запущены
     if [ -f docker-compose.yml ]; then
         docker-compose down
     fi
-    
+
     # Запуск контейнеров
     docker-compose up -d
-    
+
     log_success "Контейнеры запущены"
 }
 
 # Функция для инициализации базы данных
 init_database() {
     log "Инициализация базы данных..."
-    
+
     # Ждем, пока база данных запустится
     sleep 10
-    
+
     # Инициализация базы данных
     docker-compose exec -T app python -c "from app.db.database import Base, engine; from app.api.models.post import Post, PublicationLog; from app.api.models.story import Story, StoryPublicationLog; Base.metadata.create_all(bind=engine)"
-    
+
     log_success "База данных инициализирована"
 }
 
 # Функция для создания директории для резервных копий
 setup_backups() {
     log "Настройка резервного копирования..."
-    
+
     # Создание директории для резервных копий
     mkdir -p backups
-    
+
     # Создание cron-задания для ежедневного резервного копирования
     (crontab -l 2>/dev/null; echo "0 2 * * * cd $(pwd) && ./backup.sh") | crontab -
-    
+
     log_success "Резервное копирование настроено"
 }
 
 # Основная функция
 main() {
     log "Начало развертывания проекта TG Poster..."
-    
+
     # Установка зависимостей
     install_dependencies
-    
+
     # Настройка файла .env
     setup_env
-    
+
     # Генерация SSL-сертификатов
     generate_ssl
-    
+
     # Настройка ModSecurity
     setup_modsecurity
-    
+
     # Настройка брандмауэра
     setup_firewall
-    
+
     # Запуск контейнеров
     start_containers
-    
+
     # Инициализация базы данных
     init_database
-    
+
     # Настройка резервного копирования
     setup_backups
-    
+
     log_success "Проект TG Poster успешно развернут!"
     log "API доступен по адресу: https://ваш-домен"
     log "Для доступа к боту используйте Telegram"

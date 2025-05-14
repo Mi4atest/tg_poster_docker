@@ -50,14 +50,18 @@ services:
     networks:
       - tg_poster_network
     ports:
-      - "80:80"
-      - "443:443"
+      - "8080:80"
+      - "8443:443"
 
 networks:
   tg_poster_network:
     driver: bridge
     # Настройка внутренней сети без доступа извне
     internal: true
+    ipam:
+      config:
+        - subnet: 192.168.100.0/24
+          gateway: 192.168.100.1
 
 volumes:
   postgres_data:

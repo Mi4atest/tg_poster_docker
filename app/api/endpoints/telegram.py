@@ -1,11 +1,50 @@
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, HTTPException, Response, Depends, Request
 from aiogram import Bot
 import aiohttp
 import io
+import hmac
+import hashlib
+import os
+from typing import Dict, Any
 
-from app.config.settings import TELEGRAM_BOT_TOKEN
+from app.config.settings import TELEGRAM_BOT_TOKEN, WEBHOOK_SECRET
 
 router = APIRouter()
+
+def verify_telegram_signature(request: Request) -> bool:
+    """Verify that the request is from Telegram."""
+    if not WEBHOOK_SECRET:
+        return True  # Skip verification if no secret is set
+
+    # Get the signature from the header
+    signature = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
+    if not signature:
+        return False
+
+    # Verify the signature
+    expected_signature = hmac.new(
+        WEBHOOK_SECRET.encode(),
+        msg=request.url.path.encode(),
+        digestmod=hashlib.sha256
+    ).hexdigest()
+
+    return hmac.compare_digest(signature, expected_signature)
+
+@router.post("/webhook")
+async def telegram_webhook(request: Request):
+    """Handle Telegram webhook."""
+    # Verify that the request is from Telegram
+    if not verify_telegram_signature(request):
+        raise HTTPException(status_code=403, detail="Invalid signature")
+
+    # Process the update
+    update_data = await request.json()
+
+    # Here you would process the update using your bot's update handler
+    # This is just a placeholder
+    print(f"Received update: {update_data}")
+
+    return {"status": "ok"}
 
 @router.get("/file/{file_id}")
 async def get_telegram_file(file_id: str):

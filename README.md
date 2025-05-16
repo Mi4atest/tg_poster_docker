@@ -11,26 +11,31 @@ Docker-версия системы для автоматизированного
 
 1. Клонируйте репозиторий:
    ```bash
-   git clone https://github.com/yourusername/tg_poster_docker.git
+   git clone https://github.com/Mi4atest/tg_poster_docker.git
    cd tg_poster_docker
    ```
-
-2. Создайте файл .env на основе примера:
+   
+2. Уснатновите Docker:
+   ```bash
+   sudo apt update && sudo apt install -y docker.io docker-compose
+   ```
+   
+3. Создайте файл .env на основе примера:
    ```bash
    cp .env.example .env
    ```
 
-3. Отредактируйте файл .env, указав свои токены и настройки:
+4. Отредактируйте файл .env, указав свои токены и настройки:
    ```bash
    nano .env
    ```
 
-4. Запустите контейнеры:
+5. Запустите контейнеры:
    ```bash
    ./start.sh
    ```
 
-5. Инициализируйте базу данных:
+6. Инициализируйте базу данных:
    ```bash
    ./init_db.sh
    ```

@@ -11,9 +11,11 @@ services:
     depends_on:
       - db
     networks:
-      - tg_poster_network
-    ports:
-      - "8002:8002"
+      tg_poster_network:
+        ipv4_address: 172.20.0.3
+    # Удаляем или комментируем эти строки
+    # ports:
+    #   - "8002:8002"
     environment:
       - DATABASE_URL=postgresql://postgres:postgres@db:5432/tg_poster
       - API_HOST=0.0.0.0
@@ -30,9 +32,11 @@ services:
       - POSTGRES_USER=postgres
       - POSTGRES_DB=tg_poster
     networks:
-      - tg_poster_network
-    ports:
-      - "5432:5432"
+      tg_poster_network:
+        ipv4_address: 172.20.0.2
+    # Порт базы данных больше не публикуется наружу
+    # ports:
+    #   - "5432:5432"
 
   nginx:
     image: nginx:alpine
@@ -44,13 +48,18 @@ services:
     depends_on:
       - app
     networks:
-      - tg_poster_network
-    ports:
-      - "8080:80"
+      tg_poster_network:
+        ipv4_address: 172.20.0.4
+    # Удаляем или комментируем эти строки
+    # ports:
+    #   - "8080:80"
 
 networks:
   tg_poster_network:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
 
 volumes:
   postgres_data:

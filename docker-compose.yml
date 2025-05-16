@@ -13,8 +13,9 @@ services:
     networks:
       tg_poster_network:
         ipv4_address: 172.20.0.3
-    ports:
-      - "8002:8002"
+    # Удаляем публикацию порта API
+    # ports:
+    #   - "8002:8002"
     environment:
       - DATABASE_URL=postgresql://postgres:postgres@db:5432/tg_poster
       - API_HOST=0.0.0.0
@@ -49,8 +50,9 @@ services:
     networks:
       tg_poster_network:
         ipv4_address: 172.20.0.4
-    ports:
-      - "8080:80"
+    # Удаляем публикацию порта веб-интерфейса
+    # ports:
+    #   - "8080:80"
 
 networks:
   tg_poster_network:

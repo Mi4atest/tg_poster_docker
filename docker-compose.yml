@@ -13,7 +13,7 @@ services:
     networks:
       tg_poster_network:
         ipv4_address: 172.20.0.3
-    # Удаляем публикацию порта API
+    # Удаляем или комментируем эти строки
     # ports:
     #   - "8002:8002"
     environment:
@@ -50,7 +50,7 @@ services:
     networks:
       tg_poster_network:
         ipv4_address: 172.20.0.4
-    # Удаляем публикацию порта веб-интерфейса
+    # Удаляем или комментируем эти строки
     # ports:
     #   - "8080:80"
 

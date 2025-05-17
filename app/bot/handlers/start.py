@@ -2,19 +2,25 @@ from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
+import random
 
 from app.bot.keyboards.main_keyboard import get_main_keyboard
 from app.bot.handlers.post_creation import PostCreation
+from app.bot.utils.spoiler_phrases import SPOILER_PHRASES
 
 router = Router()
 
 @router.message(Command("start"))
 async def cmd_start(message: Message):
     """Handle the /start command."""
+    # Выбираем случайную фразу из списка
+    spoiler_phrase = random.choice(SPOILER_PHRASES)
+
     # Удаляем клавиатуру справа от ввода текста и показываем основное меню
     await message.answer(
-        "👋 Добро пожаловать в систему автоматизированного постинга в соцсети!\n\n"
-        "Используйте кнопки ниже для управления постами:",
+        "Приветы! Нажимай \"Создать пост\"\n\n"
+        f"<tg-spoiler>{spoiler_phrase}</tg-spoiler>",
+        parse_mode="HTML",
         reply_markup=get_main_keyboard()
     )
 

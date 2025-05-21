@@ -2,10 +2,21 @@
 
 # Скрипт для восстановления базы данных из резервной копии
 
+# Загружаем переменные окружения из .env файла
+if [ -f "$(dirname "$0")/.env" ]; then
+    source "$(dirname "$0")/.env"
+fi
+
+# Проверяем наличие имени проекта
+if [ -z "$BACKUP_PROJECT_NAME" ]; then
+    BACKUP_PROJECT_NAME="tg_poster"
+    echo "Имя проекта не задано, используется значение по умолчанию: $BACKUP_PROJECT_NAME"
+fi
+
 # Если аргумент не передан, используем последнюю резервную копию
 if [ -z "$1" ]; then
     echo "Путь к файлу резервной копии не указан, ищем последнюю резервную копию..."
-    BACKUP_FILE=$(find "$(dirname "$0")/backups" -name "tg_poster_backup_*.gz" -type f -printf "%T@ %p\n" | sort -nr | head -n 1 | cut -d' ' -f2-)
+    BACKUP_FILE=$(find "$(dirname "$0")/backups" -name "${BACKUP_PROJECT_NAME}_backup_*.gz" -type f -printf "%T@ %p\n" | sort -nr | head -n 1 | cut -d' ' -f2-)
     
     if [ -z "$BACKUP_FILE" ]; then
         echo "Ошибка: Резервные копии не найдены в директории backups/"

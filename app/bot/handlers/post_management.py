@@ -778,19 +778,32 @@ async def publish_to_vk(callback: CallbackQuery):
     post_id = user_data.get("selected_post")
 
     if not post_id:
-        await callback.message.answer("❌ Пост не выбран.")
+        await callback.message.edit_text("❌ Пост не выбран.")
         return
 
     # Get post details
     post = await get_post_api(post_id)
 
     if not post:
-        await callback.message.answer("❌ Пост не найден.")
+        await callback.message.edit_text("❌ Пост не найден.")
         return
 
     # Check if already published
     if post.get("is_published_vk"):
-        await callback.message.answer("❌ Пост уже опубликован в ВК.")
+        # Создаем клавиатуру с кнопками "Далее" и "Назад"
+        buttons = [
+            [
+                InlineKeyboardButton(text="⏭️ Далее", callback_data="republish_vk"),
+                InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_post")
+            ]
+        ]
+        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+
+        # Используем edit_text вместо answer
+        await callback.message.edit_text(
+            f"{callback.message.text}\n\nОпубликовать повторно?", 
+            reply_markup=keyboard
+        )
         return
 
     # Publish post
@@ -826,19 +839,32 @@ async def publish_to_telegram(callback: CallbackQuery):
     post_id = user_data.get("selected_post")
 
     if not post_id:
-        await callback.message.answer("❌ Пост не выбран.")
+        await callback.message.edit_text("❌ Пост не выбран.")
         return
 
     # Get post details
     post = await get_post_api(post_id)
 
     if not post:
-        await callback.message.answer("❌ Пост не найден.")
+        await callback.message.edit_text("❌ Пост не найден.")
         return
 
     # Check if already published
     if post.get("is_published_telegram"):
-        await callback.message.answer("❌ Пост уже опубликован в Telegram.")
+        # Создаем клавиатуру с кнопками "Далее" и "Назад"
+        buttons = [
+            [
+                InlineKeyboardButton(text="⏭️ Далее", callback_data="republish_telegram"),
+                InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_post")
+            ]
+        ]
+        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+
+        # Используем edit_text вместо answer
+        await callback.message.edit_text(
+            f"{callback.message.text}\n\nОпубликовать повторно?", 
+            reply_markup=keyboard
+        )
         return
 
     # Publish post
@@ -874,19 +900,32 @@ async def publish_to_instagram(callback: CallbackQuery):
     post_id = user_data.get("selected_post")
 
     if not post_id:
-        await callback.message.answer("❌ Пост не выбран.")
+        await callback.message.edit_text("❌ Пост не выбран.")
         return
 
     # Get post details
     post = await get_post_api(post_id)
 
     if not post:
-        await callback.message.answer("❌ Пост не найден.")
+        await callback.message.edit_text("❌ Пост не найден.")
         return
 
     # Check if already published
     if post.get("is_published_instagram"):
-        await callback.message.answer("❌ Пост уже опубликован в Instagram.")
+        # Создаем клавиатуру с кнопками "Далее" и "Назад"
+        buttons = [
+            [
+                InlineKeyboardButton(text="⏭️ Далее", callback_data="republish_instagram"),
+                InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_post")
+            ]
+        ]
+        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+
+        # Используем edit_text вместо answer
+        await callback.message.edit_text(
+            f"{callback.message.text}\n\nОпубликовать повторно?", 
+            reply_markup=keyboard
+        )
         return
 
     # Publish post
@@ -1174,6 +1213,24 @@ async def publish_to_all(callback: CallbackQuery):
         await callback.answer("❌ Пост не найден.", show_alert=True)
         return
 
+    # Check if already published in any platform
+    if post.get("is_published_vk") or post.get("is_published_telegram") or post.get("is_published_instagram"):
+        # Создаем клавиатуру с кнопками "Далее" и "Назад"
+        buttons = [
+            [
+                InlineKeyboardButton(text="⏭️ Далее", callback_data="republish_all"),
+                InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_post")
+            ]
+        ]
+        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+
+        # Используем edit_text вместо answer
+        await callback.message.edit_text(
+            f"{callback.message.text}\n\nОпубликовать повторно?", 
+            reply_markup=keyboard
+        )
+        return
+
     # Publish post to all platforms
     await callback.message.edit_text(f"{callback.message.text}\n\n⏳ Публикую во все соцсети...")
 
@@ -1208,6 +1265,58 @@ async def publish_to_all(callback: CallbackQuery):
     except Exception as e:
         await callback.message.edit_text(
             f"{callback.message.text.split('⏳')[0]}\n\n❌ Ошибка: {str(e)}",
+            reply_markup=get_post_actions_keyboard()
+        )
+
+    await callback.answer()
+
+@router.callback_query(F.data == "republish_all")
+async def republish_to_all(callback: CallbackQuery):
+    """Republish post to all platforms."""
+    # Get selected post ID
+    user_data = callback.bot.user_data.get(callback.from_user.id, {})
+    post_id = user_data.get("selected_post")
+
+    if not post_id:
+        await callback.answer("❌ Пост не выбран.", show_alert=True)
+        return
+
+    # Get post details
+    post = await get_post_api(post_id)
+
+    if not post:
+        await callback.answer("❌ Пост не найден.", show_alert=True)
+        return
+
+    # Publish post to all platforms
+    await callback.message.edit_text(f"⏳ Публикую во все соцсети повторно...")
+
+    try:
+        results = []
+
+        # Publish to all platforms regardless of previous publication status
+        vk_result = await publish_post_api(post_id, "vk")
+        results.append(("ВК", vk_result is not None))
+
+        tg_result = await publish_post_api(post_id, "telegram")
+        results.append(("Telegram", tg_result is not None))
+
+        ig_result = await publish_post_api(post_id, "instagram")
+        results.append(("Instagram", ig_result is not None))
+
+        # Format results
+        result_text = "\n\n📤 Результаты публикации:\n"
+        for platform, success in results:
+            status = "✅" if success else "❌"
+            result_text += f"{platform}: {status}\n"
+
+        await callback.message.edit_text(
+            f"✅ Опубликовано повторно!{result_text}",
+            reply_markup=get_post_actions_keyboard()
+        )
+    except Exception as e:
+        await callback.message.edit_text(
+            f"❌ Ошибка: {str(e)}",
             reply_markup=get_post_actions_keyboard()
         )
 
@@ -1265,6 +1374,126 @@ async def delete_post(callback: CallbackQuery):
 
     await callback.answer()
 
+@router.callback_query(F.data == "republish_vk")
+async def republish_to_vk(callback: CallbackQuery):
+    """Republish post to VK."""
+    # Get selected post ID
+    user_data = callback.bot.user_data.get(callback.from_user.id, {})
+    post_id = user_data.get("selected_post")
+
+    if not post_id:
+        await callback.message.answer("❌ Пост не выбран.")
+        return
+
+    # Get post details
+    post = await get_post_api(post_id)
+
+    if not post:
+        await callback.message.answer("❌ Пост не найден.")
+        return
+
+    # Publish post
+    status_message = await callback.message.edit_text(f"⏳ Публикую в ВК повторно...")
+
+    try:
+        result = await publish_post_api(post_id, "vk")
+
+        if result:
+            await status_message.edit_text(
+                f"✅ Опубликовано в ВК!",
+                reply_markup=get_post_actions_keyboard()
+            )
+        else:
+            await status_message.edit_text(
+                f"❌ Ошибка при публикации в ВК.",
+                reply_markup=get_post_actions_keyboard()
+            )
+    except Exception as e:
+        await status_message.edit_text(
+            f"❌ Ошибка: {str(e)}",
+            reply_markup=get_post_actions_keyboard()
+        )
+
+@router.callback_query(F.data == "republish_telegram")
+async def republish_to_telegram(callback: CallbackQuery):
+    """Republish post to Telegram."""
+    # Get selected post ID
+    user_data = callback.bot.user_data.get(callback.from_user.id, {})
+    post_id = user_data.get("selected_post")
+
+    if not post_id:
+        await callback.message.answer("❌ Пост не выбран.")
+        return
+
+    # Get post details
+    post = await get_post_api(post_id)
+
+    if not post:
+        await callback.message.answer("❌ Пост не найден.")
+        return
+
+    # Publish post
+    status_message = await callback.message.edit_text(f"⏳ Публикую в Telegram повторно...")
+
+    try:
+        result = await publish_post_api(post_id, "telegram")
+
+        if result:
+            await status_message.edit_text(
+                f"✅ Опубликовано в Telegram!",
+                reply_markup=get_post_actions_keyboard()
+            )
+        else:
+            await status_message.edit_text(
+                f"❌ Ошибка при публикации в Telegram.",
+                reply_markup=get_post_actions_keyboard()
+            )
+    except Exception as e:
+        await status_message.edit_text(
+            f"❌ Ошибка: {str(e)}",
+            reply_markup=get_post_actions_keyboard()
+        )
+
+@router.callback_query(F.data == "republish_instagram")
+async def republish_to_instagram(callback: CallbackQuery):
+    """Republish post to Instagram."""
+    # Get selected post ID
+    user_data = callback.bot.user_data.get(callback.from_user.id, {})
+    post_id = user_data.get("selected_post")
+
+    if not post_id:
+        await callback.message.answer("❌ Пост не выбран.")
+        return
+
+    # Get post details
+    post = await get_post_api(post_id)
+
+    if not post:
+        await callback.message.answer("❌ Пост не найден.")
+        return
+
+    # Publish post
+    status_message = await callback.message.edit_text(f"⏳ Публикую в Instagram повторно...")
+
+    try:
+        result = await publish_post_api(post_id, "instagram")
+
+        if result:
+            await status_message.edit_text(
+                f"✅ Опубликовано в Instagram!",
+                reply_markup=get_post_actions_keyboard()
+            )
+        else:
+            await status_message.edit_text(
+                f"❌ Ошибка при публикации в Instagram.",
+                reply_markup=get_post_actions_keyboard()
+            )
+    except Exception as e:
+        await status_message.edit_text(
+            f"❌ Ошибка: {str(e)}",
+            reply_markup=get_post_actions_keyboard()
+        )
+
 @router.callback_query(F.data == "cancel_delete")
 async def cancel_delete(callback: CallbackQuery):
     """Cancel post deletion."""
@@ -1309,13 +1538,26 @@ async def edit_post(callback: CallbackQuery, state: FSMContext):
         original_post=post
     )
 
+    # Создаем текст поста в формате кода для удобного копирования
+    post_text = post.get('text', '')
+    
+    # Создаем клавиатуру с дополнительной кнопкой для копирования текста
+    buttons = [
+        [InlineKeyboardButton(text="📋 Скопировать текст", callback_data="copy_post_text")],
+        [
+            InlineKeyboardButton(text="⏭️ Далее", callback_data="skip"),
+            InlineKeyboardButton(text="⬅️ Назад", callback_data="back")
+        ]
+    ]
+    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+
     # Отправляем сообщение с предложением отредактировать текст
     await callback.message.edit_text(
         f"✏️ *РЕДАКТИРОВАНИЕ ПОСТА*\n\n"
-        f"*Текущий текст поста:*\n\n"
-        f"{post.get('text', '')}\n\n"
+        f"*Текущий текст поста:*\n"
+        f"```\n{post_text}\n```\n\n"
         f"*Инструкция:* _Отправьте новый текст для поста или нажмите 'Далее', чтобы оставить текущий текст._",
-        reply_markup=get_skip_back_keyboard(),
+        reply_markup=keyboard,
         parse_mode="Markdown"
     )
 
@@ -1575,6 +1817,12 @@ async def process_edit_text(message: Message, state: FSMContext):
     )
 
     # Переходим к состоянию ожидания фотографий
+
+@router.callback_query(F.data == "delete_copy_message")
+async def delete_copy_message(callback: CallbackQuery):
+    """Delete the message with copied text."""
+    await callback.message.delete()
+    await callback.answer()
     await state.set_state(PostEdit.waiting_for_photos)
 
 @router.callback_query(PostEdit.waiting_for_text, F.data == "skip")
@@ -1717,13 +1965,24 @@ async def back_to_edit_text(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     text = data.get("edit_post_text", "")
 
+    # Создаем клавиатуру с дополнительной кнопкой для копирования текста
+    buttons = [
+        [InlineKeyboardButton(text="📋 Скопировать текст", callback_data="copy_post_text")],
+        [
+            InlineKeyboardButton(text="⏭️ Далее", callback_data="skip"),
+            InlineKeyboardButton(text="⬅️ Назад", callback_data="back")
+        ]
+    ]
+    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+
     # Отправляем сообщение о возврате к редактированию текста
     await callback.message.edit_text(
-        f"✏️ Редактирование поста\n\n"
-        f"Текущий текст поста:\n\n"
-        f"{text}\n\n"
-        f"Отправьте новый текст для поста или нажмите 'Пропустить', чтобы оставить текущий текст.",
-        reply_markup=get_skip_back_keyboard()
+        f"✏️ *РЕДАКТИРОВАНИЕ ПОСТА*\n\n"
+        f"*Текущий текст поста:*\n"
+        f"```\n{text}\n```\n\n"
+        f"*Инструкция:* _Отправьте новый текст для поста или нажмите 'Далее', чтобы оставить текущий текст._",
+        reply_markup=keyboard,
+        parse_mode="Markdown"
     )
 
     # Возвращаемся к состоянию ожидания текста
@@ -2072,3 +2331,20 @@ async def back_to_media_management(callback: CallbackQuery, state: FSMContext):
     await state.set_state(PostEdit.waiting_for_photos)
 
     await callback.answer()
+
+@router.callback_query(PostEdit.waiting_for_text, F.data == "copy_post_text")
+async def copy_post_text(callback: CallbackQuery, state: FSMContext):
+    """Handle the 'Copy text' button."""
+    # Получаем данные из состояния
+    data = await state.get_data()
+    post_text = data.get("edit_post_text", "")
+    
+    # Отправляем текст как отдельное сообщение для удобного копирования
+    await callback.message.reply(
+        post_text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Удалить сообщение", callback_data="delete_copy_message")]
+        ])
+    )
+    
+    await callback.answer("Текст отправлен отдельным сообщением для копирования")

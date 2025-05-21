@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from app.config.settings import VK_ACCESS_TOKEN, VK_GROUP_ID, API_HOST, API_PORT
 from app.db.database import SessionLocal
 from app.api.models.post import Post, PublicationLog
+from app.utils.text_formatter import format_for_vk
 
 logger = logging.getLogger(__name__)
 
@@ -125,13 +126,12 @@ class VKPublisher:
                 logger.error(f"Post {post_id} not found")
                 return False
 
-            # Check if already published
+            # Log if already published, but continue with republishing
             if post.is_published_vk:
-                logger.info(f"Post {post_id} already published to VK")
-                return True
+                logger.info(f"Post {post_id} already published to VK, republishing")
 
-            # Get post text
-            text = post.text
+            # Get post text and format it
+            text = format_for_vk(post.text)
 
             # Download and upload photos
             photo_attachments = []

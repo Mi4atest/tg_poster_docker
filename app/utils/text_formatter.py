@@ -68,7 +68,7 @@ def format_post_text(text: str) -> str:
                     price_int = int(price.replace(',', '').replace('.', ''))
                     formatted_price = f"{price_int:,}".replace(',', ' ')
                     # Заменяем цену в строке
-                    line = re.sub(r'(\d+[\s\.,]?\d*)\s*(?:руб|р|₽|RUB)', f"{formatted_price} ₽", line, flags=re.IGNORECASE)
+                    line = re.sub(r'(\d+[\s\.,]?\d*)\s*(?:руб|р|₽|RUB)', f"{formatted_price}₽", line, flags=re.IGNORECASE)
                 except ValueError:
                     pass
             
@@ -86,7 +86,7 @@ def format_post_text(text: str) -> str:
         # Форматируем ключевые параметры жирным
         key_params = [
             'Комплект:', 'Аккумулятор:', 'IMEI', 'S/N', 'Серийный номер:', 
-            'Мы находимся по адресу:', 'Работаем без выходных:', 'Цена за наличные.'
+            'Мы находимся по адресу:', 'Работаем без выходных:'
         ]
         
         for param in key_params:

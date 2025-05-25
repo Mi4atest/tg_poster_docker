@@ -1,35 +1,47 @@
-from fastapi import FastAPI, Depends
-from fastapi.middleware.cors import CORSMiddleware
+import asyncio
+import logging
+from aiogram import Bot, Dispatcher
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import BotCommand
 
-from app.api.endpoints import posts, telegram, stories
-from app.db.database import engine, Base
+from app.config.settings import TELEGRAM_BOT_TOKEN
+from app.bot.handlers import start, post_creation, post_management
+from app.bot.middlewares.auth import AuthMiddleware
 
-# Create database tables
-Base.metadata.create_all(bind=engine)
+# Configure logging
+logging.basicConfig(level=logging.INFO)
 
-# Create FastAPI app
-app = FastAPI(
-    title="Social Media Poster API",
-    description="API for managing social media posts",
-    version="0.1.0"
-)
+# Initialize bot and dispatcher
+bot = Bot(token=TELEGRAM_BOT_TOKEN)
+storage = MemoryStorage()
+dp = Dispatcher(storage=storage)
 
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Add user_data dictionary to bot
+bot.user_data = {}
 
-# Include routers
-app.include_router(posts.router, prefix="/api/posts", tags=["posts"])
-app.include_router(telegram.router, prefix="/api/telegram", tags=["telegram"])
-app.include_router(stories.router, prefix="/api/stories", tags=["stories"])
+# Register middlewares
+dp.message.middleware(AuthMiddleware())
+dp.callback_query.middleware(AuthMiddleware())
 
-@app.get("/")
-def read_root():
-    return {"message": "Welcome to Social Media Poster API"}
+# Register handlers
+dp.include_router(start.router)
+dp.include_router(post_creation.router)
+dp.include_router(post_management.router)
 
-# Run with: uvicorn app.api.main:app --host 0.0.0.0 --port 8000 --reload
+async def set_commands():
+    """Set bot commands."""
+    commands = [
+        BotCommand(command="start", description="Запустить бота"),
+    ]
+    await bot.set_my_commands(commands)
+
+async def main():
+    """Main function."""
+    # Set bot commands
+    await set_commands()
+
+    # Start polling
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())

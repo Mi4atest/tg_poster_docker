@@ -3,9 +3,13 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.endpoints import posts, telegram, stories
 from app.db.database import engine, Base
+from app.db.migrate import ensure_database_schema
 
 # Create database tables
 Base.metadata.create_all(bind=engine)
+
+# Проверяем и применяем необходимые изменения схемы
+ensure_database_schema()
 
 # Create FastAPI app
 app = FastAPI(

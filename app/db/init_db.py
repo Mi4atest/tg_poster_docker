@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.db.database import SessionLocal, engine, Base
 from app.api.models.post import Post, PublicationLog
+from app.db.migrate import ensure_database_schema
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -11,6 +12,9 @@ def init_db():
     """Initialize the database."""
     # Create tables
     Base.metadata.create_all(bind=engine)
+    
+    # Проверяем и применяем необходимые изменения схемы
+    ensure_database_schema()
     
     # Create session
     db = SessionLocal()

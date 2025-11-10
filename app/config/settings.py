@@ -40,3 +40,12 @@ MEDIA_STRUCTURE = "{year}/{month}/{day}/{post_name}"
 
 # Ensure media directory exists
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+
+# Настройки подписей для социальных сетей
+SIGNATURE_ENABLED = os.getenv("SIGNATURE_ENABLED", "true").lower() == "true"
+SIGNATURE_VK = os.getenv("SIGNATURE_VK", "")
+SIGNATURE_AVITO = os.getenv("SIGNATURE_AVITO", "")
+SIGNATURE_TELEGRAM = os.getenv("SIGNATURE_TELEGRAM", "")
+SIGNATURE_INSTAGRAM = os.getenv("SIGNATURE_INSTAGRAM", "")
+SIGNATURE_VK_SHORT_AVITO = os.getenv("SIGNATURE_VK_SHORT_AVITO", "")
+SIGNATURE_VK_SHORT_TELEGRAM = os.getenv("SIGNATURE_VK_SHORT_TELEGRAM", "")

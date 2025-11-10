@@ -1,13 +1,16 @@
+
 import logging
 import asyncio
 from aiogram import Bot
 from aiogram.types import InputMediaPhoto, InputMediaVideo
+from aiogram.enums import ParseMode  # Изменен импорт ParseMode
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone
 
 from app.config.settings import TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID
 from app.db.database import SessionLocal
 from app.api.models.post import Post, PublicationLog
+from app.utils.text_formatter import format_for_telegram
 
 logger = logging.getLogger(__name__)
 
@@ -29,13 +32,12 @@ class TelegramPublisher:
                 logger.error(f"Post {post_id} not found")
                 return False
 
-            # Check if already published
+            # Log if already published, but continue with republishing
             if post.is_published_telegram:
-                logger.info(f"Post {post_id} already published to Telegram")
-                return True
+                logger.info(f"Post {post_id} already published to Telegram, republishing")
 
-            # Get post text
-            text = post.text
+            # Get post text and format it
+            text = format_for_telegram(post.text)
 
             # Check if post has media
             if post.photos or post.videos:
@@ -58,7 +60,7 @@ class TelegramPublisher:
                     # Add the first item with caption
                     if len(photos) > 0:
                         # First photo gets the caption
-                        media.append(InputMediaPhoto(media=photos[0], caption=text))
+                        media.append(InputMediaPhoto(media=photos[0], caption=text, parse_mode=ParseMode.MARKDOWN_V2))
                         # Add remaining photos without caption
                         for file_id in photos[1:]:
                             media.append(InputMediaPhoto(media=file_id))
@@ -67,7 +69,7 @@ class TelegramPublisher:
                             media.append(InputMediaVideo(media=file_id))
                     else:
                         # First video gets the caption
-                        media.append(InputMediaVideo(media=videos[0], caption=text))
+                        media.append(InputMediaVideo(media=videos[0], caption=text, parse_mode=ParseMode.MARKDOWN_V2))
                         # Add remaining videos without caption
                         for file_id in videos[1:]:
                             media.append(InputMediaVideo(media=file_id))
@@ -88,7 +90,7 @@ class TelegramPublisher:
                                 await self.bot.send_media_group(TELEGRAM_CHANNEL_ID, media=batch)
             else:
                 # Send text only
-                await self.bot.send_message(TELEGRAM_CHANNEL_ID, text)
+                await self.bot.send_message(TELEGRAM_CHANNEL_ID, text, parse_mode=ParseMode.MARKDOWN_V2)
 
             # Update post status in database
             post.is_published_telegram = True

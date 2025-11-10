@@ -12,6 +12,7 @@ from instagrapi import Client
 from app.db.database import SessionLocal
 from app.api.models.post import Post, PublicationLog
 from app.config.settings import MEDIA_DIR
+from app.utils.text_formatter import format_for_instagram
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -86,10 +87,9 @@ class InstagramPublisher:
                 logger.error(f"Пост с ID {post_id} не найден")
                 return False
 
-            # Проверяем, был ли пост уже опубликован
+            # Логируем, если пост уже опубликован, но продолжаем с повторной публикацией
             if post.is_published_instagram:
-                logger.info(f"Пост с ID {post_id} уже опубликован в Instagram")
-                return True
+                logger.info(f"Пост с ID {post_id} уже опубликован в Instagram, выполняем повторную публикацию")
 
             # Авторизуемся в Instagram
             if not await self.login():
@@ -107,8 +107,8 @@ class InstagramPublisher:
             # Получаем путь к директории с медиафайлами поста
             post_dir = MEDIA_DIR / post.storage_path
 
-            # Получаем текст поста
-            caption = post.text
+            # Получаем текст поста и форматируем его
+            caption = format_for_instagram(post.text)
 
             # Загружаем медиафайлы
             media_paths = []

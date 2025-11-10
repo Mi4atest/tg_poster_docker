@@ -5,6 +5,7 @@ from aiogram.fsm.state import State, StatesGroup
 import aiohttp
 import json
 from datetime import datetime
+import asyncio
 
 from app.bot.keyboards.main_keyboard import (
     get_main_keyboard, get_post_actions_keyboard, get_skip_back_keyboard,
@@ -272,46 +273,32 @@ async def show_pending_posts(message: Message):
 
         # Create buttons for each post
         buttons = []
+        
+        # Добавляем кнопку для отправки всех отложенных постов
+        if posts:
+            buttons.append([InlineKeyboardButton(text="📤 Отправить все отложенные", callback_data="publish_all_pending")])
 
+        # Add buttons for each post
         for i, post in enumerate(posts, 1):
-            # Format post info
-            post_name = post.get("name", "Без названия")
-            created_at_str = post.get("created_at", "")
-
-            # Безопасное преобразование даты
-            try:
-                if created_at_str:
-                    created_at = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
-                    created_at_formatted = created_at.strftime('%d.%m.%Y %H:%M')
-                else:
-                    created_at_formatted = "Неизвестно"
-            except Exception as e:
-                print(f"Error parsing date: {str(e)}")
-                created_at_formatted = "Неизвестно"
-
+            post_name = post.get("name", f"Пост {i}")
+            post_id = post.get("id")
+            
+            # Truncate long names
+            if len(post_name) > 30:
+                post_name = post_name[:27] + "..."
+                
+            # Add post info to response
             photo_count = len(post.get("photos", []))
             video_count = len(post.get("videos", []))
-
-            # Add platform status indicators
-            vk_status = "✅" if post.get("is_published_vk") else "❌"
-            tg_status = "✅" if post.get("is_published_telegram") else "❌"
-
+            
             response_text += f"{i}. {post_name}\n"
-            response_text += f"   Создан: {created_at_formatted}\n"
-            response_text += f"   Медиа: {photo_count}📷 {video_count}📹\n"
-
-            # Добавляем статус Instagram
-            ig_status = "✅" if post.get("is_published_instagram") else "❌"
-
-            response_text += f"   ВК: {vk_status}, ТГ: {tg_status}, IG: {ig_status}\n\n"
-
+            response_text += f"   Медиа: {photo_count}📷 {video_count}📹\n\n"
+            
             # Add button for this post
-            post_id = post.get('id')
-            if post_id:
-                buttons.append([InlineKeyboardButton(
-                    text=f"{i}. {post_name[:30]}{'...' if len(post_name) > 30 else ''}",
-                    callback_data=f"view_post_{post_id}"
-                )])
+            buttons.append([InlineKeyboardButton(
+                text=f"{i}. {post_name}",
+                callback_data=f"view_post_{post_id}"
+            )])
 
         # Add back button
         buttons.append([InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")])
@@ -326,6 +313,9 @@ async def show_pending_posts(message: Message):
                 if message.from_user.id not in message.bot.user_data:
                     message.bot.user_data[message.from_user.id] = {}
                 message.bot.user_data[message.from_user.id].update(user_data)
+                
+                # Сохраняем список ID отложенных постов для последующей публикации
+                message.bot.user_data[message.from_user.id]["pending_post_ids"] = [post.get("id") for post in posts if post.get("id")]
             except Exception as e:
                 print(f"Error updating user_data: {str(e)}")
 
@@ -1881,6 +1871,96 @@ async def back_from_edit(callback: CallbackQuery, state: FSMContext):
     video_count = len(post.get("videos", []))
 
     # Обрезаем текст, если он слишком длинный
+@router.callback_query(F.data == "publish_all_pending")
+async def publish_all_pending_posts(callback: CallbackQuery):
+    """Publish all pending posts to all platforms."""
+    # Получаем актуальный список отложенных постов напрямую из API
+    print("Fetching current pending posts for publication...")
+    current_pending_posts = await get_posts_api(is_archived=False)
+    
+    if not current_pending_posts:
+        await callback.answer("❌ Нет отложенных постов для публикации.", show_alert=True)
+        return
+    
+    # Получаем ID только тех постов, которые действительно находятся в отложенных
+    pending_post_ids = [post.get("id") for post in current_pending_posts if post.get("id")]
+    print(f"Found {len(pending_post_ids)} actual pending posts for publication: {pending_post_ids}")
+    
+    if not pending_post_ids:
+        await callback.answer("❌ Нет отложенных постов для публикации.", show_alert=True)
+        return
+    
+    # Сообщаем о начале процесса публикации
+    await callback.message.edit_text(
+        f"⏳ Начинаю публикацию {len(pending_post_ids)} отложенных постов...\n\n"
+        "Это может занять некоторое время. Пожалуйста, подождите."
+    )
+    
+    # Публикуем посты последовательно
+    results = []
+    
+    for i, post_id in enumerate(pending_post_ids, 1):
+        try:
+            # Получаем информацию о посте
+            post = await get_post_api(post_id)
+            if not post:
+                results.append((f"Пост #{i}", "❌ Не найден"))
+                continue
+                
+            post_name = post.get("name", f"Пост #{i}")
+            
+            # Обновляем статус
+            await callback.message.edit_text(
+                f"⏳ Публикация отложенных постов ({i}/{len(pending_post_ids)})...\n\n"
+                f"Публикую: {post_name}\n\n"
+                f"Результаты:\n" + "\n".join([f"{name}: {status}" for name, status in results])
+            )
+            
+            # Публикуем в VK
+            vk_result = await publish_post_api(post_id, "vk")
+            
+            # Публикуем в Telegram
+            tg_result = await publish_post_api(post_id, "telegram")
+            
+            # Публикуем в Instagram
+            ig_result = await publish_post_api(post_id, "instagram")
+            
+            # Формируем результат для этого поста
+            post_result = []
+            post_result.append("ВК: ✅" if vk_result else "ВК: ❌")
+            post_result.append("TG: ✅" if tg_result else "TG: ❌")
+            post_result.append("IG: ✅" if ig_result else "IG: ❌")
+            
+            results.append((post_name, ", ".join(post_result)))
+            
+            # Небольшая пауза между публикациями
+            await asyncio.sleep(2)
+            
+        except Exception as e:
+            print(f"Error publishing post {post_id}: {str(e)}")
+            results.append((f"Пост #{i}", f"❌ Ошибка: {str(e)}"))
+    
+    # Формируем итоговый отчет
+    final_text = "✅ Публикация отложенных постов завершена!\n\n"
+    final_text += "Результаты:\n"
+    
+    for name, status in results:
+        final_text += f"• {name}: {status}\n"
+    
+    # Создаем клавиатуру с кнопкой возврата
+    buttons = [[InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")]]
+    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+    
+    # Отправляем итоговый отчет
+    await callback.message.edit_text(final_text, reply_markup=keyboard)
+    
+    # Обновляем список отложенных постов после публикации
+    if len(results) > 0:
+        # Обновляем user_data, чтобы отразить изменения
+        if callback.from_user.id in callback.bot.user_data:
+            callback.bot.user_data[callback.from_user.id]["pending_post_ids"] = []
+    
+    await callback.answer()
     if len(text) > 1000:
         text = text[:997] + "..."
 
@@ -2348,3 +2428,94 @@ async def copy_post_text(callback: CallbackQuery, state: FSMContext):
     )
     
     await callback.answer("Текст отправлен отдельным сообщением для копирования")
+
+async def show_pending_posts(message: Message):
+    """Show pending posts."""
+    try:
+        print("Fetching pending posts...")
+        posts = await get_posts_api(is_archived=False)
+        print(f"Fetched {len(posts)} pending posts")
+
+        if not posts:
+            # Create back button
+            buttons = [[InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")]]
+            keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+
+            await message.edit_text(
+                "📭 Отложенных постов нет.",
+                reply_markup=keyboard
+            )
+            return
+
+        # Send list of posts
+        response_text = "📋 Отложенные посты:\n\n"
+
+        # Create buttons for each post
+        buttons = []
+        
+        # Добавляем кнопку для отправки всех отложенных постов
+        if posts:
+            buttons.append([InlineKeyboardButton(text="📤 Отправить все отложенные", callback_data="publish_all_pending")])
+
+        # Add buttons for each post
+        for i, post in enumerate(posts, 1):
+            post_name = post.get("name", f"Пост {i}")
+            post_id = post.get("id")
+            
+            # Truncate long names
+            if len(post_name) > 30:
+                post_name = post_name[:27] + "..."
+                
+            # Add post info to response
+            photo_count = len(post.get("photos", []))
+            video_count = len(post.get("videos", []))
+            
+            response_text += f"{i}. {post_name}\n"
+            response_text += f"   Медиа: {photo_count}📷 {video_count}📹\n\n"
+            
+            # Add button for this post
+            buttons.append([InlineKeyboardButton(
+                text=f"{i}. {post_name}",
+                callback_data=f"view_post_{post_id}"
+            )])
+
+        # Add back button
+        buttons.append([InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")])
+
+        # Create keyboard
+        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+
+        # Store post IDs in user data
+        if hasattr(message, 'bot') and hasattr(message.bot, 'user_data') and hasattr(message, 'from_user'):
+            try:
+                # Создаем или получаем словарь для пользователя
+                if message.from_user.id not in message.bot.user_data:
+                    message.bot.user_data[message.from_user.id] = {}
+                
+                # Сохраняем ID постов в user_data
+                user_data = message.bot.user_data[message.from_user.id]
+                
+                # Сохраняем отдельные посты (для обратной совместимости)
+                for i, post in enumerate(posts, 1):
+                    if post.get("id"):
+                        user_data[f"post_{i}"] = post.get("id")
+                
+                # Сохраняем список ID отложенных постов для массовой публикации
+                pending_post_ids = [post.get("id") for post in posts if post.get("id")]
+                user_data["pending_post_ids"] = pending_post_ids
+                
+                print(f"Saved {len(pending_post_ids)} pending post IDs: {pending_post_ids}")
+            except Exception as e:
+                print(f"Error updating user_data: {str(e)}")
+
+        await message.edit_text(response_text, reply_markup=keyboard)
+    except Exception as e:
+        print(f"Error in show_pending_posts: {str(e)}")
+        # Create back button
+        buttons = [[InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")]]
+        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+
+        await message.edit_text(
+            f"❌ Ошибка при загрузке постов: {str(e)}",
+            reply_markup=keyboard
+        )

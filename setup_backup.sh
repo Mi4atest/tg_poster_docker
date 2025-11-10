@@ -24,7 +24,7 @@ if [ ! -f "$ENV_FILE" ]; then
 fi
 
 # Проверяем, есть ли уже переменные BACKUP_BOT_TOKEN и BACKUP_CHAT_ID в .env
-if ! grep -q "BACKUP_BOT_TOKEN" "$ENV_FILE" || ! grep -q "BACKUP_CHAT_ID" "$ENV_FILE"; then
+if ! grep -q "BACKUP_BOT_TOKEN" "$ENV_FILE" || ! grep -q "BACKUP_CHAT_ID" "$ENV_FILE" || ! grep -q "BACKUP_PROJECT_NAME" "$ENV_FILE"; then
     echo "Необходимо добавить переменные для резервного копирования в файл .env"
     
     # Запрашиваем токен бота
@@ -35,13 +35,37 @@ if ! grep -q "BACKUP_BOT_TOKEN" "$ENV_FILE" || ! grep -q "BACKUP_CHAT_ID" "$ENV_
     echo -n "Введите ID чата для отправки резервных копий (получите его у @userinfobot): "
     read -r chat_id
     
+    # Запрашиваем имя проекта
+    echo -n "Введите имя проекта для идентификации резервных копий (например, tg_poster_prod): "
+    read -r project_name
+    
+    # Если имя проекта не указано, используем значение по умолчанию
+    if [ -z "$project_name" ]; then
+        project_name="tg_poster"
+    fi
+    
     # Добавляем переменные в .env
     echo "" >> "$ENV_FILE"
     echo "# Настройки резервного копирования" >> "$ENV_FILE"
     echo "BACKUP_BOT_TOKEN=$bot_token" >> "$ENV_FILE"
     echo "BACKUP_CHAT_ID=$chat_id" >> "$ENV_FILE"
+    echo "BACKUP_PROJECT_NAME=$project_name" >> "$ENV_FILE"
     
     echo "Переменные добавлены в файл .env"
+else
+    # Проверяем наличие BACKUP_PROJECT_NAME
+    if ! grep -q "BACKUP_PROJECT_NAME" "$ENV_FILE"; then
+        echo -n "Введите имя проекта для идентификации резервных копий (например, tg_poster_prod): "
+        read -r project_name
+        
+        # Если имя проекта не указано, используем значение по умолчанию
+        if [ -z "$project_name" ]; then
+            project_name="tg_poster"
+        fi
+        
+        echo "BACKUP_PROJECT_NAME=$project_name" >> "$ENV_FILE"
+        echo "Имя проекта добавлено в файл .env"
+    fi
 fi
 
 # Создаем директорию для резервных копий

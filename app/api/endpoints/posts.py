@@ -12,12 +12,24 @@ from app.config.settings import MEDIA_DIR, MEDIA_STRUCTURE
 
 router = APIRouter()
 
-def generate_post_name(text: str, max_length: int = 50) -> str:
-    """Generate a post name from the first words of the text."""
+def generate_post_name(text: str, max_length: int = 70) -> str:
+    """Generate a post name from the first words of the text with timestamp."""
+    from datetime import datetime
+    
+    # Берем больше слов для информативности
     words = text.split()
-    name = " ".join(words[:5])  # Take first 5 words
-    if len(name) > max_length:
-        name = name[:max_length] + "..."
+    name = " ".join(words[:8])  # Take first 8 words instead of 5
+    
+    # Добавляем временную метку для уникальности
+    timestamp = datetime.now().strftime("%d%m%H%M")
+    
+    # Обрезаем название, оставляя место для временной метки
+    if len(name) > (max_length - 10):
+        name = name[:(max_length - 10)] + "..."
+    
+    # Добавляем временную метку в конец названия
+    name = f"{name} [{timestamp}]"
+    
     return name
 
 def create_storage_path(post_name: str) -> str:
@@ -247,11 +259,6 @@ async def update_post(post_id: str, data: dict, db: Session = Depends(get_db)):
         # Обновляем имя поста на основе нового текста
         post.name = generate_post_name(data["text"])
 
-        # Обновляем текстовый файл
-        post_dir = MEDIA_DIR / post.storage_path
-        with open(post_dir / "text.txt", "w", encoding="utf-8") as f:
-            f.write(data["text"])
-
     if "photos" in data:
         post.photos = data["photos"]
 
@@ -265,13 +272,45 @@ async def update_post(post_id: str, data: dict, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(post)
 
-    # Обновляем файл с медиа
-    post_dir = MEDIA_DIR / post.storage_path
-    with open(post_dir / "media.json", "w", encoding="utf-8") as f:
-        json.dump({
-            "photos": post.photos,
-            "videos": post.videos
-        }, f, ensure_ascii=False, indent=2)
+    # Проверяем, есть ли у поста путь хранения
+    if post.storage_path:
+        # Проверяем существование директории и создаем её при необходимости
+        post_dir = MEDIA_DIR / post.storage_path
+        os.makedirs(post_dir, exist_ok=True)
+        
+        # Обновляем текстовый файл
+        with open(post_dir / "text.txt", "w", encoding="utf-8") as f:
+            f.write(post.text)
+        
+        # Обновляем файл с медиа
+        with open(post_dir / "media.json", "w", encoding="utf-8") as f:
+            json.dump({
+                "photos": post.photos,
+                "videos": post.videos
+            }, f, ensure_ascii=False, indent=2)
+    else:
+        # Если у поста нет пути хранения, создаем новый
+        year = datetime.now().strftime("%Y")
+        month = datetime.now().strftime("%m")
+        day = datetime.now().strftime("%d")
+        
+        # Создаем директорию для хранения файлов поста
+        post_dir = MEDIA_DIR / year / month / day / post.name
+        os.makedirs(post_dir, exist_ok=True)
+        
+        # Обновляем путь хранения в базе данных
+        post.storage_path = f"{year}/{month}/{day}/{post.name}"
+        db.commit()
+        
+        # Сохраняем текст и медиа
+        with open(post_dir / "text.txt", "w", encoding="utf-8") as f:
+            f.write(post.text)
+        
+        with open(post_dir / "media.json", "w", encoding="utf-8") as f:
+            json.dump({
+                "photos": post.photos,
+                "videos": post.videos
+            }, f, ensure_ascii=False, indent=2)
 
     return post
 

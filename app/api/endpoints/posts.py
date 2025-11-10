@@ -93,7 +93,7 @@ def create_post(post_data: PostCreate, db: Session = Depends(get_db)):
     return db_post
 
 @router.get("/", response_model=PostList)
-def get_posts(skip: int = 0, limit: int = 100, search: str = None, db: Session = Depends(get_db)):
+def get_posts(skip: int = 0, limit: int = 10000, search: str = None, db: Session = Depends(get_db)):
     """Get all posts with optional search by text or date."""
     from sqlalchemy import or_, extract, func
     import re

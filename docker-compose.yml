@@ -8,6 +8,8 @@ services:
     volumes:
       - ./media:/app/media
       - ./.env:/app/.env
+      - ./alembic.ini:/app/alembic.ini
+      - ./migrations:/app/migrations
     depends_on:
       - db
     networks:

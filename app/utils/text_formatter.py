@@ -112,12 +112,13 @@ def format_post_text(text: str) -> str:
     
     return formatted_text
 
-def format_for_telegram(text: str) -> str:
+def format_for_telegram(text: str, signature_enabled: bool = True) -> str:
     """
     Форматирует текст специально для Telegram с использованием Markdown V2.
     
     Args:
         text: Исходный текст поста
+        signature_enabled: Включена ли подпись
         
     Returns:
         str: Текст, отформатированный для Telegram
@@ -129,7 +130,7 @@ def format_for_telegram(text: str) -> str:
     formatted_text = re.sub(r'—{30}', '—' * 19, formatted_text)
     
     # Добавляем подпись для Telegram
-    formatted_text += get_telegram_signature()
+    formatted_text += get_telegram_signature(enabled=signature_enabled)
     
     # Экранируем специальные символы Markdown V2
     special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
@@ -165,12 +166,13 @@ def format_for_instagram(text: str) -> str:
     
     return formatted_text
 
-def format_for_vk(text: str) -> str:
+def format_for_vk(text: str, signature_enabled: bool = True) -> str:
     """
     Форматирует текст для ВКонтакте.
     
     Args:
         text: Исходный текст поста
+        signature_enabled: Включена ли подпись
         
     Returns:
         str: Текст, отформатированный для ВКонтакте
@@ -183,6 +185,6 @@ def format_for_vk(text: str) -> str:
     formatted_text = formatted_text.replace('_', '')  # ВК не поддерживает курсив в API
     
     # Добавляем подпись для ВКонтакте
-    formatted_text += get_vk_signature()
+    formatted_text += get_vk_signature(enabled=signature_enabled)
     
     return formatted_text

@@ -9,18 +9,64 @@ SIGNATURE_TELEGRAM = os.getenv("SIGNATURE_TELEGRAM", "")
 SIGNATURE_INSTAGRAM = os.getenv("SIGNATURE_INSTAGRAM", "")
 SIGNATURE_VK_SHORT_AVITO = os.getenv("SIGNATURE_VK_SHORT_AVITO", "")
 SIGNATURE_VK_SHORT_TELEGRAM = os.getenv("SIGNATURE_VK_SHORT_TELEGRAM", "")
+SIGNATURE_PHONE = os.getenv("SIGNATURE_PHONE", "")
 
-def get_telegram_signature() -> str:
+# Настройки для контактных ссылок
+TELEGRAM_CONTACT_USERNAME = os.getenv("TELEGRAM_CONTACT_USERNAME", "").strip().lstrip("@")
+TELEGRAM_CONTACT_USER_ID = os.getenv("TELEGRAM_CONTACT_USER_ID", "")
+if TELEGRAM_CONTACT_USER_ID:
+    try:
+        TELEGRAM_CONTACT_USER_ID = int(TELEGRAM_CONTACT_USER_ID)
+    except ValueError:
+        TELEGRAM_CONTACT_USER_ID = None
+else:
+    TELEGRAM_CONTACT_USER_ID = None
+
+def get_telegram_signature(enabled: Optional[bool] = None, phone: Optional[str] = None) -> str:
     """
     Возвращает подпись для постов в Telegram.
+    
+    Args:
+        enabled: Включена ли подпись (если None, используется значение из .env)
+        phone: Номер телефона для добавления в подпись (если None, используется значение из .env)
     
     Returns:
         str: Подпись с эмодзи и гиперссылками
     """
-    if not SIGNATURE_ENABLED:
+    if enabled is None:
+        enabled = SIGNATURE_ENABLED
+    
+    if not enabled:
         return ""
     
-    signature = "\n\n📱 Подписывайся:\n"
+    if phone is None:
+        phone = SIGNATURE_PHONE
+    
+    signature = "\n\n"
+    
+    # Добавляем контактные ссылки (две строки: Купить с ссылкой, номер телефона без ссылки)
+    
+    # Ссылка на чат с менеджером (используем https://t.me/ для прямого открытия чата)
+    if TELEGRAM_CONTACT_USERNAME:
+        manager_url = f"https://t.me/{TELEGRAM_CONTACT_USERNAME}"
+        signature += f"[🛍️ Купить]({manager_url})\n"
+    elif TELEGRAM_CONTACT_USER_ID:
+        manager_url = f"tg://user?id={TELEGRAM_CONTACT_USER_ID}"
+        signature += f"[🛍️ Купить]({manager_url})\n"
+    
+    # Номер телефона в чистом виде (без ссылки, Telegram автоматически сделает его кликабельным)
+    if phone:
+        phone_cleaned = phone.strip()
+        # Убираем префикс tel: если есть
+        if phone_cleaned.lower().startswith("tel:"):
+            phone_cleaned = phone_cleaned[4:]
+        phone_cleaned = phone_cleaned.lstrip("/")
+        if phone_cleaned:
+            signature += f"📞 {phone_cleaned}\n"
+    
+    signature += "\n"
+    
+    signature += "📱 Подписывайся:\n"
     
     if SIGNATURE_VK:
         signature += "📘 [ВКонтакте]({0})\n".format(SIGNATURE_VK)
@@ -36,17 +82,39 @@ def get_telegram_signature() -> str:
     
     return signature
 
-def get_vk_signature() -> str:
+def get_vk_signature(enabled: Optional[bool] = None, phone: Optional[str] = None) -> str:
     """
     Возвращает подпись для постов в ВКонтакте.
+    
+    Args:
+        enabled: Включена ли подпись (если None, используется значение из .env)
+        phone: Номер телефона для добавления в подпись (если None, используется значение из .env)
     
     Returns:
         str: Подпись с прямыми ссылками
     """
-    if not SIGNATURE_ENABLED:
+    if enabled is None:
+        enabled = SIGNATURE_ENABLED
+    
+    if not enabled:
         return ""
     
-    signature = "\n\n📱 Подписывайся:\n"
+    if phone is None:
+        phone = SIGNATURE_PHONE
+    
+    signature = "\n\n"
+    
+    # Добавляем номер телефона в начало, если указан
+    if phone:
+        phone_cleaned = phone.strip()
+        # Убираем префикс tel: если есть
+        if phone_cleaned.lower().startswith("tel:"):
+            phone_cleaned = phone_cleaned[4:]
+        phone_cleaned = phone_cleaned.lstrip("/")
+        if phone_cleaned:
+            signature += f"📞 {phone_cleaned}\n\n"
+    
+    signature += "📱 Подписывайся:\n"
     
     if SIGNATURE_VK_SHORT_AVITO:
         signature += "🛒 Авито: {0}\n".format(SIGNATURE_VK_SHORT_AVITO)

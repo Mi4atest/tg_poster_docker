@@ -115,7 +115,7 @@ class VKPublisher:
             if bot:
                 await bot.session.close()
 
-    async def publish_post(self, post_id):
+    async def publish_post(self, post_id, signature_enabled: bool = True):
         """Publish a post to VK."""
         db = SessionLocal()
         try:
@@ -131,7 +131,7 @@ class VKPublisher:
                 logger.info(f"Post {post_id} already published to VK, republishing")
 
             # Get post text and format it
-            text = format_for_vk(post.text)
+            text = format_for_vk(post.text, signature_enabled=signature_enabled)
 
             # Download and upload photos
             photo_attachments = []
@@ -288,7 +288,7 @@ class VKPublisher:
         finally:
             db.close()
 
-async def publish_post_to_vk(post_id):
+async def publish_post_to_vk(post_id, signature_enabled: bool = True):
     """Publish a post to VK."""
     publisher = VKPublisher()
-    return await publisher.publish_post(post_id)
+    return await publisher.publish_post(post_id, signature_enabled=signature_enabled)

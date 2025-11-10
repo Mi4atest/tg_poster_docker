@@ -1,9 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Body, Response
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 from datetime import datetime, timezone
 import os
 import json
+
+from pydantic import BaseModel
 
 from app.db.database import get_db
 from app.api.models.post import Post, PublicationLog
@@ -11,6 +13,10 @@ from app.api.schemas.post import PostCreate, Post as PostSchema, PostList
 from app.config.settings import MEDIA_DIR, MEDIA_STRUCTURE
 
 router = APIRouter()
+
+
+class PublishPostOptions(BaseModel):
+    signature_enabled: Optional[bool] = None
 
 def generate_post_name(text: str, max_length: int = 70) -> str:
     """Generate a post name from the first words of the text with timestamp."""
@@ -315,7 +321,12 @@ async def update_post(post_id: str, data: dict, db: Session = Depends(get_db)):
     return post
 
 @router.post("/{post_id}/publish/{platform}", response_model=PostSchema)
-async def publish_post(post_id: str, platform: str, db: Session = Depends(get_db)):
+async def publish_post(
+    post_id: str,
+    platform: str,
+    options: Optional[PublishPostOptions] = Body(default=None),
+    db: Session = Depends(get_db),
+):
     """Publish a post to a specific platform."""
     post = db.query(Post).filter(Post.id == post_id).first()
     if post is None:
@@ -326,13 +337,17 @@ async def publish_post(post_id: str, platform: str, db: Session = Depends(get_db
 
     # Call the appropriate worker to publish the post
     success = False
+    signature_enabled = True  # По умолчанию включено
+    if options and options.signature_enabled is not None:
+        signature_enabled = bool(options.signature_enabled)
+
     try:
         if platform == "vk":
             from app.workers.vk.publisher import publish_post_to_vk
-            success = await publish_post_to_vk(post_id)
+            success = await publish_post_to_vk(post_id, signature_enabled=signature_enabled)
         elif platform == "telegram":
             from app.workers.telegram.publisher import publish_post_to_telegram
-            success = await publish_post_to_telegram(post_id)
+            success = await publish_post_to_telegram(post_id, signature_enabled=signature_enabled)
         elif platform == "instagram":
             from app.workers.instagram.publisher import publish_post_to_instagram
             success = await publish_post_to_instagram(post_id)
@@ -365,3 +380,50 @@ async def publish_post(post_id: str, platform: str, db: Session = Depends(get_db
     # Refresh the post to get the updated status
     db.refresh(post)
     return post
+
+@router.get("/export/telegram")
+def export_telegram_posts(db: Session = Depends(get_db), format: str = "txt"):
+    """Export published Telegram posts with links.
+    
+    Args:
+        format: Export format - 'txt' or 'csv' (default: 'txt')
+    
+    Returns:
+        Text file with posts in format: {post.name} - {post.telegram_link}
+    """
+    # Get only published posts with Telegram links
+    posts = db.query(Post).filter(
+        Post.is_published_telegram == True,
+        Post.telegram_link.isnot(None),
+        Post.telegram_link != ""
+    ).order_by(Post.published_telegram_at.desc()).all()
+    
+    if format.lower() == "csv":
+        # CSV format
+        lines = ["Post Name,Telegram Link"]
+        for post in posts:
+            name = (post.name or "Без названия").replace(",", ";")  # Replace commas to avoid CSV issues
+            link = post.telegram_link or ""
+            lines.append(f"{name},{link}")
+        
+        content = "\n".join(lines)
+        return Response(
+            content=content,
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=telegram_posts_export.csv"}
+        )
+    else:
+        # TXT format (default)
+        lines = []
+        for post in posts:
+            name = post.name or "Без названия"
+            link = post.telegram_link or ""
+            if link:
+                lines.append(f"{name} - {link}")
+        
+        content = "\n".join(lines)
+        return Response(
+            content=content,
+            media_type="text/plain; charset=utf-8",
+            headers={"Content-Disposition": "attachment; filename=telegram_posts_export.txt"}
+        )

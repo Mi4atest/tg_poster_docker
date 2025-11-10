@@ -36,6 +36,7 @@ class Post(PostBase):
     published_instagram_at: Optional[datetime] = None
     storage_path: Optional[str] = None
     name: Optional[str] = None
+    telegram_link: Optional[str] = None
     logs: List[PublicationLog] = []
 
     class Config:

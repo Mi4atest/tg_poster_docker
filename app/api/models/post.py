@@ -36,6 +36,9 @@ class Post(Base):
     # Post name (derived from first words of text)
     name = Column(String, nullable=True)
 
+    # Telegram post link
+    telegram_link = Column(String, nullable=True)
+
     # Publication logs
     logs = relationship("PublicationLog", back_populates="post", cascade="all, delete-orphan")
 

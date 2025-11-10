@@ -18,6 +18,7 @@ dp = Dispatcher(storage=storage)
 
 # Add user_data dictionary to bot
 bot.user_data = {}
+bot.signature_enabled = True  # По умолчанию включено, как в .env
 
 # Register middlewares
 dp.message.middleware(AuthMiddleware())

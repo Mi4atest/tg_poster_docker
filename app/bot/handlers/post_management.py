@@ -2,15 +2,23 @@ from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.exceptions import TelegramBadRequest
 import aiohttp
 import json
 from datetime import datetime
+import asyncio
+from typing import Optional
 
 from app.bot.keyboards.main_keyboard import (
     get_main_keyboard, get_post_actions_keyboard, get_skip_back_keyboard,
-    get_media_management_keyboard, get_photo_management_keyboard, get_video_management_keyboard
+    get_media_management_keyboard, get_photo_management_keyboard, get_video_management_keyboard,
+    get_publish_interval_keyboard, get_custom_interval_keyboard
 )
-from app.config.settings import API_HOST, API_PORT
+from app.config.settings import (
+    API_HOST,
+    API_PORT,
+    TELEGRAM_CONTACT_USER_ID,
+)
 
 # Определение состояний для поиска постов
 class PostSearch(StatesGroup):
@@ -27,7 +35,42 @@ class PostEdit(StatesGroup):
     manage_videos = State()
     waiting_for_video_to_delete = State()
 
+# Определение состояний для выбора интервалов публикации
+class PublishInterval(StatesGroup):
+    waiting_for_custom_interval = State()
+
 router = Router()
+
+
+def get_signature_state(bot) -> bool:
+    """Возвращает текущее состояние переключателя подписи."""
+    return getattr(bot, "signature_enabled", True)
+
+
+def set_signature_state(bot, value: bool) -> None:
+    """Обновляет глобальное состояние подписи."""
+    setattr(bot, "signature_enabled", value)
+
+
+def build_signature_toggle_button_text(is_enabled: bool) -> str:
+    """Возвращает текст для кнопки переключателя подписи с учетом состояния."""
+    return ("🟢 " if is_enabled else "🔴 ") + "Подпись"
+
+# Вспомогательная функция для безопасного редактирования сообщений
+async def safe_edit_message(message, text, reply_markup=None):
+    """Безопасно редактирует сообщение или отправляет новое, если редактирование невозможно."""
+    try:
+        await message.edit_text(text, reply_markup=reply_markup)
+        return message
+    except TelegramBadRequest as e:
+        if "message can't be edited" in str(e):
+            print(f"Message can't be edited, sending new message: {str(e)}")
+            return await message.reply(text, reply_markup=reply_markup)
+        else:
+            raise e
+    except Exception as e:
+        print(f"Error editing message: {str(e)}")
+        return await message.reply(text, reply_markup=reply_markup)
 
 # API client functions
 async def get_posts_api(is_archived=False, search_query=None):
@@ -135,15 +178,19 @@ async def delete_post_api(post_id):
         print(f"Error in delete_post_api: {str(e)}")
         return False
 
-async def publish_post_api(post_id, platform):
+async def publish_post_api(post_id, platform, signature_enabled: Optional[bool] = None):
     """Publish a post to a specific platform via API."""
     try:
         async with aiohttp.ClientSession() as session:
             url = f"http://{API_HOST}:{API_PORT}/api/posts/{post_id}/publish/{platform}"
             print(f"Publishing post to {platform} via {url}")
 
+            request_kwargs = {}
+            if signature_enabled is not None:
+                request_kwargs["json"] = {"signature_enabled": signature_enabled}
+
             try:
-                async with session.post(url) as response:
+                async with session.post(url, **request_kwargs) as response:
                     print(f"API response status: {response.status}")
 
                     if response.status == 200:
@@ -249,97 +296,103 @@ async def update_post_api(post_id, text=None, photos=None, videos=None):
         print(f"Error in update_post_api: {str(e)}")
         return None
 
-async def show_pending_posts(message: Message):
-    """Show pending posts."""
+async def publish_posts_with_interval(pending_post_ids, interval_minutes, message, bot, user_id):
+    """Publish posts with specified interval between publications."""
+    results = []
+    total_posts = len(pending_post_ids)
+    status_message = None
+    
     try:
-        print("Fetching pending posts...")
-        posts = await get_posts_api(is_archived=False)
-        print(f"Fetched {len(posts)} pending posts")
-
-        if not posts:
-            # Create back button
-            buttons = [[InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")]]
-            keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
-
-            await message.edit_text(
-                "📭 Отложенных постов нет.",
-                reply_markup=keyboard
-            )
-            return
-
-        # Send list of posts
-        response_text = "📋 Отложенные посты:\n\n"
-
-        # Create buttons for each post
-        buttons = []
-
-        for i, post in enumerate(posts, 1):
-            # Format post info
-            post_name = post.get("name", "Без названия")
-            created_at_str = post.get("created_at", "")
-
-            # Безопасное преобразование даты
+        for i, post_id in enumerate(pending_post_ids, 1):
             try:
-                if created_at_str:
-                    created_at = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
-                    created_at_formatted = created_at.strftime('%d.%m.%Y %H:%M')
+                # Получаем информацию о посте
+                post = await get_post_api(post_id)
+                if not post:
+                    results.append((f"Пост #{i}", "❌ Не найден"))
+                    continue
+                    
+                post_name = post.get("name", f"Пост #{i}")
+                
+                # Обновляем статус с безопасным редактированием
+                status_text = (
+                    f"⏳ Публикация отложенных постов ({i}/{total_posts})...\n\n"
+                    f"Публикую: {post_name}\n"
+                    f"Интервал: {interval_minutes} мин\n\n"
+                    f"Результаты:\n" + "\n".join([f"{name}: {status}" for name, status in results])
+                )
+                
+                if status_message:
+                    status_message = await safe_edit_message(status_message, status_text)
                 else:
-                    created_at_formatted = "Неизвестно"
+                    status_message = await safe_edit_message(message, status_text)
+                
+                # Публикуем в VK с учетом состояния подписи
+                vk_result = await publish_post_api(
+                    post_id,
+                    "vk",
+                    signature_enabled=get_signature_state(bot),
+                )
+
+                # Публикуем в Telegram с учетом состояния подписи
+                tg_result = await publish_post_api(
+                    post_id,
+                    "telegram",
+                    signature_enabled=get_signature_state(bot),
+                )
+
+                # Публикуем в Instagram
+                ig_result = await publish_post_api(post_id, "instagram")
+                
+                # Формируем результат для этого поста
+                post_result = []
+                post_result.append("ВК: ✅" if vk_result else "ВК: ❌")
+                post_result.append("TG: ✅" if tg_result else "TG: ❌")
+                post_result.append("IG: ✅" if ig_result else "IG: ❌")
+                
+                results.append((post_name, ", ".join(post_result)))
+                
+                # Если это не последний пост, ждем указанный интервал
+                if i < total_posts:
+                    await asyncio.sleep(interval_minutes * 60)  # Конвертируем минуты в секунды
+                
             except Exception as e:
-                print(f"Error parsing date: {str(e)}")
-                created_at_formatted = "Неизвестно"
-
-            photo_count = len(post.get("photos", []))
-            video_count = len(post.get("videos", []))
-
-            # Add platform status indicators
-            vk_status = "✅" if post.get("is_published_vk") else "❌"
-            tg_status = "✅" if post.get("is_published_telegram") else "❌"
-
-            response_text += f"{i}. {post_name}\n"
-            response_text += f"   Создан: {created_at_formatted}\n"
-            response_text += f"   Медиа: {photo_count}📷 {video_count}📹\n"
-
-            # Добавляем статус Instagram
-            ig_status = "✅" if post.get("is_published_instagram") else "❌"
-
-            response_text += f"   ВК: {vk_status}, ТГ: {tg_status}, IG: {ig_status}\n\n"
-
-            # Add button for this post
-            post_id = post.get('id')
-            if post_id:
-                buttons.append([InlineKeyboardButton(
-                    text=f"{i}. {post_name[:30]}{'...' if len(post_name) > 30 else ''}",
-                    callback_data=f"view_post_{post_id}"
-                )])
-
-        # Add back button
-        buttons.append([InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")])
-
-        # Create keyboard
-        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
-
-        # Store post IDs in user data (for backward compatibility)
-        if hasattr(message, 'bot') and hasattr(message.bot, 'user_data') and hasattr(message, 'from_user'):
-            try:
-                user_data = {f"post_{i}": post.get("id") for i, post in enumerate(posts, 1) if post.get("id")}
-                if message.from_user.id not in message.bot.user_data:
-                    message.bot.user_data[message.from_user.id] = {}
-                message.bot.user_data[message.from_user.id].update(user_data)
-            except Exception as e:
-                print(f"Error updating user_data: {str(e)}")
-
-        await message.edit_text(response_text, reply_markup=keyboard)
-    except Exception as e:
-        print(f"Error in show_pending_posts: {str(e)}")
-        # Create back button
+                print(f"Error publishing post {post_id}: {str(e)}")
+                results.append((f"Пост #{i}", f"❌ Ошибка: {str(e)}"))
+        
+        # Формируем итоговый отчет
+        final_text = "✅ Публикация отложенных постов завершена!\n\n"
+        final_text += "Результаты:\n"
+        
+        for name, status in results:
+            final_text += f"• {name}: {status}\n"
+        
+        # Создаем клавиатуру с кнопкой возврата
         buttons = [[InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")]]
         keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
-
-        await message.edit_text(
-            f"❌ Ошибка при загрузке постов: {str(e)}",
-            reply_markup=keyboard
-        )
+        
+        # Отправляем итоговый отчет с безопасным редактированием
+        if status_message:
+            await safe_edit_message(status_message, final_text, reply_markup=keyboard)
+        else:
+            await safe_edit_message(message, final_text, reply_markup=keyboard)
+        
+        # Обновляем список отложенных постов после публикации
+        if len(results) > 0:
+            # Обновляем user_data, чтобы отразить изменения
+            if user_id in bot.user_data:
+                bot.user_data[user_id]["pending_post_ids"] = []
+                
+    except Exception as e:
+        print(f"Critical error in publish_posts_with_interval: {str(e)}")
+        # Отправляем сообщение об ошибке с безопасным редактированием
+        try:
+            error_text = f"❌ Критическая ошибка при публикации: {str(e)}"
+            if status_message:
+                await safe_edit_message(status_message, error_text)
+            else:
+                await safe_edit_message(message, error_text)
+        except Exception as error_msg_error:
+            print(f"Error sending error message: {str(error_msg_error)}")
 
 async def show_archived_posts(message: Message, year=None, month=None, day=None, search_results=None):
     """Show archived posts with date-based navigation.
@@ -716,7 +769,8 @@ async def view_post_callback(callback: CallbackQuery):
                 (not hasattr(message, 'bot') or
                 not hasattr(message.bot, 'user_data') or
                 not message.bot.user_data.get(message.from_user.id, {}).get("in_search_mode", False)) and
-                not message.bot.user_data.get(message.from_user.id, {}).get("in_edit_mode", False))
+                not message.bot.user_data.get(message.from_user.id, {}).get("in_edit_mode", False) and
+                not message.bot.user_data.get(message.from_user.id, {}).get("in_custom_interval_mode", False))
 async def process_post_selection(message: Message):
     """Process post selection by number."""
     post_number = int(message.text)
@@ -810,7 +864,11 @@ async def publish_to_vk(callback: CallbackQuery):
     status_message = await callback.message.edit_text(f"{callback.message.text}\n\n⏳ Публикую в ВК...")
 
     try:
-        result = await publish_post_api(post_id, "vk")
+        result = await publish_post_api(
+            post_id,
+            "vk",
+            signature_enabled=get_signature_state(callback.bot),
+        )
 
         if result:
             await status_message.edit_text(
@@ -871,7 +929,11 @@ async def publish_to_telegram(callback: CallbackQuery):
     status_message = await callback.message.edit_text(f"{callback.message.text}\n\n⏳ Публикую в Telegram...")
 
     try:
-        result = await publish_post_api(post_id, "telegram")
+        result = await publish_post_api(
+            post_id,
+            "telegram",
+            signature_enabled=get_signature_state(callback.bot),
+        )
 
         if result:
             await status_message.edit_text(
@@ -1239,12 +1301,20 @@ async def publish_to_all(callback: CallbackQuery):
 
         # Publish to VK if not already published
         if not post.get("is_published_vk"):
-            vk_result = await publish_post_api(post_id, "vk")
+            vk_result = await publish_post_api(
+                post_id,
+                "vk",
+                signature_enabled=get_signature_state(callback.bot),
+            )
             results.append(("ВК", vk_result is not None))
 
         # Publish to Telegram if not already published
         if not post.get("is_published_telegram"):
-            tg_result = await publish_post_api(post_id, "telegram")
+            tg_result = await publish_post_api(
+                post_id,
+                "telegram",
+                signature_enabled=get_signature_state(callback.bot),
+            )
             results.append(("Telegram", tg_result is not None))
 
         # Publish to Instagram if not already published
@@ -1295,10 +1365,18 @@ async def republish_to_all(callback: CallbackQuery):
         results = []
 
         # Publish to all platforms regardless of previous publication status
-        vk_result = await publish_post_api(post_id, "vk")
+        vk_result = await publish_post_api(
+            post_id,
+            "vk",
+            signature_enabled=get_signature_state(callback.bot),
+        )
         results.append(("ВК", vk_result is not None))
 
-        tg_result = await publish_post_api(post_id, "telegram")
+        tg_result = await publish_post_api(
+            post_id,
+            "telegram",
+            signature_enabled=get_signature_state(callback.bot),
+        )
         results.append(("Telegram", tg_result is not None))
 
         ig_result = await publish_post_api(post_id, "instagram")
@@ -1396,7 +1474,11 @@ async def republish_to_vk(callback: CallbackQuery):
     status_message = await callback.message.edit_text(f"⏳ Публикую в ВК повторно...")
 
     try:
-        result = await publish_post_api(post_id, "vk")
+        result = await publish_post_api(
+            post_id,
+            "vk",
+            signature_enabled=get_signature_state(callback.bot),
+        )
 
         if result:
             await status_message.edit_text(
@@ -1436,7 +1518,11 @@ async def republish_to_telegram(callback: CallbackQuery):
     status_message = await callback.message.edit_text(f"⏳ Публикую в Telegram повторно...")
 
     try:
-        result = await publish_post_api(post_id, "telegram")
+        result = await publish_post_api(
+            post_id,
+            "telegram",
+            signature_enabled=get_signature_state(callback.bot),
+        )
 
         if result:
             await status_message.edit_text(
@@ -1819,7 +1905,7 @@ async def process_edit_text(message: Message, state: FSMContext):
     # Переходим к состоянию ожидания фотографий
 
 @router.callback_query(F.data == "delete_copy_message")
-async def delete_copy_message(callback: CallbackQuery):
+async def delete_copy_message(callback: CallbackQuery, state: FSMContext):
     """Delete the message with copied text."""
     await callback.message.delete()
     await callback.answer()
@@ -1889,19 +1975,56 @@ async def back_from_edit(callback: CallbackQuery, state: FSMContext):
     response_text += f"📷 {photo_count} фото\n"
     response_text += f"📹 {video_count} видео\n\n"
 
-    # Добавляем статус публикации
+    # Add platform status
     vk_status = "✅" if post.get("is_published_vk") else "❌"
     tg_status = "✅" if post.get("is_published_telegram") else "❌"
     ig_status = "✅" if post.get("is_published_instagram") else "❌"
 
     response_text += f"ВК: {vk_status}, ТГ: {tg_status}, IG: {ig_status}"
 
-    # Отправляем сообщение с данными поста
+    # Send post details with action keyboard
     await callback.message.edit_text(
         response_text,
         reply_markup=get_post_actions_keyboard()
     )
 
+    await callback.answer()
+
+@router.callback_query(F.data == "publish_all_pending")
+async def publish_all_pending_posts(callback: CallbackQuery):
+    """Show interval selection for publishing all pending posts."""
+    # Получаем актуальный список отложенных постов напрямую из API
+    print("Fetching current pending posts for publication...")
+    current_pending_posts = await get_posts_api(is_archived=False)
+    
+    if not current_pending_posts:
+        await callback.answer("❌ Нет отложенных постов для публикации.", show_alert=True)
+        return
+    
+    # Получаем ID только тех постов, которые действительно находятся в отложенных
+    pending_post_ids = [post.get("id") for post in current_pending_posts if post.get("id")]
+    print(f"Found {len(pending_post_ids)} actual pending posts for publication: {pending_post_ids}")
+    
+    if not pending_post_ids:
+        await callback.answer("❌ Нет отложенных постов для публикации.", show_alert=True)
+        return
+    
+    # Сохраняем список постов для публикации в user_data
+    if not hasattr(callback.bot, 'user_data'):
+        callback.bot.user_data = {}
+    if callback.from_user.id not in callback.bot.user_data:
+        callback.bot.user_data[callback.from_user.id] = {}
+    
+    callback.bot.user_data[callback.from_user.id]["pending_post_ids"] = pending_post_ids
+    
+    # Показываем выбор интервала публикации с безопасным редактированием
+    await safe_edit_message(
+        callback.message,
+        f"📤 Найдено {len(pending_post_ids)} отложенных постов для публикации.\n\n"
+        "Выберите интервал публикации:",
+        reply_markup=get_publish_interval_keyboard()
+    )
+    
     await callback.answer()
 
 @router.message(PostEdit.waiting_for_photos, F.photo)
@@ -2348,3 +2471,302 @@ async def copy_post_text(callback: CallbackQuery, state: FSMContext):
     )
     
     await callback.answer("Текст отправлен отдельным сообщением для копирования")
+
+# Обработчики для выбора интервалов публикации
+
+@router.callback_query(F.data == "publish_immediately")
+async def publish_immediately(callback: CallbackQuery):
+    """Publish all pending posts immediately."""
+    user_data = callback.bot.user_data.get(callback.from_user.id, {})
+    pending_post_ids = user_data.get("pending_post_ids", [])
+    
+    if not pending_post_ids:
+        await callback.answer("❌ Нет отложенных постов для публикации.", show_alert=True)
+        return
+    
+    # Запускаем публикацию с интервалом 0 (сразу)
+    asyncio.create_task(publish_posts_with_interval(
+        pending_post_ids, 0, callback.message, callback.bot, callback.from_user.id
+    ))
+    
+    await callback.answer("🚀 Начинаю немедленную публикацию...")
+
+@router.callback_query(F.data == "publish_interval_10")
+async def publish_interval_10(callback: CallbackQuery):
+    """Publish all pending posts with 10-minute intervals."""
+    user_data = callback.bot.user_data.get(callback.from_user.id, {})
+    pending_post_ids = user_data.get("pending_post_ids", [])
+    
+    if not pending_post_ids:
+        await callback.answer("❌ Нет отложенных постов для публикации.", show_alert=True)
+        return
+    
+    # Запускаем публикацию с интервалом 10 минут
+    asyncio.create_task(publish_posts_with_interval(
+        pending_post_ids, 10, callback.message, callback.bot, callback.from_user.id
+    ))
+    
+    await callback.answer("⏰ Начинаю публикацию с интервалом 10 минут...")
+
+@router.callback_query(F.data == "publish_interval_15")
+async def publish_interval_15(callback: CallbackQuery):
+    """Publish all pending posts with 15-minute intervals."""
+    user_data = callback.bot.user_data.get(callback.from_user.id, {})
+    pending_post_ids = user_data.get("pending_post_ids", [])
+    
+    if not pending_post_ids:
+        await callback.answer("❌ Нет отложенных постов для публикации.", show_alert=True)
+        return
+    
+    # Запускаем публикацию с интервалом 15 минут
+    asyncio.create_task(publish_posts_with_interval(
+        pending_post_ids, 15, callback.message, callback.bot, callback.from_user.id
+    ))
+    
+    await callback.answer("⏰ Начинаю публикацию с интервалом 15 минут...")
+
+@router.callback_query(F.data == "publish_interval_30")
+async def publish_interval_30(callback: CallbackQuery):
+    """Publish all pending posts with 30-minute intervals."""
+    user_data = callback.bot.user_data.get(callback.from_user.id, {})
+    pending_post_ids = user_data.get("pending_post_ids", [])
+    
+    if not pending_post_ids:
+        await callback.answer("❌ Нет отложенных постов для публикации.", show_alert=True)
+        return
+    
+    # Запускаем публикацию с интервалом 30 минут
+    asyncio.create_task(publish_posts_with_interval(
+        pending_post_ids, 30, callback.message, callback.bot, callback.from_user.id
+    ))
+    
+    await callback.answer("⏰ Начинаю публикацию с интервалом 30 минут...")
+
+@router.callback_query(F.data == "publish_interval_45")
+async def publish_interval_45(callback: CallbackQuery):
+    """Publish all pending posts with 45-minute intervals."""
+    user_data = callback.bot.user_data.get(callback.from_user.id, {})
+    pending_post_ids = user_data.get("pending_post_ids", [])
+    
+    if not pending_post_ids:
+        await callback.answer("❌ Нет отложенных постов для публикации.", show_alert=True)
+        return
+    
+    # Запускаем публикацию с интервалом 45 минут
+    asyncio.create_task(publish_posts_with_interval(
+        pending_post_ids, 45, callback.message, callback.bot, callback.from_user.id
+    ))
+    
+    await callback.answer("⏰ Начинаю публикацию с интервалом 45 минут...")
+
+@router.callback_query(F.data == "publish_custom_interval")
+async def publish_custom_interval(callback: CallbackQuery, state: FSMContext):
+    """Ask for custom interval input."""
+    # Устанавливаем флаг режима ввода интервала
+    if not hasattr(callback.bot, 'user_data'):
+        callback.bot.user_data = {}
+    if callback.from_user.id not in callback.bot.user_data:
+        callback.bot.user_data[callback.from_user.id] = {}
+    
+    callback.bot.user_data[callback.from_user.id]["in_custom_interval_mode"] = True
+    
+    await safe_edit_message(
+        callback.message,
+        "✏️ Введите интервал в минутах (например: 20):",
+        reply_markup=get_custom_interval_keyboard()
+    )
+    
+    await state.set_state(PublishInterval.waiting_for_custom_interval)
+    await callback.answer()
+
+@router.message(PublishInterval.waiting_for_custom_interval)
+async def process_custom_interval(message: Message, state: FSMContext):
+    """Process custom interval input."""
+    try:
+        interval_minutes = int(message.text.strip())
+        
+        if interval_minutes < 0:
+            await message.reply("❌ Интервал не может быть отрицательным. Попробуйте еще раз:")
+            return
+        
+        if interval_minutes > 1440:  # 24 часа
+            await message.reply("❌ Интервал не может быть больше 24 часов (1440 минут). Попробуйте еще раз:")
+            return
+        
+        # Получаем список постов для публикации
+        user_data = message.bot.user_data.get(message.from_user.id, {})
+        pending_post_ids = user_data.get("pending_post_ids", [])
+        
+        if not pending_post_ids:
+            await message.reply("❌ Нет отложенных постов для публикации.")
+            await state.clear()
+            return
+        
+        # Очищаем состояние и сбрасываем флаг режима
+        await state.clear()
+        if message.from_user.id in message.bot.user_data:
+            message.bot.user_data[message.from_user.id]["in_custom_interval_mode"] = False
+        
+        # Запускаем публикацию с пользовательским интервалом
+        asyncio.create_task(publish_posts_with_interval(
+            pending_post_ids, interval_minutes, message, message.bot, message.from_user.id
+        ))
+        
+        await message.reply(f"⏰ Начинаю публикацию с интервалом {interval_minutes} минут...")
+        
+    except ValueError:
+        await message.reply("❌ Пожалуйста, введите число (количество минут):")
+    except Exception as e:
+        await message.reply(f"❌ Ошибка: {str(e)}")
+
+@router.callback_query(F.data == "cancel_publish_all")
+async def cancel_publish_all(callback: CallbackQuery):
+    """Cancel publishing all posts."""
+    # Очищаем сохраненные данные
+    if callback.from_user.id in callback.bot.user_data:
+        callback.bot.user_data[callback.from_user.id]["pending_post_ids"] = []
+    
+    # Возвращаемся к списку отложенных постов
+    await show_pending_posts(callback.message)
+    await callback.answer("❌ Публикация отменена")
+
+@router.callback_query(F.data == "cancel_custom_interval")
+async def cancel_custom_interval(callback: CallbackQuery, state: FSMContext):
+    """Cancel custom interval input."""
+    await state.clear()
+    
+    # Сбрасываем флаг режима ввода интервала
+    if callback.from_user.id in callback.bot.user_data:
+        callback.bot.user_data[callback.from_user.id]["in_custom_interval_mode"] = False
+    
+    # Возвращаемся к выбору интервала с безопасным редактированием
+    await safe_edit_message(
+        callback.message,
+        "📤 Выберите интервал публикации:",
+        reply_markup=get_publish_interval_keyboard()
+    )
+    
+    await callback.answer("❌ Ввод интервала отменен")
+
+@router.callback_query(F.data == "toggle_signature")
+async def toggle_signature(callback: CallbackQuery):
+    """Toggle signature for future publications."""
+    new_state = not get_signature_state(callback.bot)
+    set_signature_state(callback.bot, new_state)
+
+    await callback.answer(
+        "Подпись: включена" if new_state else "Подпись: выключена"
+    )
+
+    await show_pending_posts(callback.message)
+
+async def show_pending_posts(message: Message):
+    """Show pending posts."""
+    try:
+        print("Fetching pending posts...")
+        posts = await get_posts_api(is_archived=False)
+        print(f"Fetched {len(posts)} pending posts")
+
+        signature_state = get_signature_state(message.bot)
+        signature_button = InlineKeyboardButton(
+            text=build_signature_toggle_button_text(signature_state),
+            callback_data="toggle_signature",
+        )
+
+        if not posts:
+            # Create keyboard with back and toggle buttons
+            buttons = [
+                [InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")],
+                [signature_button],
+            ]
+            keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+
+            await message.edit_text(
+                "📭 Отложенных постов нет.\n\n"
+                f"{build_signature_toggle_button_text(signature_state)}",
+                reply_markup=keyboard
+            )
+
+            if hasattr(message, "bot") and hasattr(message.bot, "user_data") and hasattr(message, "from_user"):
+                if message.from_user.id in message.bot.user_data:
+                    message.bot.user_data[message.from_user.id]["pending_post_ids"] = []
+            return
+
+        # Send list of posts
+        response_text = "📋 Отложенные посты:\n\n"
+        response_text += (
+            f"{build_signature_toggle_button_text(signature_state)}\n"
+            f"Подпись: {'включена' if signature_state else 'выключена'}\n\n"
+        )
+
+        # Create buttons for each post
+        buttons = []
+        
+        # Добавляем кнопку для отправки всех отложенных постов
+        if posts:
+            buttons.append([InlineKeyboardButton(text="📤 Отправить все отложенные", callback_data="publish_all_pending")])
+
+        # Add buttons for each post
+        for i, post in enumerate(posts, 1):
+            post_name = post.get("name", f"Пост {i}")
+            post_id = post.get("id")
+            
+            # Truncate long names
+            if len(post_name) > 30:
+                post_name = post_name[:27] + "..."
+                
+            # Add post info to response
+            photo_count = len(post.get("photos", []))
+            video_count = len(post.get("videos", []))
+            
+            response_text += f"{i}. {post_name}\n"
+            response_text += f"   Медиа: {photo_count}📷 {video_count}📹\n\n"
+            
+            # Add button for this post
+            buttons.append([InlineKeyboardButton(
+                text=f"{i}. {post_name}",
+                callback_data=f"view_post_{post_id}"
+            )])
+
+        # Add back and toggle buttons
+        buttons.append([InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")])
+        buttons.append([signature_button])
+
+        # Create keyboard
+        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+
+        # Store post IDs in user data
+        if hasattr(message, 'bot') and hasattr(message.bot, 'user_data') and hasattr(message, 'from_user'):
+            try:
+                # Создаем или получаем словарь для пользователя
+                if message.from_user.id not in message.bot.user_data:
+                    message.bot.user_data[message.from_user.id] = {}
+                
+                # Сохраняем ID постов в user_data
+                user_data = message.bot.user_data[message.from_user.id]
+                
+                # Сохраняем отдельные посты (для обратной совместимости)
+                for i, post in enumerate(posts, 1):
+                    if post.get("id"):
+                        user_data[f"post_{i}"] = post.get("id")
+                
+                # Сохраняем список ID отложенных постов для массовой публикации
+                pending_post_ids = [post.get("id") for post in posts if post.get("id")]
+                user_data["pending_post_ids"] = pending_post_ids
+                
+                print(f"Saved {len(pending_post_ids)} pending post IDs: {pending_post_ids}")
+            except Exception as e:
+                print(f"Error updating user_data: {str(e)}")
+
+        await message.edit_text(response_text, reply_markup=keyboard)
+    except Exception as e:
+        print(f"Error in show_pending_posts: {str(e)}")
+        # Create back button
+        buttons = [[InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")]]
+        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+
+        await message.edit_text(
+            f"❌ Ошибка при загрузке постов: {str(e)}",
+            reply_markup=keyboard
+        )
+

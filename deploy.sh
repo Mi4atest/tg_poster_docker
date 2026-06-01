@@ -254,6 +254,11 @@ $DC build
 info "Запуск контейнеров (миграции применятся автоматически в entrypoint)..."
 $DC up -d
 
+# H1: volume Postgres мог быть создан со старым паролем, а .env — с новым DB_PASSWORD
+if [ -f "scripts/sync_db_password.sh" ]; then
+    bash scripts/sync_db_password.sh --restart-app || warn "Синхронизация пароля БД не удалась — проверьте логи db/app"
+fi
+
 info "Статус контейнеров:"
 $DC ps
 

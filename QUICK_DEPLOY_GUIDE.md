@@ -37,6 +37,10 @@ bash <(wget -qO- --no-hsts --inet4-only https://raw.githubusercontent.com/Mi4ate
 
 **Не создавайте вручную** каталог `tg_poster_docker` до деплоя — иначе `git clone` не сработает (скрипт теперь очищает такой каталог сам).
 
+После `up` и после restore скрипт **`scripts/sync_db_password.sh`** выравнивает пароль Postgres в volume с `DB_PASSWORD` из `.env` (иначе app уходит в Restarting: `password authentication failed`).
+
+**Не меняйте** `DB_PASSWORD` / `DATABASE_URL` вручную без `bash scripts/sync_db_password.sh --restart-app` — том `postgres_data` хранит старый пароль.
+
 ## Синхронизация изменений сервер → GitHub
 
 Если правили код на сервере и хотите выложить в репозиторий (чтобы потом обновлять другие серверы через `deploy.sh`):

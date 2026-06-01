@@ -67,3 +67,9 @@ cat "$BACKUP_FILE" | $DC exec -T db psql -U "$DB_USER" -d "$DB_NAME"
 
 echo "✅ Восстановление завершено."
 [ -n "$TEMP_FILE" ] && [ -f "$TEMP_FILE" ] && rm -f "$TEMP_FILE"
+
+# restore идёт через local trust; app подключается по сети с паролем из .env
+if [ -f "scripts/sync_db_password.sh" ]; then
+    echo "Синхронизация пароля Postgres с .env и перезапуск app..."
+    bash scripts/sync_db_password.sh --restart-app || echo "⚠️ sync_db_password не удался — выполните: bash scripts/sync_db_password.sh --restart-app"
+fi

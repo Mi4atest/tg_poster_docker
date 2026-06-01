@@ -18,9 +18,18 @@ DB_NAME="${DB_NAME:-tg_poster}"
 DB_USER="${DB_USER:-postgres}"
 
 if [ -z "$1" ]; then
-    echo "Путь не указан, ищу последний бэкап в backups/..."
-    BACKUP_FILE=$(find backups -name "*_backup_*.gz" -type f -printf "%T@ %p\n" 2>/dev/null | sort -nr | head -n1 | cut -d' ' -f2-)
-    [ -z "$BACKUP_FILE" ] && { echo "Бэкапы не найдены"; exit 1; }
+    echo "Путь не указан, ищу последний бэкап в backups/ и ${TG_POSTER_BACKUP_ROOT:-/root}/..."
+    BACKUP_FILE=""
+  for search_dir in backups "${TG_POSTER_BACKUP_ROOT:-/root}"; do
+    [ -d "$search_dir" ] || continue
+    candidate=$(find "$search_dir" -maxdepth 1 -name "*_backup_*.gz" -type f -printf "%T@ %p\n" 2>/dev/null | sort -nr | head -n1 | cut -d' ' -f2-)
+    if [ -n "$candidate" ]; then
+      if [ -z "$BACKUP_FILE" ] || [ "$candidate" -nt "$BACKUP_FILE" ]; then
+        BACKUP_FILE="$candidate"
+      fi
+    fi
+  done
+    [ -z "$BACKUP_FILE" ] && { echo "Бэкапы не найдены (*_backup_*.gz в backups/ или /root)"; exit 1; }
     echo "Найден: $BACKUP_FILE"
 else
     BACKUP_FILE="$1"

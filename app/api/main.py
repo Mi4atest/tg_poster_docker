@@ -2,6 +2,7 @@ from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.endpoints import posts, telegram, stories, scheduler, products, avito_oauth, avito_feed, vk_oauth
+import app.db.register_models  # noqa: F401 — все таблицы в metadata перед create_all
 from app.db.database import engine, Base
 from app.db.migrate import ensure_database_schema
 

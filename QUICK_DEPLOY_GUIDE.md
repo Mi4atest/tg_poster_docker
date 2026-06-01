@@ -2,7 +2,7 @@
 
 ## Установка / обновление одной командой
 
-На целевом сервере (нужны установленные `git`, `docker`, `docker compose`):
+На целевом сервере (на чистой Ubuntu/Debian скрипт сам поставит `git`, `docker`, `docker compose`):
 
 ```bash
 bash <(wget -qO- --no-hsts --inet4-only https://raw.githubusercontent.com/Mi4atest/tg_poster_docker/Test_planner/deploy.sh)
@@ -26,6 +26,16 @@ bash <(wget -qO- --no-hsts --inet4-only https://raw.githubusercontent.com/Mi4ate
 - 🗂 **Отчёты и списки** — получатели отчётов VK, ID сообщений «Наличие» и «Список б/у»;
 - 💾 **Резервное копирование** — токен/чат/время; бэкап делается внутри приложения и шлётся в Telegram (хостовый cron не нужен);
 - 📇 **Контакты и подписи** — подписи и контакты.
+
+## Бэкап перед деплоем на новый сервер
+
+Положите дамп **в `/root`**, имя файла должно содержать `_backup_`, например:
+
+`/root/Appleshop_backup_20260529_120000.sql.gz`
+
+Или укажите явно: `TG_POSTER_BACKUP=/root/your.sql.gz bash deploy.sh`
+
+**Не создавайте вручную** каталог `tg_poster_docker` до деплоя — иначе `git clone` не сработает (скрипт теперь очищает такой каталог сам).
 
 ## Синхронизация изменений сервер → GitHub
 

@@ -1,9 +1,9 @@
 import logging
 from sqlalchemy.orm import Session
 
+import app.db.register_models  # noqa: F401
 from app.db.database import SessionLocal, engine, Base
 from app.api.models.post import Post, PublicationLog
-from app.api.models.product import Product
 from app.db.migrate import ensure_database_schema
 
 logging.basicConfig(level=logging.INFO)

@@ -1,0 +1,33 @@
+# Медиа — монтируется с хоста в docker-compose, в образ не кладём
+media/
+
+# Git и IDE
+.git
+.gitignore
+.cursor
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv
+venv
+env
+.pytest_cache
+.mypy_cache
+.ruff_cache
+*.egg-info
+.eggs
+dist
+build
+
+# Локальные БД и логи (если появятся в дереве)
+*.db
+*.sqlite3
+app/logs/*.log
+
+# Env — в compose обычно монтируется .env отдельно
+.env
+.env.*

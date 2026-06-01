@@ -1,0 +1,25 @@
+# Секреты и окружение
+.env
+*.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# Runtime-данные (не версионируются)
+backups/
+media/
+*.session
+instagram_session.json
+vk_products_export.json
+
+# Логи и отладка
+.cursor/
+*.log
+
+# Системное
+.DS_Store

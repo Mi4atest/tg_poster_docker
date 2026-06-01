@@ -1,0 +1,323 @@
+{
+  "_comment": "Официальные Apple-названия (EN) → Color Авито (RU), по модели. Ручной каталог.",
+  "by_model": {
+    "iPhone": {
+      "black": "черный"
+    },
+    "iPhone 3G": {
+      "white": "белый",
+      "black": "черный"
+    },
+    "iPhone 3GS": {
+      "white": "белый",
+      "black": "черный"
+    },
+    "iPhone 4": {
+      "white": "белый",
+      "black": "черный"
+    },
+    "iPhone 4S": {
+      "white": "белый",
+      "black": "черный"
+    },
+    "iPhone 5": {
+      "white": "белый",
+      "silver": "серебристый",
+      "black": "черный"
+    },
+    "iPhone 5C": {
+      "white": "белый",
+      "blue": "голубой",
+      "yellow": "желтый",
+      "green": "зеленый",
+      "pink": "розовый"
+    },
+    "iPhone 5S": {
+      "gold": "золотистый",
+      "silver": "серебристый",
+      "space gray": "серый"
+    },
+    "iPhone 6": {
+      "gold": "золотистый",
+      "silver": "серебристый",
+      "space gray": "серый"
+    },
+    "iPhone 6 Plus": {
+      "gold": "золотистый",
+      "rose gold": "розовый",
+      "silver": "серебристый",
+      "space gray": "серый"
+    },
+    "iPhone 6S": {
+      "gold": "золотистый",
+      "rose gold": "розовый",
+      "silver": "серебристый",
+      "space gray": "серый"
+    },
+    "iPhone 6S Plus": {
+      "gold": "золотистый",
+      "rose gold": "розовый",
+      "silver": "серебристый",
+      "space gray": "серый"
+    },
+    "iPhone 7": {
+      "gold": "золотистый",
+      "red": "красный",
+      "rose gold": "розовый",
+      "silver": "серебристый",
+      "black": "черный",
+      "jet black": "черный"
+    },
+    "iPhone 7 Plus": {
+      "gold": "золотистый",
+      "red": "красный",
+      "rose gold": "розовый",
+      "silver": "серебристый",
+      "black": "черный",
+      "jet black": "черный"
+    },
+    "iPhone 8": {
+      "gold": "золотистый",
+      "red": "красный",
+      "rose gold": "розовый",
+      "silver": "серебристый",
+      "space gray": "черный"
+    },
+    "iPhone 8 Plus": {
+      "gold": "золотистый",
+      "red": "красный",
+      "silver": "серебристый",
+      "space gray": "черный"
+    },
+    "iPhone X": {
+      "silver": "серебристый",
+      "space gray": "черный"
+    },
+    "iPhone XR": {
+      "white": "белый",
+      "yellow": "желтый",
+      "red": "красный",
+      "coral": "розовый",
+      "blue": "синий",
+      "black": "черный"
+    },
+    "iPhone XS": {
+      "gold": "золотистый",
+      "silver": "серебристый",
+      "space gray": "серый"
+    },
+    "iPhone XS Max": {
+      "gold": "золотистый",
+      "silver": "серебристый",
+      "space gray": "серый"
+    },
+    "iPhone 11": {
+      "white": "белый",
+      "yellow": "желтый",
+      "green": "зеленый",
+      "red": "красный",
+      "purple": "фиолетовый",
+      "black": "черный"
+    },
+    "iPhone 11 Pro": {
+      "midnight green": "зеленый",
+      "gold": "золотистый",
+      "silver": "серебристый",
+      "space gray": "черный"
+    },
+    "iPhone 11 Pro Max": {
+      "midnight green": "зеленый",
+      "gold": "золотистый",
+      "silver": "серебристый",
+      "space gray": "черный"
+    },
+    "iPhone SE": {
+      "gold": "золотистый",
+      "rose gold": "розовый",
+      "silver": "серебристый",
+      "space gray": "серый"
+    },
+    "iPhone SE (2020)": {
+      "white": "белый",
+      "red": "красный",
+      "black": "черный"
+    },
+    "iPhone SE (2022)": {
+      "starlight": "белый",
+      "red": "красный",
+      "midnight": "черный"
+    },
+    "iPhone 12": {
+      "white": "белый",
+      "green": "зеленый",
+      "red": "красный",
+      "blue": "синий",
+      "purple": "фиолетовый",
+      "black": "черный"
+    },
+    "iPhone 12 mini": {
+      "white": "белый",
+      "green": "зеленый",
+      "red": "красный",
+      "blue": "синий",
+      "purple": "фиолетовый",
+      "black": "черный"
+    },
+    "iPhone 12 Pro": {
+      "gold": "золотистый",
+      "silver": "серебристый",
+      "pacific blue": "синий",
+      "graphite": "черный"
+    },
+    "iPhone 12 Pro Max": {
+      "gold": "золотистый",
+      "silver": "серебристый",
+      "pacific blue": "синий",
+      "graphite": "черный"
+    },
+    "iPhone 13": {
+      "starlight": "белый",
+      "green": "зеленый",
+      "red": "красный",
+      "pink": "розовый",
+      "blue": "синий",
+      "midnight": "черный"
+    },
+    "iPhone 13 mini": {
+      "starlight": "белый",
+      "green": "зеленый",
+      "red": "красный",
+      "pink": "розовый",
+      "blue": "синий",
+      "midnight": "черный"
+    },
+    "iPhone 13 Pro": {
+      "sierra blue": "голубой",
+      "alpine green": "зеленый",
+      "gold": "золотистый",
+      "silver": "серебристый",
+      "graphite": "серый"
+    },
+    "iPhone 13 Pro Max": {
+      "sierra blue": "голубой",
+      "alpine green": "зеленый",
+      "gold": "золотистый",
+      "silver": "серебристый",
+      "graphite": "серый"
+    },
+    "iPhone 14": {
+      "starlight": "белый",
+      "blue": "голубой",
+      "yellow": "желтый",
+      "red": "красный",
+      "purple": "фиолетовый",
+      "midnight": "черный"
+    },
+    "iPhone 14 Plus": {
+      "starlight": "белый",
+      "blue": "голубой",
+      "yellow": "желтый",
+      "red": "красный",
+      "purple": "фиолетовый",
+      "midnight": "черный"
+    },
+    "iPhone 14 Pro": {
+      "gold": "золотистый",
+      "silver": "серебристый",
+      "deep purple": "фиолетовый",
+      "space black": "черный"
+    },
+    "iPhone 14 Pro Max": {
+      "gold": "золотистый",
+      "silver": "серебристый",
+      "deep purple": "фиолетовый",
+      "space black": "черный"
+    },
+    "iPhone 15": {
+      "blue": "голубой",
+      "yellow": "желтый",
+      "green": "зеленый",
+      "pink": "розовый",
+      "black": "черный"
+    },
+    "iPhone 15 Plus": {
+      "blue": "голубой",
+      "yellow": "желтый",
+      "green": "зеленый",
+      "pink": "розовый",
+      "black": "черный"
+    },
+    "iPhone 15 Pro": {
+      "white titanium": "белый",
+      "natural titanium": "серый",
+      "blue titanium": "синий",
+      "black titanium": "черный"
+    },
+    "iPhone 15 Pro Max": {
+      "white titanium": "белый",
+      "natural titanium": "серый",
+      "blue titanium": "синий",
+      "black titanium": "черный"
+    },
+    "iPhone 16": {
+      "white": "белый",
+      "blue": "голубой",
+      "green": "зеленый",
+      "pink": "розовый",
+      "black": "черный"
+    },
+    "iPhone 16 Plus": {
+      "white": "белый",
+      "blue": "голубой",
+      "green": "зеленый",
+      "pink": "розовый",
+      "black": "черный"
+    },
+    "iPhone 16 Pro": {
+      "white titanium": "белый",
+      "gold titanium": "золотистый",
+      "desert titanium": "золотистый",
+      "natural titanium": "серый",
+      "black titanium": "черный"
+    },
+    "iPhone 16 Pro Max": {
+      "white titanium": "белый",
+      "gold titanium": "золотистый",
+      "desert titanium": "золотистый",
+      "natural titanium": "серый",
+      "black titanium": "черный"
+    },
+    "iPhone 16e": {
+      "white": "белый",
+      "black": "черный"
+    },
+    "iPhone 17": {
+      "white": "белый",
+      "mist blue": "голубой",
+      "sage": "зеленый",
+      "lavender": "фиолетовый",
+      "black": "черный"
+    },
+    "iPhone 17 Pro": {
+      "cosmic orange": "оранжевый",
+      "silver": "серебристый",
+      "deep blue": "синий"
+    },
+    "iPhone 17 Pro Max": {
+      "cosmic orange": "оранжевый",
+      "silver": "серебристый",
+      "deep blue": "синий"
+    },
+    "iPhone 17e": {
+      "white": "белый",
+      "soft pink": "розовый",
+      "black": "черный"
+    },
+    "iPhone Air": {
+      "cloud white": "белый",
+      "gold": "золотистый",
+      "space black": "черный",
+      "sky blue": "голубой"
+    }
+  }
+}

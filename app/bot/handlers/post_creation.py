@@ -1,0 +1,775 @@
+from aiogram import Router, F
+from aiogram.types import Message, CallbackQuery
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+import aiohttp
+import random
+from datetime import datetime
+from typing import List, Optional
+
+from app.bot.keyboards.main_keyboard import get_skip_back_keyboard, get_create_post_entry_keyboard
+from app.bot.utils.main_menu import build_main_keyboard
+from app.bot.keyboards.post_avito_keyboard import format_post_creation_text_prompt
+from app.bot.keyboards.product_keyboard import get_category_selection_keyboard, get_collection_selection_keyboard
+from app.config.settings import API_HOST, API_PORT
+from app.bot.utils.spoiler_phrases import SPOILER_PHRASES
+from app.bot.utils.platform_status import get_platform_status_hint_text
+from app.services.settings_service import get_settings_service
+from app.integrations.avito.condition_maps import clamp_avito_level
+from app.bot.keyboards.post_avito_keyboard import next_screen_level, next_body_level
+from app.bot.utils.button_styles import ikb
+from app.bot.utils.post_media import collect_album_media, format_media_summary
+
+router = Router()
+
+# Define states for post creation
+class PostCreation(StatesGroup):
+    waiting_for_text = State()
+    waiting_for_photos = State()
+    waiting_for_videos = State()
+    confirmation = State()
+    selecting_category = State()
+    selecting_collection = State()
+
+# API client function
+async def delete_previous_messages(message, state):
+    """Delete previous bot messages to keep the interface clean."""
+    data = await state.get_data()
+    bot_message_ids = data.get("bot_message_ids", [])
+
+    # Удаляем предыдущие сообщения бота
+    for msg_id in bot_message_ids:
+        try:
+            await message.bot.delete_message(chat_id=message.chat.id, message_id=msg_id)
+        except Exception as e:
+            print(f"Error deleting message: {str(e)}")
+
+    # Инициализируем новый список сообщений бота
+    await state.update_data(bot_message_ids=[])
+
+async def create_post_api(text, photos, videos, avito_draft=None):
+    """Send post data to API."""
+    try:
+        async with aiohttp.ClientSession() as session:
+            url = f"http://{API_HOST}:{API_PORT}/api/posts/"
+            data = {
+                "text": text,
+                "photos": photos if photos else [],
+                "videos": videos if videos else [],
+            }
+            if isinstance(avito_draft, dict):
+                data["avito_draft"] = avito_draft
+            print(f"Creating post via {url} with {len(photos)} photos and {len(videos)} videos")
+            print(f"DEBUG: Photos data: {photos}")
+            print(f"DEBUG: Videos data: {videos}")
+            print(f"DEBUG: Full data being sent: {data}")
+
+            try:
+                async with session.post(url, json=data) as response:
+                    print(f"API response status: {response.status}")
+
+                    if response.status == 201:
+                        result = await response.json()
+                        print(f"Post created successfully with ID: {result.get('id')}")
+                        return result
+                    else:
+                        error_text = await response.text()
+                        print(f"API Error: {response.status} - {error_text}")
+                        return None
+            except Exception as e:
+                print(f"Error during API request: {str(e)}")
+                return None
+    except Exception as e:
+        print(f"Error creating post: {str(e)}")
+        return None
+
+
+async def _finalize_post_creation(callback: CallbackQuery, state: FSMContext, avito_draft: dict):
+    """Создание поста в API и экран успеха (после шага черновика Авито)."""
+    data = await state.get_data()
+    text = data.get("text", "")
+    photos = list(data.get("photos", []))
+    videos = list(data.get("videos", []))
+
+    media_info = ""
+    if photos:
+        media_info += f"📷 Фото: {len(photos)}\n"
+    if videos:
+        media_info += f"📹 Видео: {len(videos)}\n"
+
+    await callback.message.edit_text(f"⏳ Создаю пост...\n\n{media_info}")
+
+    try:
+        post = await create_post_api(text, photos, videos, avito_draft=avito_draft)
+
+        if post:
+            photo_count = len(photos)
+            video_count = len(videos)
+            post_name = post.get("name", "")
+
+            success_text = "✅ Пост успешно создан!\n\n"
+            success_text += f"📝 {post_name}\n\n"
+
+            if photo_count > 0:
+                success_text += f"📷 Фотографий: {photo_count}\n"
+
+            if video_count > 0:
+                success_text += f"📹 Видео: {video_count}\n"
+
+            success_text += "\nПост сохранён как черновик. Опубликовать его можно через «В очередь» или «В черновики»."
+            success_text += "\n\n" + get_platform_status_hint_text()
+
+            post_id = post.get("id")
+            from app.config.settings import VK_MARKET_ENABLED
+            if VK_MARKET_ENABLED:
+                buttons = [
+                    [InlineKeyboardButton(text="📦 Настроить товар (категория/подборка)", callback_data=f"setup_product_{post_id}")],
+                    [ikb("📋 В очередь/Создать новый", f"add_to_queue_and_create_{post_id}")],
+                    [InlineKeyboardButton(text="📝 В черновики", callback_data="pending_posts")],
+                    [InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")],
+                ]
+            else:
+                buttons = [
+                    [ikb("📋 В очередь/Создать новый", f"add_to_queue_and_create_{post_id}")],
+                    [InlineKeyboardButton(text="📝 В черновики", callback_data="pending_posts")],
+                    [InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")],
+                ]
+            keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+
+            await callback.message.edit_text(success_text, reply_markup=keyboard)
+            await state.update_data(post_id=post_id)
+        else:
+            await callback.message.edit_text(
+                "❌ Ошибка при создании поста. Пожалуйста, попробуйте еще раз.",
+                reply_markup=await build_main_keyboard(callback.message.bot),
+            )
+    except Exception as e:
+        await callback.message.edit_text(
+            f"❌ Произошла ошибка: {str(e)}",
+            reply_markup=await build_main_keyboard(callback.message.bot),
+        )
+
+    await state.clear()
+
+
+@router.callback_query(PostCreation.waiting_for_videos, F.data == "skip")
+async def skip_videos(callback: CallbackQuery, state: FSMContext):
+    """После видео — сразу создание поста (параметры Авито задаются на шаге текста)."""
+    data = await state.get_data()
+    draft = {
+        "screen_level": clamp_avito_level(data.get("avito_screen_level", 1)),
+        "body_level": clamp_avito_level(data.get("avito_body_level", 1)),
+    }
+    await _finalize_post_creation(callback, state, draft)
+    await callback.answer()
+
+
+async def _render_post_creation_text_entry(message, state: FSMContext) -> None:
+    vk_market_enabled = get_settings_service().is_vk_market_enabled()
+    data = await state.get_data()
+    sl = clamp_avito_level(data.get("avito_screen_level", 1))
+    bl = clamp_avito_level(data.get("avito_body_level", 1))
+    text = format_post_creation_text_prompt(get_platform_status_hint_text(), sl, bl)
+    kb = get_create_post_entry_keyboard(
+        vk_market_enabled,
+        avito_screen_level=sl,
+        avito_body_level=bl,
+    )
+    await message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+
+
+@router.callback_query(PostCreation.waiting_for_text, F.data == "pc_text_avito_cycle_scr")
+async def pc_text_avito_cycle_screen(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    sl = next_screen_level(data.get("avito_screen_level", 1))
+    await state.update_data(avito_screen_level=sl)
+    await _render_post_creation_text_entry(callback.message, state)
+    await callback.answer()
+
+
+@router.callback_query(PostCreation.waiting_for_text, F.data == "pc_text_avito_cycle_bod")
+async def pc_text_avito_cycle_body(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    bl = next_body_level(data.get("avito_body_level", 1))
+    await state.update_data(avito_body_level=bl)
+    await _render_post_creation_text_entry(callback.message, state)
+    await callback.answer()
+
+
+@router.message(PostCreation.waiting_for_text, F.text)
+async def process_post_text(message: Message, state: FSMContext):
+    """Process the post text."""
+    if not message.text or len(message.text.strip()) == 0:
+        await message.reply("❌ Текст не может быть пустым. Пожалуйста, отправьте текст для поста.")
+        return
+
+    # Save text to state
+    await state.update_data(text=message.text)
+
+    # Удаляем предыдущие сообщения бота
+    await delete_previous_messages(message, state)
+
+    # Список фраз для сообщения о загрузке фото
+    photo_phrases = [
+        "Печатал как будто в темноте 🤯",
+        "Снова 'как новый', 'в идеале', 'без торга'? Да ты легенда 🔥",
+        "Это описание или шаблон из 2015-го? 📄",
+        "А можно чуть больше оригинальности? 🧠",
+        "Ты вообще читаешь, что пишешь? 🤨",
+        "Текст такой же, как у всех — говно без приправы 🍽️💩",
+        "Кажется, ты забыл выключить автозамену 🤭",
+        "Это не текст — это клиническая скука 😴",
+        "Снова 'отличное состояние'? Ага, конечно 🙃",
+        "Неужели нельзя было написать чуть лучше? 🖊️",
+        "Ты там ещё не научился форматировать? 📝",
+        "Это описание или спам-письмо? 🚫",
+        "Где логика? Где структура? 🧩",
+        "Такой текст мог бы написать мой кот 🐱",
+        "Ты просто скопировал и всё? Ну браво 👏",
+        "А где эмодзи? Или мы уже взрослые? 😏",
+        "Это называется 'текст' или 'куча букв'? 📚",
+        "Опять ошибки? Да ты талантливый 😂",
+        "Прям как в школе — списал и не понял 🤷‍♂️",
+        "Ты вообще проверил перед отправкой? 🧐",
+        "Снова повторяешь одно и то же? 🔄",
+        "Это описание или мемуары? 📖",
+        "А где ключевые слова? SEO, помнишь? 🔑",
+        "Это не продающий текст — это отписка 📋",
+        "Смотри, опять буквы не того регистра 🧐",
+        "Это называется 'работа' или 'копирование'? 🤔",
+        "Ты реально думаешь, что так продают? 🤭",
+        "А можно чуть меньше 'фиг знает чего'? 💩",
+        "Это текст или поток сознания? 🧠",
+        "Ты не описываешь — ты обобществляешь 🤷‍♂️",
+        "Снова 'цена договорная'? Да ты мастер интриги 🎭",
+        "Это описание или загадка с подвохом? ❓",
+        "А где детали? Разве так показывают? 🕵️‍♂️",
+        "Ты вообще знаешь, что продаёшь? 🤯",
+        "Это текст или список покупок? 🛒",
+        "Снова 'без дефектов'? Я уже глаз замылился 😵‍💫",
+        "Ты не описываешь товар — ты его прячешь 🙈",
+        "Это не контент — это тест на терпение 🧘‍♂️",
+        "А можно чуть больше конкретики? 🎯",
+        "Это не описание — это пустышка 🧸",
+        "Ты не создаешь текст — ты его плодишь 🤢",
+        "Это не стиль — это беспорядок 🧹",
+        "А где эмоции? Разве так цепляют? 😐",
+        "Это не реклама — это давление 🚨",
+        "Ты не маркетолог — ты копирщик 📋",
+        "Это не текст — это набор слов 🧩",
+        "Ты не админ, ты мусорный бот 🗑️",
+        "Это не описание — это каша 🍲",
+        "Ты реально думаешь, что это красиво? 🤭",
+        "Это не продажа — это рассылка спама 🚫",
+        "А можно чуть больше внимания к деталям? 🔍",
+        "Ты не создаешь контент — ты его копируешь 📋",
+        "Это не пост — это стенограмма мыслей 🧠",
+        "А можно чуть меньше белиберды? 🤷‍♂️",
+        "Это не продающий текст — это сон в ухо 🥱",
+        "А можно чуть больше души? ❤️",
+        "Это не реклама — это экзорцизм 🙏",
+        "Пост после тебя — как головная боль 💆‍♂️",
+        "Ты там ещё не свихнулся от всего этого? 🤪",
+        "Как будто кот на клаве 🐱",
+        "Ты реально каждый раз так стараешься? 🙄",
+        "С каждым постом мне становится страшнее 🥶",
+        "Ты не сотрудник, ты контент-террорист 🚨",
+        "Так и хочется сказать: 'Нет, спасибо' ❌",
+        "Снова дублируешь? Да ты профи 🔁",
+        "Это банально, как вторник 🥱",
+        "Может, стоит обновить контент? 🧼",
+        "Ты не выкладываешь — ты закапываешь 🪦",
+        "Каждый пост — как клик по ссылке с вирусом 🦠",
+        "А можно чуть больше мозга в текст? 🧠",
+        "Это не реклама — это трэш 🚮",
+        "Ты реально думаешь, что это цепляет? 🤨",
+        "А где оригинальность? 🤷‍♂️",
+        "Это не уникальное предложение — это шаблон 📄",
+        "Ты мог бы и получше написать 🖊️",
+        "Ты вообще интересуешься продуктом? 🧐",
+        "А где эмоции? Разве так продают? 😐",
+        "Это описание или список покупок? 🛒",
+        "Ты не продаёшь — ты отпугиваешь 🚫",
+        "Это не продающий текст — это сон в ухо 🥱",
+        "Это не описание — это каша 🍲",
+        "Ты реально думаешь, что это красиво? 🤭",
+        "Это не стиль — это беспорядок 🧹",
+        "Ты не дизайнер, ты хаос в формате текста 🧸",
+        "А можно чуть больше смысла? 🧠",
+        "Это не контент — это тест на терпение 🧘‍♂️",
+        "Ты не создаешь, ты перекрашиваешь 🎨",
+        "Это не креатив — это повтор 🔄",
+        "А можно чуть больше усилий? 💪",
+        "Это не работа — это автоматизм 🤖",
+        "Ты не специалист — ты копирка 📋",
+        "Это не пост — это копия 📄",
+        "Ты не продаёшь — ты отталкиваешь 🤷‍♂️",
+        "Это не текст — это бессмысленный набор букв 📝",
+        "А можно чуть больше профессионализма? 🧑‍💼",
+        "Это не контент — это мука для глаз 🥴",
+        "Ты не работник — ты автопилот 🚀",
+        "Это не успех — это рутинный ад 🧱🔥",
+        "Это не описание — это 'на коленке за 5 минут' 🧑‍💻",
+        "Ты не описываешь товар — ты его хоронишь 🪦"
+    ]
+
+    # Выбираем случайную фразу из списка
+    import random
+    photo_phrase = random.choice(photo_phrases)
+
+    # Ask for photos
+    status_message = await message.reply(
+        f"{photo_phrase}\n\n"
+        "📷 Отправь фото обычным альбомом — порядок сохранится.\n"
+        "При желании можно как раньше — «Отправить без группировки».",
+        reply_markup=get_skip_back_keyboard()
+    )
+
+    # Сохраняем ID сообщения бота
+    await state.update_data(bot_message_ids=[status_message.message_id], status_message_id=status_message.message_id)
+
+    await state.update_data(photos=[], videos=[])
+
+    # Move to next state
+    await state.set_state(PostCreation.waiting_for_photos)
+
+def _format_media_summary(photos: list, videos: list) -> str:
+    return format_media_summary(photos, videos)
+
+
+@router.message(PostCreation.waiting_for_text, F.photo | F.video | F.media_group_id)
+async def process_text_with_media(
+    message: Message,
+    state: FSMContext,
+    album: Optional[List[Message]] = None,
+):
+    """Process a message (or whole album) with caption + photo(s)/video(s).
+
+    Telegram albums may mix photos and videos. AlbumMiddleware buffers them
+    and passes the whole group sorted by message_id. The caption lives on
+    the first item of the album.
+    """
+    messages = album if album else [message]
+    first = messages[0]
+
+    if not first.caption or not first.caption.strip():
+        await message.reply("❌ Текст не может быть пустым. Пожалуйста, отправьте текст для поста.")
+        return
+
+    await state.update_data(text=first.caption)
+
+    photos: list[str] = []
+    videos: list[str] = []
+    _, _, photo_limit_hit = collect_album_media(messages, photos, videos)
+
+    await state.update_data(photos=photos, videos=videos)
+
+    summary = _format_media_summary(photos, videos)
+    warning = "⚠️ Часть фото не добавлена — лимит 10.\n" if photo_limit_hit else ""
+
+    status_message_obj = await message.reply(
+        "✅ Текст поста сохранён!\n\n"
+        f"{warning}✅ {summary}\n\n"
+        "Отправь ещё фото/видео либо нажми «Далее».",
+        reply_markup=get_skip_back_keyboard(),
+    )
+    await state.update_data(
+        status_message_id=status_message_obj.message_id,
+        bot_message_ids=[status_message_obj.message_id],
+    )
+
+    await state.set_state(PostCreation.waiting_for_photos)
+
+@router.callback_query(PostCreation.waiting_for_photos, F.data == "back")
+async def back_to_text(callback: CallbackQuery, state: FSMContext):
+    """Go back to entering text."""
+    data = await state.get_data()
+    await state.update_data(photos=[], videos=[])
+    vk_market_enabled = get_settings_service().is_vk_market_enabled()
+    sl = clamp_avito_level(data.get("avito_screen_level", 1))
+    bl = clamp_avito_level(data.get("avito_body_level", 1))
+    await callback.message.edit_text(
+        format_post_creation_text_prompt(get_platform_status_hint_text(), sl, bl),
+        reply_markup=get_create_post_entry_keyboard(
+            vk_market_enabled,
+            avito_screen_level=sl,
+            avito_body_level=bl,
+        ),
+        parse_mode="HTML",
+    )
+
+    # Move back to previous state
+    await state.set_state(PostCreation.waiting_for_text)
+
+    await callback.answer()
+
+async def _update_photos_status(message: Message, state: FSMContext, status_text: str) -> None:
+    """Edit the existing status message in-place, or send a new one if missing."""
+    data = await state.get_data()
+    status_message_id = data.get("status_message_id")
+    bot_message_ids = data.get("bot_message_ids", [])
+
+    # Drop any leftover bot messages except the active status one.
+    for msg_id in bot_message_ids:
+        if msg_id == status_message_id:
+            continue
+        try:
+            await message.bot.delete_message(chat_id=message.chat.id, message_id=msg_id)
+        except Exception as e:
+            print(f"Error deleting message: {str(e)}")
+
+    if status_message_id:
+        try:
+            await message.bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=status_message_id,
+                text=status_text,
+                reply_markup=get_skip_back_keyboard(),
+            )
+            await state.update_data(bot_message_ids=[status_message_id])
+            return
+        except Exception as e:
+            print(f"Error editing status message: {str(e)}")
+
+    status_message_obj = await message.answer(status_text, reply_markup=get_skip_back_keyboard())
+    await state.update_data(
+        status_message_id=status_message_obj.message_id,
+        bot_message_ids=[status_message_obj.message_id],
+    )
+
+
+@router.message(PostCreation.waiting_for_photos, F.photo | F.video | F.media_group_id)
+async def process_media_in_photos(
+    message: Message,
+    state: FSMContext,
+    album: Optional[List[Message]] = None,
+):
+    """Add photos and/or videos from a single message or a whole album.
+
+    The album may mix photos and videos — order is preserved within each
+    type (publishers list photos first, then videos).
+    """
+    data = await state.get_data()
+    photos: list[str] = list(data.get("photos", []))
+    videos: list[str] = list(data.get("videos", []))
+
+    messages = album if album else [message]
+    photos_added, videos_added, photo_limit_hit = collect_album_media(
+        messages, photos, videos
+    )
+
+    if photos_added == 0 and videos_added == 0 and not photo_limit_hit:
+        return
+
+    await state.update_data(photos=photos, videos=videos)
+
+    summary = _format_media_summary(photos, videos)
+    if photo_limit_hit and photos_added == 0 and videos_added == 0:
+        status_text = (
+            "❌ Уже загружено максимум 10 фото.\n"
+            f"✅ {summary}\n\n"
+            "Нажми «Далее», чтобы продолжить, или «Назад» к редактированию текста."
+        )
+    elif photo_limit_hit:
+        status_text = (
+            "⚠️ Часть фото не добавлена — лимит 10.\n"
+            f"✅ {summary}\n\n"
+            "Отправь ещё фото/видео либо нажми «Далее»."
+        )
+    else:
+        status_text = (
+            f"✅ {summary}\n\n"
+            "Отправь ещё фото/видео либо нажми «Далее»."
+        )
+
+    await _update_photos_status(message, state, status_text)
+
+@router.callback_query(PostCreation.waiting_for_photos, F.data == "skip")
+async def skip_photos(callback: CallbackQuery, state: FSMContext):
+    """Move from the photo stage to the video stage, preserving everything."""
+    data = await state.get_data()
+    photos = list(data.get("photos", []))
+    videos = list(data.get("videos", []))
+
+    summary = _format_media_summary(photos, videos)
+
+    await callback.message.edit_text(
+        f"✅ {summary}\n\n"
+        "📹 Отправь видео для поста (одним альбомом или по одному).\n"
+        "Если видео уже добавлены — можно нажать «Далее».",
+        reply_markup=get_skip_back_keyboard(),
+    )
+
+    await state.set_state(PostCreation.waiting_for_videos)
+    await callback.answer()
+
+@router.callback_query(PostCreation.waiting_for_videos, F.data == "back")
+async def back_to_photos(callback: CallbackQuery, state: FSMContext):
+    """Go back to adding photos."""
+    await callback.message.edit_text(
+        "📷 Отправьте фотографии для поста (от 1 до 10 шт).\n\n"
+        "Отправляйте по одной фотографии за раз. Порядок отправки будет сохранен.",
+        reply_markup=get_skip_back_keyboard()
+    )
+
+    # Move back to previous state
+    await state.set_state(PostCreation.waiting_for_photos)
+
+    await callback.answer()
+
+@router.message(PostCreation.waiting_for_videos, F.video)
+async def process_video(
+    message: Message,
+    state: FSMContext,
+    album: Optional[List[Message]] = None,
+):
+    """Add a single video or a whole video album during the videos stage."""
+    data = await state.get_data()
+    videos: list[str] = list(data.get("videos", []))
+    status_message_id = data.get("status_message_id")
+
+    if album:
+        new_files = [m.video.file_id for m in album if m.video]
+    elif message.video:
+        new_files = [message.video.file_id]
+    else:
+        return
+
+    for file_id in new_files:
+        if file_id not in videos:
+            videos.append(file_id)
+
+    await state.update_data(videos=videos)
+
+    status_text = f"📹 Видео: {len(videos)}\n\nОтправь ещё видео или нажми «Далее»."
+
+    if status_message_id:
+        try:
+            await message.bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=status_message_id,
+                text=status_text,
+                reply_markup=get_skip_back_keyboard(),
+            )
+            return
+        except Exception as e:
+            print(f"Error editing message: {str(e)}")
+
+    status_message_obj = await message.answer(status_text, reply_markup=get_skip_back_keyboard())
+    await state.update_data(status_message_id=status_message_obj.message_id)
+
+@router.callback_query(PostCreation.confirmation, F.data == "confirm_create")
+async def confirm_create_post(callback: CallbackQuery, state: FSMContext):
+    """Create the post after confirmation."""
+    # Get all data
+    data = await state.get_data()
+    text = data.get("text", "")
+    photos = data.get("photos", [])
+    videos = data.get("videos", [])
+
+    # Send data to API
+    await callback.message.edit_text("⏳ Создаю пост...")
+
+    try:
+        post = await create_post_api(
+            text,
+            photos,
+            videos,
+            avito_draft={
+                "screen_level": clamp_avito_level(data.get("avito_screen_level", 1)),
+                "body_level": clamp_avito_level(data.get("avito_body_level", 1)),
+            },
+        )
+
+        if post:
+            # Format success message
+            photo_count = len(photos)
+            video_count = len(videos)
+            post_name = post.get("name", "")
+
+            success_text = f"✅ Пост успешно создан!\n\n"
+            success_text += f"📝 {post_name}\n\n"
+
+            if photo_count > 0:
+                success_text += f"📷 Фотографий: {photo_count}\n"
+
+            if video_count > 0:
+                success_text += f"📹 Видео: {video_count}\n"
+
+            success_text += "\nПост сохранён как черновик. Опубликовать его можно через «В очередь» или «В черновики»."
+            success_text += "\n\n" + get_platform_status_hint_text()
+
+            # Create keyboard for post actions
+            post_id = post.get("id")
+            
+            # Сохраняем post_id в state для возможного выбора категории/подборки
+            await state.update_data(post_id=post_id)
+            
+            # Предлагаем выбрать категорию и подборку для товара (опционально, для отладки)
+            from app.config.settings import VK_MARKET_ENABLED
+            if VK_MARKET_ENABLED:
+                buttons = [
+                    [InlineKeyboardButton(text="📦 Настроить товар (категория/подборка)", callback_data=f"setup_product_{post_id}")],
+                    [ikb("📋 В очередь/Создать новый", f"add_to_queue_and_create_{post_id}")],
+                    [InlineKeyboardButton(text="📝 В черновики", callback_data="pending_posts")],
+                    [InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")]
+                ]
+            else:
+                buttons = [
+                    [ikb("📋 В очередь/Создать новый", f"add_to_queue_and_create_{post_id}")],
+                    [InlineKeyboardButton(text="📝 В черновики", callback_data="pending_posts")],
+                    [InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")]
+                ]
+            keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+
+            await callback.message.edit_text(success_text, reply_markup=keyboard)
+
+            # Не очищаем state полностью, оставляем post_id для возможной настройки товара
+            return
+        else:
+            await callback.message.edit_text(
+                "❌ Ошибка при создании поста. Пожалуйста, попробуйте еще раз.",
+                reply_markup=await build_main_keyboard(callback.message.bot)
+            )
+    except Exception as e:
+        await callback.message.edit_text(
+            f"❌ Произошла ошибка: {str(e)}",
+            reply_markup=await build_main_keyboard(callback.message.bot)
+        )
+
+    # Reset state
+    await state.clear()
+
+    await callback.answer()
+
+@router.callback_query(PostCreation.confirmation, F.data == "back_to_videos")
+async def back_to_videos_from_confirmation(callback: CallbackQuery, state: FSMContext):
+    """Go back to adding videos from confirmation."""
+    await callback.message.edit_text(
+        "📹 Вернемся к добавлению видео для поста (до 50 МБ).\n\n"
+        "Отправляйте по одному видео за раз.",
+        reply_markup=get_skip_back_keyboard()
+    )
+
+    # Move back to videos state
+    await state.set_state(PostCreation.waiting_for_videos)
+
+    await callback.answer()
+
+@router.callback_query(F.data == "back_to_main")
+async def back_to_main_menu(callback: CallbackQuery, state: FSMContext):
+    """Return to the main menu."""
+    await state.clear()
+
+    if hasattr(callback.bot, "user_data"):
+        ud = callback.bot.user_data.get(callback.from_user.id)
+        if isinstance(ud, dict):
+            ud["in_archive"] = False
+            ud.pop("archive_state", None)
+
+    spoiler_phrase = random.choice(SPOILER_PHRASES)
+
+    await callback.message.edit_text(
+        "Приветы! Нажимай \"Создать пост\"\n\n"
+        f"<tg-spoiler>{spoiler_phrase}</tg-spoiler>",
+        parse_mode="HTML",
+        reply_markup=await build_main_keyboard(callback.bot),
+    )
+
+    await callback.answer()
+
+@router.callback_query(PostCreation.confirmation, F.data == "cancel_create")
+async def cancel_create_post(callback: CallbackQuery, state: FSMContext):
+    """Cancel post creation."""
+    await callback.message.edit_text(
+        "❌ Создание поста отменено.\n\n"
+        "Выберите действие:",
+        reply_markup=await build_main_keyboard(callback.bot),
+    )
+
+    # Reset state
+    await state.clear()
+
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("setup_product_"))
+async def setup_product(callback: CallbackQuery, state: FSMContext):
+    """Начать настройку товара (выбор категории и подборки)."""
+    try:
+        post_id = callback.data.replace("setup_product_", "")
+        await state.update_data(post_id=post_id)
+        
+        text = "📦 Настройка товара\n\nВыберите категорию товара:"
+        from app.bot.keyboards.product_keyboard import get_category_selection_keyboard
+        await callback.message.edit_text(
+            text,
+            reply_markup=get_category_selection_keyboard()
+        )
+        await state.set_state(PostCreation.selecting_category)
+        await callback.answer()
+    except Exception as e:
+        await callback.answer(f"Ошибка: {str(e)}", show_alert=True)
+
+
+@router.callback_query(PostCreation.selecting_category, F.data.startswith("category_"))
+async def select_category(callback: CallbackQuery, state: FSMContext):
+    """Обработать выбор категории."""
+    category = callback.data.replace("category_", "")
+    
+    if category == "skip":
+        # Пропускаем выбор категории
+        await state.update_data(category=None)
+        from app.bot.keyboards.product_keyboard import get_collection_selection_keyboard
+        text = "📦 Настройка товара\n\nВыберите подборку товара (или пропустите):"
+        await callback.message.edit_text(
+            text,
+            reply_markup=get_collection_selection_keyboard()
+        )
+        await state.set_state(PostCreation.selecting_collection)
+        await callback.answer()
+        return
+    
+    await state.update_data(category=category)
+    
+    from app.bot.keyboards.product_keyboard import get_collection_selection_keyboard
+    text = f"✅ Категория выбрана: {category}\n\nВыберите подборку товара (или пропустите):"
+    await callback.message.edit_text(
+        text,
+        reply_markup=get_collection_selection_keyboard(category)
+    )
+    await state.set_state(PostCreation.selecting_collection)
+    await callback.answer()
+
+
+@router.callback_query(PostCreation.selecting_collection, F.data.startswith("collection_"))
+async def select_collection(callback: CallbackQuery, state: FSMContext):
+    """Обработать выбор подборки и завершить настройку."""
+    collection = callback.data.replace("collection_", "")
+    data = await state.get_data()
+    post_id = data.get("post_id")
+    category = data.get("category")
+    
+    if collection == "skip":
+        collection = None
+    
+    # Сохраняем выбранные категорию и подборку (можно сохранить в отдельную таблицу или использовать при публикации)
+    # Пока просто показываем сообщение об успешной настройке
+    text = "✅ Настройка товара завершена!\n\n"
+    if category:
+        text += f"📂 Категория: {category}\n"
+    if collection:
+        text += f"📁 Подборка: {collection}\n"
+    text += "\nЭти настройки будут использованы при публикации товара в ВК."
+    
+    buttons = [
+        [ikb("📋 В очередь/Создать новый", f"add_to_queue_and_create_{post_id}")],
+        [InlineKeyboardButton(text="📝 В черновики", callback_data="pending_posts")],
+        [InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")]
+    ]
+    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+    
+    await callback.message.edit_text(text, reply_markup=keyboard)
+    await state.clear()
+    await callback.answer()

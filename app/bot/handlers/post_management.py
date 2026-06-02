@@ -1232,13 +1232,6 @@ async def publish_to_vk(callback: CallbackQuery):
         return
 
     try:
-        from app.workers.max.preflight import run_max_permissions_preflight
-        if not await run_max_permissions_preflight():
-            await callback.message.edit_text(
-                f"{callback.message.text}\n\n❌ Max preflight не прошел. Проверьте токен/доступ в канал.",
-                reply_markup=_post_actions_kb(callback.bot, callback.from_user.id),
-            )
-            return
         from app.bot.handlers.scheduler import get_orchestrator
         orchestrator = get_orchestrator(callback.bot)
         added = orchestrator.add_post_to_queue(post_id, platforms=["vk"], priority=0)

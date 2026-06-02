@@ -13,7 +13,6 @@ from typing import List, Optional, Dict
 from vk_api.exceptions import ApiError
 
 from app.config.settings import (
-    VK_GROUP_ID,
     VK_MARKET_ACCESS_TOKEN,
     API_HOST,
     API_PORT,
@@ -29,6 +28,7 @@ from app.utils.vk_client import (
     agent_debug_log,
     get_market_vk_session,
     market_token_source,
+    resolve_vk_group_id,
     vk_api_error_code,
 )
 
@@ -40,6 +40,8 @@ class VKProductPublisher:
 
     def __init__(self):
         """Initialize VK API session."""
+        self.group_id = abs(int(resolve_vk_group_id()))
+        self.owner_id = -self.group_id
         self.vk_session = get_market_vk_session(api_version="5.199")
         self.vk = self.vk_session.get_api()
         self.upload = vk_api.VkUpload(self.vk_session)
@@ -78,7 +80,7 @@ class VKProductPublisher:
             if "id" in d:
                 oid = d.get("owner_id")
                 if oid is None:
-                    oid = -abs(int(VK_GROUP_ID))
+                    oid = self.owner_id
                 return {"id": d["id"], "owner_id": oid}
             return None
 
@@ -104,7 +106,7 @@ class VKProductPublisher:
         Новый ответ (market.getProductPhotoUploadServer): часто нет ключа photo → market.saveProductPhoto
         с параметром upload_response (JSON всего ответа upload-сервера; иначе VK: «upload_response is undefined»).
         """
-        gid = abs(int(VK_GROUP_ID))
+        gid = self.group_id
         if upload_data.get("photo") is not None:
             save_params = {
                 "group_id": gid,
@@ -280,7 +282,7 @@ class VKProductPublisher:
         try:
             await self._wait_for_api_interval()
             response = self.vk.market.getAlbums(
-                owner_id=-abs(int(VK_GROUP_ID)),
+                owner_id=self.owner_id,
                 count=100
             )
 
@@ -404,7 +406,7 @@ class VKProductPublisher:
                     # ранее использовался photos.getMarketUploadServer (в новых версиях API может отвечать [3] Unknown method).
                     # Главная фотография по-прежнему задаётся в market.add через main_photo_id.
                     upload_server_params = {
-                        'group_id': abs(int(VK_GROUP_ID))
+                        'group_id': self.group_id
                     }
 
                     try:
@@ -487,7 +489,7 @@ class VKProductPublisher:
                     video_file=temp_file,
                     name=post.name or "Product video",
                     description="Product video",
-                    group_id=abs(int(VK_GROUP_ID))
+                    group_id=self.group_id
                 )
 
                 video_id = upload_result.get('video_id')
@@ -546,7 +548,7 @@ class VKProductPublisher:
 
             # Подготавливаем параметры для market.add
             params = {
-                'owner_id': -abs(int(VK_GROUP_ID)),
+                'owner_id': self.owner_id,
                 'name': product_data.get('name', ''),
                 'description': product_data.get('description', ''),
                 'main_photo_id': main_photo_id,  # Используем только ID фотографии (целое число)
@@ -597,7 +599,7 @@ class VKProductPublisher:
                         # Используем market.addToAlbum для добавления товара в подборку
                         # album_ids должен быть строкой с ID альбома
                         self.vk.market.addToAlbum(
-                            owner_id=-abs(int(VK_GROUP_ID)),
+                            owner_id=self.owner_id,
                             item_id=vk_product_id,
                             album_ids=str(collection_id)
                         )
@@ -639,7 +641,7 @@ class VKProductPublisher:
 
             # Обновляем цену через market.edit
             self.vk.market.edit(
-                owner_id=-abs(int(VK_GROUP_ID)),
+                owner_id=self.owner_id,
                 item_id=vk_product_id,
                 price=price
             )
@@ -772,8 +774,10 @@ class VKProductPublisher:
                 return False
 
             # Сохраняем информацию о товаре в базу
+            from app.db import register_models  # noqa: F401
+
             vk_product_id = result.get('market_item_id') or result.get('item_id')
-            vk_product_link = f"https://vk.com/market{VK_GROUP_ID}?w=product-{abs(int(VK_GROUP_ID))}_{vk_product_id}"
+            vk_product_link = f"https://vk.com/market{self.group_id}?w=product-{self.group_id}_{vk_product_id}"
 
             # Получаем ссылку на Telegram пост, если пост опубликован в Telegram
             telegram_link = None

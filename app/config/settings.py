@@ -148,6 +148,9 @@ SIGNATURE_PHONE = os.getenv("SIGNATURE_PHONE", "")
 TELEGRAM_USED_CATALOG_BUTTON_ENABLED = os.getenv("TELEGRAM_USED_CATALOG_BUTTON_ENABLED", "true").lower() == "true"
 TELEGRAM_USED_CATALOG_URL = (os.getenv("TELEGRAM_USED_CATALOG_URL") or "https://t.me/AppleShop43/12185").strip()
 
+# VK upload: при true публикация падает, если не все фото/видео загрузились
+VK_UPLOAD_STRICT_MODE = os.getenv("VK_UPLOAD_STRICT_MODE", "false").lower() in ("1", "true", "yes")
+
 # VK Market settings
 VK_MARKET_ENABLED = os.getenv("VK_MARKET_ENABLED", "true").lower() == "true"
 VK_MARKET_AUTO_CATEGORY = os.getenv("VK_MARKET_AUTO_CATEGORY", "true").lower() == "true"

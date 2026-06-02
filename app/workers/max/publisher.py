@@ -17,17 +17,17 @@ logger = logging.getLogger(__name__)
 
 
 class MaxPublisher:
-    def __init__(self):
-        self.client = MaxApiClient(MAX_BOT_TOKEN, MAX_API_BASE_URL)
-
     async def publish_post(self, post_id: str, signature_enabled: bool = True) -> bool:
-        MAX_CHANNEL_ID = get_settings_service().get_max_channel_id()
+        service = get_settings_service()
+        max_token = (service.get_secret("max_bot_token") or MAX_BOT_TOKEN or "").strip()
+        max_channel_id = (service.get_max_channel_id() or "").strip()
         db = SessionLocal()
         try:
-            if not MAX_BOT_TOKEN or not MAX_CHANNEL_ID:
+            if not max_token or not max_channel_id:
                 raise RuntimeError("MAX_BOT_TOKEN или MAX_CHANNEL_ID не заданы")
-            await self.client.get_me()
-            await self.client.get_chat(MAX_CHANNEL_ID)
+            client = MaxApiClient(max_token, MAX_API_BASE_URL)
+            await client.get_me()
+            await client.get_chat(max_channel_id)
 
             post = db.query(Post).filter(Post.id == post_id).first()
             if not post:
@@ -58,11 +58,11 @@ class MaxPublisher:
                     if not file_id:
                         continue
                     file_bytes, filename = await self._download_telegram_media(file_id, m_type)
-                    upload_resp = await self.client.create_upload("video" if m_type == "video" else "image")
+                    upload_resp = await client.create_upload("video" if m_type == "video" else "image")
                     upload_url = upload_resp.get("url")
                     if not upload_url:
                         raise RuntimeError(f"Max upload URL missing for media type={m_type}")
-                    upload_result = await self.client.upload_binary(upload_url, file_bytes, filename)
+                    upload_result = await client.upload_binary(upload_url, file_bytes, filename)
                     if m_type == "video":
                         token = upload_resp.get("token") or upload_result.get("token")
                         payload = {"token": token} if token else upload_result
@@ -75,14 +75,14 @@ class MaxPublisher:
                     prepared_media.append(prepared_item)
 
                 try:
-                    resp = await self.client.send_media_group(MAX_CHANNEL_ID, prepared_media)
+                    resp = await client.send_media_group(max_channel_id, prepared_media)
                 except Exception:
                     prepared_media[0].pop("parse_mode", None)
                     prepared_media[0]["caption"] = plain_text
                     last_exc = None
                     for attempt in range(3):
                         try:
-                            resp = await self.client.send_media_group(MAX_CHANNEL_ID, prepared_media)
+                            resp = await client.send_media_group(max_channel_id, prepared_media)
                             break
                         except Exception as exc:
                             last_exc = exc
@@ -95,15 +95,15 @@ class MaxPublisher:
                 message_id = self._extract_message_id(resp)
             else:
                 try:
-                    resp = await self.client.send_message(
-                        MAX_CHANNEL_ID,
+                    resp = await client.send_message(
+                        max_channel_id,
                         text,
                         parse_mode=parse_mode,
                         disable_web_page_preview=True,
                     )
                 except Exception:
-                    resp = await self.client.send_message(
-                        MAX_CHANNEL_ID,
+                    resp = await client.send_message(
+                        max_channel_id,
                         plain_text,
                         parse_mode=None,
                         disable_web_page_preview=True,
@@ -113,10 +113,10 @@ class MaxPublisher:
             post.is_published_max = True
             post.published_max_at = datetime.now(timezone.utc)
             if message_id:
-                post.max_link = f"max://channel/{MAX_CHANNEL_ID}/{message_id}"
+                post.max_link = f"max://channel/{max_channel_id}/{message_id}"
                 payloads: list = [resp]
                 try:
-                    info = await self.client.get_message(str(message_id))
+                    info = await client.get_message(str(message_id))
                     payloads.append(info)
                 except Exception as fetch_err:
                     logger.warning(
@@ -125,7 +125,7 @@ class MaxPublisher:
                         post_id,
                         fetch_err,
                     )
-                share_url = resolve_max_channel_share_url(str(MAX_CHANNEL_ID), *payloads)
+                share_url = resolve_max_channel_share_url(str(max_channel_id), *payloads)
                 if share_url:
                     post.max_share_url = share_url
                 try:

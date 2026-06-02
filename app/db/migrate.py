@@ -186,6 +186,36 @@ def ensure_avito_item_id_bigint() -> bool:
         return False
 
 
+def ensure_post_vk_and_queue_columns_if_missing() -> bool:
+    """После restore дампа в posts могут отсутствовать поля VK и очереди."""
+    try:
+        inspector = inspect(engine)
+        columns = {col["name"] for col in inspector.get_columns("posts")}
+        statements = []
+        column_defs = {
+            "vk_post_id": "ALTER TABLE posts ADD COLUMN vk_post_id VARCHAR",
+            "vk_post_link": "ALTER TABLE posts ADD COLUMN vk_post_link VARCHAR",
+            "in_queue": "ALTER TABLE posts ADD COLUMN in_queue BOOLEAN DEFAULT FALSE",
+            "queue_status": "ALTER TABLE posts ADD COLUMN queue_status VARCHAR",
+            "scheduled_at": "ALTER TABLE posts ADD COLUMN scheduled_at TIMESTAMP",
+        }
+        for name, stmt in column_defs.items():
+            if name not in columns:
+                statements.append(stmt)
+        if statements:
+            with engine.connect() as conn:
+                for stmt in statements:
+                    conn.execute(text(stmt))
+                conn.commit()
+            logger.info("VK/queue колонки posts добавлены: %s", ", ".join(statements))
+            return True
+        logger.info("VK/queue колонки posts уже существуют")
+        return False
+    except Exception as e:
+        logger.error("Ошибка при проверке/добавлении VK/queue колонок posts: %s", e)
+        return False
+
+
 def ensure_database_schema():
     """Обеспечивает актуальность схемы базы данных."""
     logger.info("Проверка схемы базы данных...")
@@ -193,6 +223,7 @@ def ensure_database_schema():
     # Проверяем и добавляем колонку telegram_link
     check_and_add_column_if_missing()
     check_and_add_max_columns_if_missing()
+    ensure_post_vk_and_queue_columns_if_missing()
     ensure_avito_feed_operations_table()
     ensure_avito_item_id_bigint()
     

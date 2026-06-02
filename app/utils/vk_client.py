@@ -1,14 +1,10 @@
 """VK API sessions: community token (стена) vs market token (market.*)."""
-import json
-import time
 from typing import Optional
 
 import vk_api
 
 from app.config.settings import VK_ACCESS_TOKEN, VK_GROUP_ID, VK_MARKET_ACCESS_TOKEN
 from app.services.settings_service import get_settings_service
-
-_DEBUG_LOG = "/root/tg_poster_docker/.cursor/debug-23bea4.log"
 
 
 def market_token() -> str:
@@ -35,6 +31,16 @@ def resolve_vk_group_id() -> str:
     if env_gid:
         return env_gid
     return _get_integration_value("vk_group_id")
+
+
+def resolved_vk_group_id_int() -> int:
+    """Числовой ID группы VK; ошибка, если не задан ни в .env, ни в настройках."""
+    raw = resolve_vk_group_id()
+    if not raw:
+        raise ValueError(
+            "VK group ID is not configured (set VK_GROUP_ID in .env or vk_group_id in bot settings)"
+        )
+    return abs(int(raw))
 
 
 def market_token_source() -> str:
@@ -80,28 +86,3 @@ def vk_api_error_code(exc: BaseException) -> Optional[int]:
     if isinstance(err, dict) and err.get("error_code") is not None:
         return int(err["error_code"])
     return None
-
-
-def agent_debug_log(
-    hypothesis_id: str,
-    location: str,
-    message: str,
-    data: Optional[dict] = None,
-    run_id: str = "pre-fix",
-) -> None:
-    # #region agent log
-    try:
-        payload = {
-            "sessionId": "23bea4",
-            "runId": run_id,
-            "hypothesisId": hypothesis_id,
-            "location": location,
-            "message": message,
-            "data": data or {},
-            "timestamp": int(time.time() * 1000),
-        }
-        with open(_DEBUG_LOG, "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    except OSError:
-        pass
-    # #endregion

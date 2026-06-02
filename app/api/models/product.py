@@ -58,7 +58,7 @@ class Product(Base):
     archived_at = Column(DateTime, nullable=True)  # Дата архивации товара
     
     # Relationship
-    post = relationship("Post", backref="products")
+    post = relationship("Post", backref="products", passive_deletes=True)
     
     # Indexes
     __table_args__ = (

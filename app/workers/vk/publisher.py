@@ -6,8 +6,8 @@ import requests
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone
 
-from app.config.settings import VK_GROUP_ID, API_HOST, API_PORT
-from app.utils.vk_client import get_community_vk_session
+from app.config.settings import API_HOST, API_PORT, VK_UPLOAD_STRICT_MODE
+from app.utils.vk_client import get_community_vk_session, resolved_vk_group_id_int
 from app.db.database import SessionLocal
 from app.api.models.post import Post, PublicationLog
 from app.utils.text_formatter import format_for_vk
@@ -19,6 +19,7 @@ class VKPublisher:
 
     def __init__(self):
         """Initialize VK API session."""
+        self.group_id = resolved_vk_group_id_int()
         self.vk_session = get_community_vk_session()
         self.vk = self.vk_session.get_api()
         self.upload = vk_api.VkUpload(self.vk_session)
@@ -136,13 +137,20 @@ class VKPublisher:
 
             # Download and upload photos
             photo_attachments = []
-            for file_id in post.photos:
+            failed_photo_ids: list[str] = []
+            failed_video_ids: list[str] = []
+            total_photos = len(post.photos or [])
+            total_videos = len(post.videos or [])
+
+            for file_id in post.photos or []:
+                attachments_before = len(photo_attachments)
                 try:
                     # Download photo from Telegram
                     photo_data = await self.download_telegram_file(file_id)
 
                     if not photo_data:
                         logger.error(f"Failed to download photo {file_id}")
+                        failed_photo_ids.append(file_id)
                         continue
 
                     # Save photo to temporary file
@@ -155,14 +163,14 @@ class VKPublisher:
                         # Try using photo_wall method
                         upload_result = self.upload.photo_wall(
                             temp_file,
-                            group_id=abs(int(VK_GROUP_ID))
+                            group_id=self.group_id,
                         )
                     except Exception as e:
                         logger.error(f"Error using photo_wall: {str(e)}")
                         # Fallback to regular photo upload
                         try:
                             # Create an album if needed
-                            albums = self.vk.photos.getAlbums(owner_id=-abs(int(VK_GROUP_ID)))
+                            albums = self.vk.photos.getAlbums(owner_id=-self.group_id)
                             album_id = None
 
                             # Look for a "Wall Photos" album
@@ -175,8 +183,8 @@ class VKPublisher:
                             if not album_id:
                                 album = self.vk.photos.createAlbum(
                                     title="Wall Photos",
-                                    group_id=abs(int(VK_GROUP_ID)),
-                                    description="Photos for wall posts"
+                                    group_id=self.group_id,
+                                    description="Photos for wall posts",
                                 )
                                 album_id = album.get("id")
 
@@ -184,12 +192,12 @@ class VKPublisher:
                             upload_result = self.upload.photo(
                                 temp_file,
                                 album_id=album_id,
-                                group_id=abs(int(VK_GROUP_ID))
+                                group_id=self.group_id,
                             )
                         except Exception as e2:
                             logger.error(f"Error with fallback photo upload: {str(e2)}")
                             # Last resort - try uploading to wall directly
-                            upload_server = self.vk.photos.getWallUploadServer(group_id=abs(int(VK_GROUP_ID)))
+                            upload_server = self.vk.photos.getWallUploadServer(group_id=self.group_id)
 
                             # Upload photo to server
                             with open(temp_file, 'rb') as f:
@@ -197,10 +205,10 @@ class VKPublisher:
 
                             # Save photo to wall
                             save_result = self.vk.photos.saveWallPhoto(
-                                group_id=abs(int(VK_GROUP_ID)),
-                                photo=response['photo'],
-                                server=response['server'],
-                                hash=response['hash']
+                                group_id=self.group_id,
+                                photo=response["photo"],
+                                server=response["server"],
+                                hash=response["hash"],
                             )
 
                             upload_result = save_result
@@ -210,18 +218,22 @@ class VKPublisher:
                         owner_id = photo["owner_id"]
                         photo_id = photo["id"]
                         photo_attachments.append(f"photo{owner_id}_{photo_id}")
+                    if len(photo_attachments) == attachments_before:
+                        failed_photo_ids.append(file_id)
                 except Exception as e:
                     logger.error(f"Error uploading photo {file_id}: {str(e)}")
+                    failed_photo_ids.append(file_id)
 
             # Download and upload videos
             video_attachments = []
-            for file_id in post.videos:
+            for file_id in post.videos or []:
                 try:
                     # Download video from Telegram
                     video_data = await self.download_telegram_file(file_id)
 
                     if not video_data:
                         logger.error(f"Failed to download video {file_id}")
+                        failed_video_ids.append(file_id)
                         continue
 
                     # Save video to temporary file
@@ -234,7 +246,7 @@ class VKPublisher:
                         video_file=temp_file,
                         name=post.name,
                         description=text[:200] + "..." if len(text) > 200 else text,
-                        group_id=abs(int(VK_GROUP_ID))
+                        group_id=self.group_id,
                     )
 
                     # Format attachment string
@@ -243,13 +255,19 @@ class VKPublisher:
                     video_attachments.append(f"video{owner_id}_{video_id}")
                 except Exception as e:
                     logger.error(f"Error uploading video {file_id}: {str(e)}")
+                    failed_video_ids.append(file_id)
+
+            if VK_UPLOAD_STRICT_MODE and (failed_photo_ids or failed_video_ids):
+                raise RuntimeError(
+                    f"VK upload strict mode: failed photos={failed_photo_ids}, videos={failed_video_ids}"
+                )
 
             # Combine all attachments
             attachments = ",".join(photo_attachments + video_attachments)
 
             # Post to VK wall
             post_result = self.vk.wall.post(
-                owner_id=-abs(int(VK_GROUP_ID)),  # Negative ID for group
+                owner_id=-self.group_id,
                 from_group=1,  # Post as group
                 message=text,
                 attachments=attachments
@@ -258,7 +276,7 @@ class VKPublisher:
             # Сохраняем ID поста и ссылку
             vk_post_id = post_result.get('post_id')
             if vk_post_id:
-                owner_id = -abs(int(VK_GROUP_ID))
+                owner_id = -self.group_id
                 post.vk_post_id = f"{owner_id}_{vk_post_id}"
                 post.vk_post_link = f"https://vk.com/wall{owner_id}_{vk_post_id}"
 
@@ -266,12 +284,20 @@ class VKPublisher:
             post.is_published_vk = True
             post.published_vk_at = datetime.now(timezone.utc)
 
-            # Add publication log
+            log_message = (
+                f"Published to VK (photos {len(photo_attachments)}/{total_photos}, "
+                f"videos {len(video_attachments)}/{total_videos}, strict={VK_UPLOAD_STRICT_MODE})"
+            )
+            if failed_photo_ids:
+                log_message += f"; failed_photo_ids={','.join(failed_photo_ids)}"
+            if failed_video_ids:
+                log_message += f"; failed_video_ids={','.join(failed_video_ids)}"
+
             log = PublicationLog(
                 post_id=post.id,
                 platform="vk",
                 status="success",
-                message="Published to VK"
+                message=log_message,
             )
             db.add(log)
 

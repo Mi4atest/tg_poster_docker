@@ -8,7 +8,7 @@ import re
 import json
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Tuple
 
 from vk_api.exceptions import ApiError
 
@@ -18,18 +18,16 @@ from app.config.settings import (
     API_PORT,
     VK_MARKET_ENABLED,
     VK_MARKET_AUTO_CATEGORY,
-    VK_MARKET_AUTO_COLLECTION
+    VK_MARKET_AUTO_COLLECTION,
+    VK_UPLOAD_STRICT_MODE,
 )
 from app.db.database import SessionLocal
-from app.api.models.post import Post
+from app.api.models.post import Post, PublicationLog
 from app.api.models.product import Product
 from app.utils.product_parser import parse_product_data
 from app.utils.vk_client import (
-    agent_debug_log,
     get_market_vk_session,
-    market_token_source,
-    resolve_vk_group_id,
-    vk_api_error_code,
+    resolved_vk_group_id_int,
 )
 
 logger = logging.getLogger(__name__)
@@ -40,7 +38,7 @@ class VKProductPublisher:
 
     def __init__(self):
         """Initialize VK API session."""
-        self.group_id = abs(int(resolve_vk_group_id()))
+        self.group_id = resolved_vk_group_id_int()
         self.owner_id = -self.group_id
         self.vk_session = get_market_vk_session(api_version="5.199")
         self.vk = self.vk_session.get_api()
@@ -329,28 +327,28 @@ class VKProductPublisher:
         logger.warning(f"Collection '{collection_name}' not found in available albums")
         return None
 
-    async def upload_product_photos(self, photo_file_ids: List[str], post: Post) -> List[Dict]:
+    async def upload_product_photos(
+        self, photo_file_ids: List[str], post: Post
+    ) -> Tuple[List[Dict], List[str]]:
         """
         Загрузить фотографии товара на сервер ВК (первые 5).
 
-        Args:
-            photo_file_ids: Список file_id фотографий из Telegram
-            post: Объект поста
-
         Returns:
-            Список словарей с данными фотографий: [{'id': int, 'owner_id': int}, ...]
+            (photo_data_list, failed_file_ids)
         """
-        photo_data_list = []
+        photo_data_list: List[Dict] = []
+        failed_file_ids: List[str] = []
 
-        # Берем первые 5 фотографий
         photos_to_upload = photo_file_ids[:5]
 
         for idx, file_id in enumerate(photos_to_upload):
+            uploaded = False
             try:
                 # Скачиваем фото из Telegram
                 photo_data = await self.download_telegram_file(file_id)
                 if not photo_data:
                     logger.error(f"Failed to download photo {file_id}")
+                    failed_file_ids.append(file_id)
                     continue
 
                 # Сохраняем во временный файл
@@ -440,6 +438,7 @@ class VKProductPublisher:
                         })
 
                         logger.info(f"Uploaded product photo {file_id} to VK, got ID {photo_info['id']}")
+                        uploaded = True
 
                     # Удаляем временный файл
                     if os.path.exists(temp_file):
@@ -449,13 +448,19 @@ class VKProductPublisher:
                     logger.error(f"Error uploading product photo {file_id}: {str(e)}")
                     if os.path.exists(temp_file):
                         os.unlink(temp_file)
+                    if not uploaded:
+                        failed_file_ids.append(file_id)
                     continue
 
             except Exception as e:
                 logger.error(f"Error processing product photo {file_id}: {str(e)}")
+                failed_file_ids.append(file_id)
                 continue
 
-        return photo_data_list
+            if not uploaded:
+                failed_file_ids.append(file_id)
+
+        return photo_data_list, failed_file_ids
 
     async def upload_product_video(self, video_file_id: str, post: Post) -> Optional[int]:
         """
@@ -624,18 +629,6 @@ class VKProductPublisher:
         Returns:
             True если успешно, False в противном случае
         """
-        token_src = market_token_source()
-        agent_debug_log(
-            "H1",
-            "product_publisher.update_product_price:entry",
-            "market.edit attempt",
-            {
-                "vk_product_id": vk_product_id,
-                "price_rub": price,
-                "token_source": token_src,
-                "has_dedicated_market_token": bool(VK_MARKET_ACCESS_TOKEN),
-            },
-        )
         try:
             await self._wait_for_api_interval()
 
@@ -647,28 +640,9 @@ class VKProductPublisher:
             )
 
             logger.info(f"Product {vk_product_id} price updated to {price}")
-            agent_debug_log(
-                "H1",
-                "product_publisher.update_product_price:ok",
-                "market.edit success",
-                {"vk_product_id": vk_product_id, "price_rub": price, "token_source": token_src},
-                run_id="post-fix",
-            )
             return True
         except Exception as e:
-            err_code = vk_api_error_code(e)
-            agent_debug_log(
-                "H1",
-                "product_publisher.update_product_price:error",
-                str(e),
-                {
-                    "vk_product_id": vk_product_id,
-                    "price_rub": price,
-                    "token_source": token_src,
-                    "error_code": err_code,
-                },
-            )
-            if err_code == 27 and not VK_MARKET_ACCESS_TOKEN:
+            if getattr(e, "code", None) == 27 and not VK_MARKET_ACCESS_TOKEN:
                 logger.error(
                     "market.edit unavailable with community token (error 27). "
                     "Set VK_MARKET_ACCESS_TOKEN to official user OAuth token (market scope)."
@@ -746,11 +720,37 @@ class VKProductPublisher:
                     logger.warning(f"Collection '{collection_name}' not found, will create without collection")
 
             # Загружаем фотографии (первые 5)
-            photo_data_list = []
+            photo_data_list: List[Dict] = []
+            failed_photo_ids: List[str] = []
+            expected_photos = min(len(post.photos or []), 5)
             if post.photos:
-                photo_data_list = await self.upload_product_photos(post.photos, post)
+                photo_data_list, failed_photo_ids = await self.upload_product_photos(post.photos, post)
+                if VK_UPLOAD_STRICT_MODE and failed_photo_ids:
+                    msg = (
+                        f"VK Market upload strict mode: failed_photo_ids={','.join(failed_photo_ids)}"
+                    )
+                    logger.error(msg)
+                    db.add(
+                        PublicationLog(
+                            post_id=post_id,
+                            platform="vk_market",
+                            status="error",
+                            message=msg,
+                        )
+                    )
+                    db.commit()
+                    return False
                 if not photo_data_list:
                     logger.error(f"No photos uploaded for post {post_id}")
+                    db.add(
+                        PublicationLog(
+                            post_id=post_id,
+                            platform="vk_market",
+                            status="error",
+                            message="No photos uploaded to VK Market",
+                        )
+                    )
+                    db.commit()
                     return False
 
             # Загружаем видео, если есть
@@ -798,6 +798,20 @@ class VKProductPublisher:
                 status='active'
             )
             db.add(product)
+            market_log = (
+                f"Published to VK Market (photos {len(photo_data_list)}/{expected_photos}, "
+                f"strict={VK_UPLOAD_STRICT_MODE})"
+            )
+            if failed_photo_ids:
+                market_log += f"; failed_photo_ids={','.join(failed_photo_ids)}"
+            db.add(
+                PublicationLog(
+                    post_id=post_id,
+                    platform="vk_market",
+                    status="success",
+                    message=market_log,
+                )
+            )
             db.commit()
 
             logger.info(f"Product {vk_product_id} published successfully for post {post_id}")

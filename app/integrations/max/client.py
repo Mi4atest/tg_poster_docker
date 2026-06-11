@@ -7,6 +7,33 @@ import aiohttp
 
 logger = logging.getLogger(__name__)
 
+_MEDIA_ATTACHMENT_TYPES = frozenset({"image", "video", "file", "audio"})
+
+
+def _preservable_attachments_from_message(msg: dict[str, Any]) -> list[dict[str, Any]]:
+    """Медиа-вложения из GET /messages для повторной отправки при PUT (без link preview type=share)."""
+    body: dict[str, Any] = {}
+    if isinstance(msg.get("body"), dict):
+        body = msg["body"]
+    elif isinstance(msg.get("message"), dict):
+        inner = msg["message"].get("body") or msg["message"]
+        if isinstance(inner, dict):
+            body = inner
+
+    attachments = body.get("attachments")
+    if not isinstance(attachments, list):
+        return []
+
+    preserved: list[dict[str, Any]] = []
+    for item in attachments:
+        if not isinstance(item, dict):
+            continue
+        a_type = item.get("type")
+        payload = item.get("payload")
+        if a_type in _MEDIA_ATTACHMENT_TYPES and isinstance(payload, dict):
+            preserved.append({"type": a_type, "payload": payload})
+    return preserved
+
 
 class MaxApiClient:
     def __init__(self, token: str, base_url: str):
@@ -120,6 +147,36 @@ class MaxApiClient:
                     raise RuntimeError(f"Max upload failed: status={response.status}, body={body}")
                 return body
 
+    async def _edit_message(
+        self,
+        message_id: int | str,
+        text: str,
+        parse_mode: Optional[str] = None,
+        *,
+        preserve_attachments: bool = True,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "text": text,
+            "disable_link_preview": True,
+        }
+        if parse_mode:
+            body["format"] = "markdown" if "markdown" in parse_mode.lower() else "html"
+
+        if preserve_attachments:
+            try:
+                msg = await self.get_message(str(message_id))
+                preserved = _preservable_attachments_from_message(msg)
+                if preserved:
+                    body["attachments"] = preserved
+            except Exception as exc:
+                logger.warning(
+                    "Max edit: could not preserve attachments for message_id=%s: %s",
+                    message_id,
+                    exc,
+                )
+
+        return await self._request("PUT", "/messages", payload=body, query={"message_id": str(message_id)})
+
     async def edit_message_text(
         self,
         chat_id: str,
@@ -127,10 +184,7 @@ class MaxApiClient:
         text: str,
         parse_mode: Optional[str] = None,
     ) -> dict[str, Any]:
-        body: dict[str, Any] = {"text": text}
-        if parse_mode:
-            body["format"] = "markdown" if "markdown" in parse_mode.lower() else "html"
-        return await self._request("PUT", "/messages", payload=body, query={"message_id": str(message_id)})
+        return await self._edit_message(message_id, text, parse_mode)
 
     async def edit_message_caption(
         self,
@@ -139,7 +193,4 @@ class MaxApiClient:
         caption: str,
         parse_mode: Optional[str] = None,
     ) -> dict[str, Any]:
-        body: dict[str, Any] = {"text": caption}
-        if parse_mode:
-            body["format"] = "markdown" if "markdown" in parse_mode.lower() else "html"
-        return await self._request("PUT", "/messages", payload=body, query={"message_id": str(message_id)})
+        return await self._edit_message(message_id, caption, parse_mode)

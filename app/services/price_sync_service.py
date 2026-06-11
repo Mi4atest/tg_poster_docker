@@ -15,12 +15,12 @@ from aiogram import Bot
 from aiogram.types import LinkPreviewOptions
 
 from app.utils.product_dashboard_label import get_product_dashboard_label
-from app.utils.time_msk import format_hm_msk
+from app.utils.time_msk import format_dashboard_ts_msk
 
 logger = logging.getLogger(__name__)
 
 LIST_REFRESH_DEBOUNCE_SEC = 20.0
-MAX_DASHBOARD_ROWS = 7
+TELEGRAM_TEXT_LIMIT = 4090
 _vk_publisher_singleton = None
 
 
@@ -447,14 +447,14 @@ class PriceSyncService:
         if job.status == JobStatus.RUNNING:
             return f"⏳ {label} — {self._running_hint(job)}"
         if job.status == JobStatus.OK:
-            ts = format_hm_msk(job.finished_at or job.created_at)
+            ts = format_dashboard_ts_msk(job.finished_at or job.created_at)
             return f"✅ {label} — всё OK ({ts})"
         if job.status == JobStatus.PARTIAL:
             detail = html.escape(job.platforms.detail or "частично")
-            ts = format_hm_msk(job.finished_at or job.created_at)
+            ts = format_dashboard_ts_msk(job.finished_at or job.created_at)
             return f"⚠️ {label} — {detail} ({ts})"
         detail = html.escape(job.platforms.detail or "ошибка")
-        ts = format_hm_msk(job.finished_at or job.created_at)
+        ts = format_dashboard_ts_msk(job.finished_at or job.created_at)
         return f"❌ {label} — {detail} ({ts})"
 
     def render_dashboard_text(self, chat_id: int) -> str:
@@ -464,30 +464,29 @@ class PriceSyncService:
             j
             for j in dash.jobs
             if j.status in (JobStatus.OK, JobStatus.PARTIAL, JobStatus.ERROR)
-        ][:MAX_DASHBOARD_ROWS]
-
-        lines: List[str] = []
-        shown = active[:MAX_DASHBOARD_ROWS]
-        for job in shown:
-            lines.append(self._format_job_line(job))
-        remaining = MAX_DASHBOARD_ROWS - len(shown)
-        for job in recent_done[:remaining]:
-            lines.append(self._format_job_line(job))
-
-        if not lines:
-            lines.append("⏳ Пока нет операций синхронизации")
+        ]
 
         queued = sum(1 for j in dash.jobs if j.status == JobStatus.QUEUED)
         running = sum(1 for j in dash.jobs if j.status == JobStatus.RUNNING)
         in_queue = queued + running
-        lines.append("")
-        lines.append(
+        footer = (
             f"В очереди: {in_queue} · Готово: {dash.done_count} · Ошибки: {dash.error_count}"
         )
-        text = "\n".join(lines)
-        if len(text) > 4000:
-            text = text[:3990] + "…"
-        return text
+        footer_block = f"\n\n{footer}"
+        budget = TELEGRAM_TEXT_LIMIT - len(footer_block)
+
+        lines: List[str] = []
+        for job in active + recent_done:
+            line = self._format_job_line(job)
+            candidate = "\n".join(lines + [line]) if lines else line
+            if len(candidate) > budget:
+                break
+            lines.append(line)
+
+        if not lines:
+            lines.append("⏳ Пока нет операций синхронизации")
+
+        return "\n".join(lines) + footer_block
 
     async def _refresh_dashboard(self, bot: Bot, chat_id: int) -> None:
         dash = self._get_dashboard(chat_id)

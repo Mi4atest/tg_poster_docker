@@ -15,3 +15,11 @@ def to_msk(dt: datetime) -> datetime:
 
 def format_hm_msk(dt: datetime) -> str:
     return to_msk(dt).strftime("%H:%M")
+
+
+def format_dashboard_ts_msk(dt: datetime) -> str:
+    """Время для дашборда: сегодня — только HH:MM, иначе DD.MM HH:MM (МСК)."""
+    local = to_msk(dt)
+    if local.date() == datetime.now(MSK).date():
+        return local.strftime("%H:%M")
+    return local.strftime("%d.%m %H:%M")

@@ -150,6 +150,29 @@ async def get_products_api(status_filter: Optional[str] = None, search: Optional
         return [], 0
 
 
+async def get_all_products_api(
+    status_filter: Optional[str] = None,
+    search: Optional[str] = None,
+    batch_size: int = 1000,
+):
+    """Получить все товары из API, обходя пагинацию."""
+    all_items = []
+    skip = 0
+    total = 0
+    while True:
+        items, total = await get_products_api(
+            status_filter=status_filter,
+            search=search,
+            skip=skip,
+            limit=batch_size,
+        )
+        all_items.extend(items)
+        if not items or len(all_items) >= total:
+            break
+        skip += batch_size
+    return all_items, total
+
+
 async def get_product_api(product_id: int):
     """Получить товар по ID из API."""
     try:
@@ -1649,7 +1672,7 @@ async def show_archived_products(message, year=None, month=None, day=None):
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
     from datetime import datetime
     
-    products, total = await get_products_api(status_filter="unavailable")
+    products, total = await get_all_products_api(status_filter="unavailable")
     
     if not products:
         text = "📁 Архив товаров пуст."

@@ -192,6 +192,82 @@ def resolve_product_max_link(product: Optional[dict]) -> Optional[str]:
         return None
 
 
+def resolve_product_instagram_media_id(product: Optional[dict]) -> Optional[str]:
+    """Вернуть instagram_media_id товара, при отсутствии — из связанного Post."""
+    if not product:
+        return None
+    direct_id = (product.get("instagram_media_id") or "").strip()
+    if direct_id:
+        return direct_id
+    post_id = product.get("post_id")
+    if not post_id:
+        return None
+    try:
+        from app.db.database import SessionLocal
+        from app.api.models.post import Post
+
+        db = SessionLocal()
+        try:
+            post = db.query(Post).filter(Post.id == post_id).first()
+            resolved = (post.instagram_media_id or "").strip() if post else ""
+            return resolved or None
+        finally:
+            db.close()
+    except Exception:
+        logger.exception("Failed to resolve product instagram_media_id from post_id=%s", post_id)
+        return None
+
+
+def resolve_product_instagram_link(product: Optional[dict]) -> Optional[str]:
+    """Вернуть instagram_link товара, при отсутствии — из связанного Post."""
+    if not product:
+        return None
+    direct_link = (product.get("instagram_link") or "").strip()
+    if direct_link:
+        return direct_link
+    post_id = product.get("post_id")
+    if not post_id:
+        return None
+    try:
+        from app.db.database import SessionLocal
+        from app.api.models.post import Post
+
+        db = SessionLocal()
+        try:
+            post = db.query(Post).filter(Post.id == post_id).first()
+            resolved = (post.instagram_link or "").strip() if post else ""
+            return resolved or None
+        finally:
+            db.close()
+    except Exception:
+        logger.exception("Failed to resolve product instagram_link from post_id=%s", post_id)
+        return None
+
+
+def format_product_platform_links_html(product: dict) -> str:
+    """Ссылки на площадки для карточки товара."""
+    text = ""
+    if product.get("vk_product_link"):
+        text += f"\n🔗 <a href='{product['vk_product_link']}'>Ссылка на товар в ВК</a>"
+    if product.get("avito_url"):
+        text += f"\n🛒 <a href='{product['avito_url']}'>Ссылка на Авито</a>"
+    if product.get("telegram_link"):
+        text += f"\n🔗 <a href='{product['telegram_link']}'>Ссылка на товар в ТГ</a>"
+    if product.get("max_link") or product.get("max_share_url"):
+        _max_href = html.escape(
+            max_link_href_for_telegram_html(
+                product.get("max_link"),
+                product.get("max_share_url"),
+            ),
+            quote=True,
+        )
+        text += f'\n🔗 <a href="{_max_href}">Ссылка на товар в MAX</a>'
+    ig_link = resolve_product_instagram_link(product)
+    if ig_link:
+        text += f"\n🔗 <a href='{html.escape(ig_link, quote=True)}'>Ссылка на товар в IG</a>"
+    return text
+
+
 _MAX_TELEGRAM_CHANNEL_LINK_RE = re.compile(
     r"^max://channel/(?P<chat>[^/]+)/(?P<mid>[^/?#]+)\s*$",
     re.IGNORECASE,
@@ -396,15 +472,17 @@ def format_status_unavailable_summary(
     *,
     telegram_ok: Optional[bool] = None,
     max_ok: Optional[bool] = None,
-    mark_telegram_enabled: bool = False,
+    instagram_ok: Optional[bool] = None,
+    mark_telegram_enabled: bool = True,
     has_telegram_link: bool = False,
     has_max_link: bool = False,
+    has_instagram_media: bool = False,
 ) -> str:
-    """Краткий отчёт после «Товар недоступен»: ВК, ТГ, Авито, Max, БД."""
+    """Краткий отчёт после «Товар недоступен»: ВК, ТГ, Авито, Max, IG, БД."""
 
     def line_mark(label: str, ok: Optional[bool], enabled: bool, has_link: bool) -> str:
         if not enabled:
-            return f"⏭️ {html.escape(label)} <i>(не выбрано «Пометить ТГ»)</i>"
+            return f"⏭️ {html.escape(label)} <i>(не выбрано «Пометить ТГ/IG/Max»)</i>"
         if not has_link:
             return f"⏭️ {html.escape(label)} <i>(нет ссылки)</i>"
         if ok is True:
@@ -420,6 +498,7 @@ def format_status_unavailable_summary(
         line_mark("Телеграм (#неактуально)", telegram_ok, mark_telegram_enabled, has_telegram_link),
         _platform_sync_line_html("Авито (архив объявления)", ps.get("avito") or {}),
         line_mark("Max (#неактуально)", max_ok, mark_telegram_enabled, has_max_link),
+        line_mark("Instagram (#неактуально)", instagram_ok, mark_telegram_enabled, has_instagram_media),
         _platform_sync_line_html("База данных", ps.get("database") or {}),
         "✅ Товар отмечен как недоступный",
     ]
@@ -780,21 +859,7 @@ async def product_detail(callback: CallbackQuery, state: FSMContext):
     }
     status = product.get('status', 'active')
     text += f"\n{status_emoji.get(status, '❓')} Статус: {status_text.get(status, status)}\n"
-    
-    if product.get('vk_product_link'):
-        text += f"\n🔗 <a href='{product['vk_product_link']}'>Ссылка на товар в ВК</a>"
-    if product.get("avito_url"):
-        text += f"\n🛒 <a href='{product['avito_url']}'>Ссылка на Авито</a>"
-    if product.get('telegram_link'):
-        text += f"\n🔗 <a href='{product['telegram_link']}'>Ссылка на товар в ТГ</a>"
-    if product.get("max_link") or product.get("max_share_url"):
-        _max_href = html.escape(
-            max_link_href_for_telegram_html(
-                product.get("max_link"), product.get("max_share_url")
-            ),
-            quote=True,
-        )
-        text += f'\n🔗 <a href="{_max_href}">Ссылка на товар в MAX</a>'
+    text += format_product_platform_links_html(product)
 
     await safe_edit_message(
         callback.message,
@@ -819,18 +884,18 @@ async def product_unavailable(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Товар не найден", show_alert=True)
         return
     
-    # Инициализируем состояние с переключателями (по умолчанию выключены)
+    # Инициализируем состояние с переключателями (по умолчанию «Пометить ТГ/IG/Max» включено)
     await state.update_data(
         product_id=product_id,
         report_enabled=False,
-        mark_telegram_enabled=False
+        mark_telegram_enabled=True,
     )
     
     text = f"🚫 Пометить товар как недоступный?\n\n📦 {product.get('name', 'Без названия')}\n\nТовар будет скрыт из каталога, но не удален."
     await safe_edit_message(
         callback.message,
         text,
-        reply_markup=get_product_status_confirmation_keyboard(product_id, "unavailable", report_enabled=False, mark_telegram_enabled=False)
+        reply_markup=get_product_status_confirmation_keyboard(product_id, "unavailable", report_enabled=False, mark_telegram_enabled=True)
     )
     await callback.answer()
 
@@ -856,7 +921,7 @@ async def product_toggle_report(callback: CallbackQuery, state: FSMContext):
         await state.update_data(
             product_id=product_id,
             report_enabled=False,
-            mark_telegram_enabled=False
+            mark_telegram_enabled=True,
         )
         data = await state.get_data()
     
@@ -866,7 +931,7 @@ async def product_toggle_report(callback: CallbackQuery, state: FSMContext):
     
     await state.update_data(report_enabled=new_report)
     
-    mark_tg = data.get("mark_telegram_enabled", False)
+    mark_tg = data.get("mark_telegram_enabled", True)
     
     product = await get_product_api(product_id)
     if not product:
@@ -904,11 +969,11 @@ async def product_toggle_mark_tg(callback: CallbackQuery, state: FSMContext):
         await state.update_data(
             product_id=product_id,
             report_enabled=False,
-            mark_telegram_enabled=False
+            mark_telegram_enabled=True,
         )
         data = await state.get_data()
     
-    current_mark_tg = data.get("mark_telegram_enabled", False)
+    current_mark_tg = data.get("mark_telegram_enabled", True)
     new_mark_tg = not current_mark_tg
     logger.info(f"Toggling mark TG from {current_mark_tg} to {new_mark_tg}")
     
@@ -1033,10 +1098,7 @@ async def _return_to_used_product_detail(
     status_text = {"active": "Активен", "unavailable": "Недоступен", "deleted": "Удален"}
     status_val = product.get("status", "active")
     text += f"\n{status_emoji.get(status_val, '❓')} Статус: {status_text.get(status_val, status_val)}\n"
-    if product.get("vk_product_link"):
-        text += f"\n🔗 <a href='{product['vk_product_link']}'>Ссылка на товар в ВК</a>"
-    if product.get("avito_url"):
-        text += f"\n🛒 <a href='{product['avito_url']}'>Ссылка на Авито</a>"
+    text += format_product_platform_links_html(product)
 
     await safe_edit_message(
         callback.message,
@@ -1168,10 +1230,7 @@ async def _after_product_price_updated(
     status_text = {"active": "Активен", "unavailable": "Недоступен", "deleted": "Удален"}
     status_val = updated_product.get("status", "active")
     text += f"\n{status_emoji.get(status_val, '❓')} Статус: {status_text.get(status_val, status_val)}\n"
-    if updated_product.get("vk_product_link"):
-        text += f"\n🔗 <a href='{updated_product['vk_product_link']}'>Ссылка на товар в ВК</a>"
-    if updated_product.get("avito_url"):
-        text += f"\n🛒 <a href='{updated_product['avito_url']}'>Ссылка на Авито</a>"
+    text += format_product_platform_links_html(updated_product)
     from app.bot.keyboards.product_keyboard import get_product_detail_keyboard
 
     await message.answer(
@@ -1363,6 +1422,8 @@ async def product_confirm_action(callback: CallbackQuery, state: FSMContext):
         resolved_max_link = resolve_product_max_link(updated_product)
         if resolved_max_link:
             await remove_max_post_unavailable(resolved_max_link)
+        if updated_product and resolve_product_instagram_media_id(updated_product):
+            await remove_instagram_post_unavailable(updated_product)
 
         await callback.answer("✅ Товар восстановлен")
         updated_product = await get_product_api(product_id)
@@ -1378,21 +1439,7 @@ async def product_confirm_action(callback: CallbackQuery, state: FSMContext):
             status_emoji = {"active": "✅", "unavailable": "🚫", "deleted": "🗑️"}
             status_text = {"active": "Активен", "unavailable": "Недоступен", "deleted": "Удален"}
             text += f"\n{status_emoji.get(status, '❓')} Статус: {status_text.get(status, status)}\n"
-            if updated_product.get("vk_product_link"):
-                text += f"\n🔗 <a href='{updated_product['vk_product_link']}'>Ссылка на товар в ВК</a>"
-            if updated_product.get("avito_url"):
-                text += f"\n🛒 <a href='{updated_product['avito_url']}'>Ссылка на Авито</a>"
-            if updated_product.get("telegram_link"):
-                text += f"\n🔗 <a href='{updated_product['telegram_link']}'>Ссылка на товар в ТГ</a>"
-            if updated_product.get("max_link") or updated_product.get("max_share_url"):
-                _max_href = html.escape(
-                    max_link_href_for_telegram_html(
-                        updated_product.get("max_link"),
-                        updated_product.get("max_share_url"),
-                    ),
-                    quote=True,
-                )
-                text += f'\n🔗 <a href="{_max_href}">Ссылка на товар в MAX</a>'
+            text += format_product_platform_links_html(updated_product)
             await safe_edit_message(
                 callback.message,
                 text,
@@ -1914,21 +1961,7 @@ async def process_product_unavailable(product_id: int, payment_method: Optional[
         status_emoji = {"active": "✅", "unavailable": "🚫", "deleted": "🗑️"}
         status_text = {"active": "Активен", "unavailable": "Недоступен", "deleted": "Удален"}
         text += f"\n{status_emoji.get(status, '❓')} Статус: {status_text.get(status, status)}\n"
-        if refreshed.get("vk_product_link"):
-            text += f"\n🔗 <a href='{refreshed['vk_product_link']}'>Ссылка на товар в ВК</a>"
-        if refreshed.get("avito_url"):
-            text += f"\n🛒 <a href='{refreshed['avito_url']}'>Ссылка на Авито</a>"
-        if refreshed.get("telegram_link"):
-            text += f"\n🔗 <a href='{refreshed['telegram_link']}'>Ссылка на товар в ТГ</a>"
-        if refreshed.get("max_link") or refreshed.get("max_share_url"):
-            _max_href = html.escape(
-                max_link_href_for_telegram_html(
-                    refreshed.get("max_link"),
-                    refreshed.get("max_share_url"),
-                ),
-                quote=True,
-            )
-            text += f'\n🔗 <a href="{_max_href}">Ссылка на товар в MAX</a>'
+        text += format_product_platform_links_html(refreshed)
         await safe_edit_message(
             callback.message,
             text,
@@ -1954,7 +1987,7 @@ async def product_payment_method(callback: CallbackQuery, state: FSMContext):
         return
     
     data = await state.get_data()
-    mark_telegram_enabled = data.get("mark_telegram_enabled", False)
+    mark_telegram_enabled = data.get("mark_telegram_enabled", True)
     
     # Обрабатываем пометку как недоступный с выбранным способом оплаты
     await process_product_unavailable(product_id, payment_method, mark_telegram_enabled, callback, state)
@@ -2711,6 +2744,82 @@ async def mark_max_post_unavailable(max_link: str) -> bool:
             db.close()
     except Exception as exc:
         logger.error("Error marking Max post unavailable: %s", exc, exc_info=True)
+        return False
+
+
+async def mark_instagram_post_unavailable(product: dict) -> bool:
+    """Оставить комментарий #неактуально под постом Instagram (Graph API)."""
+    try:
+        from app.workers.instagram.graph_client import InstagramGraphClient, UNAVAILABLE_COMMENT
+
+        media_id = resolve_product_instagram_media_id(product)
+        if not media_id:
+            logger.warning(
+                "Instagram unavailable: no media_id for product_id=%s",
+                product.get("id"),
+            )
+            return False
+
+        client = InstagramGraphClient()
+        if not client.enabled:
+            logger.error("Instagram Graph API not configured for commenting")
+            return False
+
+        if await client.has_unavailable_comment(media_id):
+            logger.info("Instagram media %s already has unavailable comment", media_id)
+            return True
+
+        ok = await client.post_comment(media_id, UNAVAILABLE_COMMENT)
+        if ok:
+            logger.info(
+                "Instagram comment posted for product_id=%s media_id=%s",
+                product.get("id"),
+                media_id,
+            )
+        return ok
+    except Exception as exc:
+        logger.error("Error marking Instagram post unavailable: %s", exc, exc_info=True)
+        return False
+
+
+async def remove_instagram_post_unavailable(product: dict) -> bool:
+    """Удалить комментарий #неактуально под постом Instagram при восстановлении товара."""
+    try:
+        from app.workers.instagram.graph_client import InstagramGraphClient
+
+        media_id = resolve_product_instagram_media_id(product)
+        if not media_id:
+            logger.info(
+                "Instagram restore: no media_id for product_id=%s, skip",
+                product.get("id"),
+            )
+            return True
+
+        client = InstagramGraphClient()
+        if not client.enabled:
+            logger.error("Instagram Graph API not configured for comment delete")
+            return False
+
+        comment_ids = await client.find_unavailable_comment_ids(media_id)
+        if not comment_ids:
+            logger.info("Instagram media %s: no #неактуально comment to remove", media_id)
+            return True
+
+        all_ok = True
+        for comment_id in comment_ids:
+            deleted = await client.delete_comment(comment_id)
+            if deleted:
+                logger.info(
+                    "Instagram deleted comment %s on media %s (product_id=%s)",
+                    comment_id,
+                    media_id,
+                    product.get("id"),
+                )
+            else:
+                all_ok = False
+        return all_ok
+    except Exception as exc:
+        logger.error("Error removing Instagram unavailable comment: %s", exc, exc_info=True)
         return False
 
 

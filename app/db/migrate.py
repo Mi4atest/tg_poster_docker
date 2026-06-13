@@ -186,6 +186,35 @@ def ensure_avito_item_id_bigint() -> bool:
         return False
 
 
+def check_and_add_instagram_link_columns_if_missing() -> bool:
+    """Проверяет наличие Instagram-колонок и добавляет отсутствующие."""
+    try:
+        inspector = inspect(engine)
+        post_columns = {col["name"] for col in inspector.get_columns("posts")}
+        product_columns = {col["name"] for col in inspector.get_columns("products")}
+        statements = []
+        if "instagram_link" not in post_columns:
+            statements.append("ALTER TABLE posts ADD COLUMN instagram_link VARCHAR")
+        if "instagram_media_id" not in post_columns:
+            statements.append("ALTER TABLE posts ADD COLUMN instagram_media_id VARCHAR")
+        if "instagram_link" not in product_columns:
+            statements.append("ALTER TABLE products ADD COLUMN instagram_link VARCHAR")
+        if "instagram_media_id" not in product_columns:
+            statements.append("ALTER TABLE products ADD COLUMN instagram_media_id VARCHAR")
+        if statements:
+            with engine.connect() as conn:
+                for stmt in statements:
+                    conn.execute(text(stmt))
+                conn.commit()
+            logger.info("Instagram колонки добавлены: %s", ", ".join(statements))
+            return True
+        logger.info("Instagram колонки уже существуют")
+        return False
+    except Exception as e:
+        logger.error("Ошибка при проверке/добавлении Instagram колонок: %s", e)
+        return False
+
+
 def ensure_post_vk_and_queue_columns_if_missing() -> bool:
     """После restore дампа в posts могут отсутствовать поля VK и очереди."""
     try:
@@ -223,6 +252,7 @@ def ensure_database_schema():
     # Проверяем и добавляем колонку telegram_link
     check_and_add_column_if_missing()
     check_and_add_max_columns_if_missing()
+    check_and_add_instagram_link_columns_if_missing()
     ensure_post_vk_and_queue_columns_if_missing()
     ensure_avito_feed_operations_table()
     ensure_avito_item_id_bigint()

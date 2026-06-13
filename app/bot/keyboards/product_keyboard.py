@@ -236,7 +236,7 @@ def get_product_status_confirmation_keyboard(
     product_id: int,
     action: str,  # "unavailable", "delete", "restore"
     report_enabled: bool = False,
-    mark_telegram_enabled: bool = False
+    mark_telegram_enabled: bool = True
 ) -> InlineKeyboardMarkup:
     """Создает клавиатуру подтверждения изменения статуса товара."""
     buttons = []
@@ -252,8 +252,8 @@ def get_product_status_confirmation_keyboard(
             )
         ])
         
-        # Переключатель "Пометить ТГ"
-        mark_tg_text = "🟢 Пометить ТГ" if mark_telegram_enabled else "🔴 Пометить ТГ"
+        # Переключатель «Пометить ТГ/IG/Max»
+        mark_tg_text = "🟢 Пометить ТГ/IG/Max" if mark_telegram_enabled else "🔴 Пометить ТГ/IG/Max"
         buttons.append([
             InlineKeyboardButton(
                 text=mark_tg_text,

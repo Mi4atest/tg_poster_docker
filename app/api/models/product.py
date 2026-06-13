@@ -17,6 +17,8 @@ class Product(Base):
     telegram_link = Column(String, nullable=True)  # Ссылка на пост в Telegram
     max_link = Column(String, nullable=True)  # Ссылка на пост в Max
     max_share_url = Column(String, nullable=True)  # Публичная ссылка max.ru/c/... для открытия в клиенте
+    instagram_link = Column(String, nullable=True)  # Ссылка на пост в Instagram
+    instagram_media_id = Column(String, nullable=True)  # ID медиа в Instagram Graph API
     avito_item_id = Column(String, nullable=True)  # ID объявления на Авито
     avito_url = Column(String, nullable=True)  # Публичная ссылка на объявление
 

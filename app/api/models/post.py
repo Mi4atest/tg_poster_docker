@@ -52,6 +52,10 @@ class Post(Base):
     vk_post_id = Column(String, nullable=True)  # ID поста в ВК (owner_id_post_id)
     vk_post_link = Column(String, nullable=True)  # Ссылка на пост в ВК
 
+    # Instagram post link and media ID (Graph API)
+    instagram_link = Column(String, nullable=True)
+    instagram_media_id = Column(String, nullable=True)
+
     # Queue management fields
     in_queue = Column(Boolean, default=False)  # находится ли пост в очереди публикации
     queue_status = Column(String, nullable=True)  # статус в очереди: pending, publishing, paused, completed

@@ -14,6 +14,7 @@ from app.db.database import SessionLocal
 from app.services.admin_alert_service import send_admin_alert
 from app.utils.text_formatter import format_for_instagram
 from app.workers.instagram.token_manager import InstagramGraphTokenManager
+from app.workers.instagram.graph_client import InstagramGraphClient
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ class InstagramGraphPublisher:
         self.vk_api_version = os.getenv("VK_API_VERSION", "5.199")
         self._last_graph_error: Optional[str] = None
         self._last_graph_error_code: Optional[int] = None
+        self._last_published_media_id: Optional[str] = None
 
     @property
     def enabled(self) -> bool:
@@ -91,8 +93,47 @@ class InstagramGraphPublisher:
                 self._log_error(db, post_id, f"Graph API ошибка: {details}")
                 return False
 
+            published_media_id = self._last_published_media_id
+            if not published_media_id:
+                self._log_error(db, post_id, "Graph API не вернул ID опубликованного медиа")
+                return False
+
+            graph_client = InstagramGraphClient()
+            permalink, _shortcode = await graph_client.fetch_media_permalink(published_media_id)
+
             post.is_published_instagram = True
             post.published_instagram_at = datetime.now(timezone.utc)
+            post.instagram_media_id = published_media_id
+            if permalink:
+                post.instagram_link = permalink
+                logger.info("Saved Instagram link for post %s: %s", post_id, permalink)
+            else:
+                logger.warning(
+                    "Instagram post %s published (media_id=%s) but permalink not fetched",
+                    post_id,
+                    published_media_id,
+                )
+
+            db.commit()
+
+            if post.instagram_link or post.instagram_media_id:
+                try:
+                    from app.api.models.product import Product
+
+                    products_for_post = db.query(Product).filter(Product.post_id == post_id).all()
+                    for product in products_for_post:
+                        if post.instagram_link:
+                            product.instagram_link = post.instagram_link
+                        if post.instagram_media_id:
+                            product.instagram_media_id = post.instagram_media_id
+                    db.commit()
+                except Exception as sync_err:
+                    logger.warning(
+                        "Failed to sync instagram fields to products for post %s: %s",
+                        post_id,
+                        sync_err,
+                    )
+                    db.rollback()
             db.add(
                 PublicationLog(
                     post_id=post_id,
@@ -303,6 +344,7 @@ class InstagramGraphPublisher:
                 return data.get("id")
 
     async def _publish_creation(self, creation_id: str) -> bool:
+        self._last_published_media_id = None
         endpoint = f"{self.base_url}/{self.ig_user_id}/media_publish"
         payload = {"creation_id": creation_id, "access_token": self.access_token}
         timeout = aiohttp.ClientTimeout(total=self.timeout_seconds)
@@ -312,7 +354,10 @@ class InstagramGraphPublisher:
                 async with session.post(endpoint, data=payload) as response:
                     data = await response.json(content_type=None)
                     if response.status < 400:
-                        return bool(data.get("id"))
+                        media_id = (data or {}).get("id")
+                        if media_id:
+                            self._last_published_media_id = str(media_id)
+                        return bool(media_id)
 
                     graph_error = (data or {}).get("error", {})
                     self._last_graph_error = graph_error.get("message", str(data))

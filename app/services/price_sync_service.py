@@ -42,6 +42,7 @@ class PlatformResult:
     vk: Optional[bool] = None
     telegram: Optional[bool] = None
     max_: Optional[bool] = None
+    instagram: Optional[bool] = None
     avito: Optional[bool] = None
     detail: Optional[str] = None
 
@@ -55,7 +56,7 @@ class PlatformSyncJob:
     kind: SyncJobKind
     formatted_price: str = ""
     price_value: int = 0
-    mark_telegram_enabled: bool = False
+    mark_telegram_enabled: bool = True
     refresh_used_list: bool = False
     refresh_availability_list: bool = False
     status: JobStatus = JobStatus.QUEUED
@@ -161,7 +162,7 @@ class PriceSyncService:
         chat_id: int,
         product_id: int,
         product: dict,
-        mark_telegram_enabled: bool = False,
+        mark_telegram_enabled: bool = True,
         refresh_used_list: bool = True,
         refresh_availability_list: bool = False,
     ) -> PlatformSyncJob:
@@ -229,6 +230,8 @@ class PriceSyncService:
                 "price": product.price,
                 "telegram_link": product.telegram_link,
                 "max_link": product.max_link,
+                "instagram_link": product.instagram_link,
+                "instagram_media_id": product.instagram_media_id,
                 "post_id": product.post_id,
                 "vk_product_id": product.vk_product_id,
                 "avito_item_id": product.avito_item_id,
@@ -309,8 +312,10 @@ class PriceSyncService:
         await self._refresh_dashboard(bot, job.chat_id)
 
         from app.bot.handlers.product_management import (
+            mark_instagram_post_unavailable,
             mark_max_post_unavailable,
             mark_telegram_post_unavailable,
+            resolve_product_instagram_media_id,
             resolve_product_max_link,
         )
 
@@ -378,14 +383,20 @@ class PriceSyncService:
         else:
             pr.max_ = None
 
+        ig_media_id = resolve_product_instagram_media_id(product_dict)
+        if job.mark_telegram_enabled and ig_media_id:
+            pr.instagram = await mark_instagram_post_unavailable(product_dict)
+        else:
+            pr.instagram = None
+
         self._finalize_job_status(job)
 
     def _finalize_job_status(self, job: PlatformSyncJob) -> None:
         pr = job.platforms
-        failures = [v for v in (pr.vk, pr.telegram, pr.max_, pr.avito) if v is False]
+        failures = [v for v in (pr.vk, pr.telegram, pr.max_, pr.instagram, pr.avito) if v is False]
         if failures:
             job.status = JobStatus.PARTIAL if any(
-                v is True for v in (pr.vk, pr.telegram, pr.max_, pr.avito)
+                v is True for v in (pr.vk, pr.telegram, pr.max_, pr.instagram, pr.avito)
             ) else JobStatus.ERROR
             if not pr.detail:
                 parts = []
@@ -395,6 +406,8 @@ class PriceSyncService:
                     parts.append("ТГ")
                 if pr.max_ is False:
                     parts.append("Max")
+                if pr.instagram is False:
+                    parts.append("IG")
                 if pr.avito is False:
                     parts.append("Авито")
                 pr.detail = "ошибка: " + ", ".join(parts)
@@ -437,8 +450,8 @@ class PriceSyncService:
 
     def _running_hint(self, job: PlatformSyncJob) -> str:
         if job.kind == SyncJobKind.UNAVAILABLE:
-            return "🚫 ВК · ТГ · Max · Авито"
-        return "ВК · ТГ · Max · Авито"
+            return "🚫 ВК · ТГ · IG · Max · Авито"
+        return "ВК · ТГ · IG · Max · Авито"
 
     def _format_job_line(self, job: PlatformSyncJob) -> str:
         label = job.short_label()

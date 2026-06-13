@@ -45,6 +45,8 @@ class Post(PostBase):
     telegram_link: Optional[str] = None
     max_link: Optional[str] = None
     max_share_url: Optional[str] = None
+    instagram_link: Optional[str] = None
+    instagram_media_id: Optional[str] = None
     avito_item_id: Optional[str] = None
     avito_url: Optional[str] = None
     avito_draft: Optional[dict] = None

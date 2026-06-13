@@ -26,12 +26,22 @@ router = APIRouter()
 
 
 def product_to_schema(db: Session, product: Product) -> ProductSchema:
-    """Схема товара; max_share_url подставляем с поста, если на товаре пусто."""
+    """Схема товара; max_share_url и ссылки на пост ленты VK подставляем с поста."""
     data = ProductSchema.model_validate(product).model_dump()
-    if not data.get("max_share_url") and product.post_id:
+    needs_post = (
+        not data.get("max_share_url")
+        or not data.get("vk_post_id")
+        or not data.get("vk_post_link")
+    )
+    if needs_post and product.post_id:
         post = db.query(Post).filter(Post.id == product.post_id).first()
-        if post and post.max_share_url:
-            data["max_share_url"] = post.max_share_url
+        if post:
+            if not data.get("max_share_url") and post.max_share_url:
+                data["max_share_url"] = post.max_share_url
+            if not data.get("vk_post_id") and post.vk_post_id:
+                data["vk_post_id"] = post.vk_post_id
+            if not data.get("vk_post_link") and post.vk_post_link:
+                data["vk_post_link"] = post.vk_post_link
     return ProductSchema(**data)
 
 

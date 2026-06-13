@@ -218,12 +218,20 @@ class PriceSyncService:
     def _load_product_dict(self, product_id: int) -> Optional[dict]:
         from app.db.database import SessionLocal
         from app.api.models.product import Product
+        from app.api.models.post import Post
 
         db = SessionLocal()
         try:
             product = db.query(Product).filter(Product.id == product_id).first()
             if not product:
                 return None
+            vk_post_id = None
+            vk_post_link = None
+            if product.post_id:
+                post = db.query(Post).filter(Post.id == product.post_id).first()
+                if post:
+                    vk_post_id = post.vk_post_id
+                    vk_post_link = post.vk_post_link
             return {
                 "id": product.id,
                 "name": product.name,
@@ -234,6 +242,8 @@ class PriceSyncService:
                 "instagram_media_id": product.instagram_media_id,
                 "post_id": product.post_id,
                 "vk_product_id": product.vk_product_id,
+                "vk_post_id": vk_post_id,
+                "vk_post_link": vk_post_link,
                 "avito_item_id": product.avito_item_id,
                 "collection_name": product.collection_name,
                 "custom_button_id": product.custom_button_id,
@@ -315,8 +325,10 @@ class PriceSyncService:
             mark_instagram_post_unavailable,
             mark_max_post_unavailable,
             mark_telegram_post_unavailable,
+            mark_vk_post_unavailable,
             resolve_product_instagram_media_id,
             resolve_product_max_link,
+            resolve_product_vk_post_id,
         )
 
         product_dict = self._load_product_dict(job.product_id)
@@ -345,6 +357,16 @@ class PriceSyncService:
                 pr.vk = False
         else:
             pr.vk = None
+
+        # Комментарий «неактуально» от лица группы под постом в ленте VK (best-effort).
+        # Только при включённом переключателе «Товары ВК» и наличии поста в ленте.
+        if resolve_product_vk_post_id(product_dict):
+            try:
+                await mark_vk_post_unavailable(product_dict)
+            except Exception as e:
+                logger.error(
+                    "VK unavailable comment failed product_id=%s: %s", job.product_id, e
+                )
 
         if product_dict.get("avito_item_id"):
             try:

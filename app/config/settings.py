@@ -156,6 +156,10 @@ VK_MARKET_ENABLED = os.getenv("VK_MARKET_ENABLED", "true").lower() == "true"
 VK_MARKET_AUTO_CATEGORY = os.getenv("VK_MARKET_AUTO_CATEGORY", "true").lower() == "true"
 VK_MARKET_AUTO_COLLECTION = os.getenv("VK_MARKET_AUTO_COLLECTION", "true").lower() == "true"
 
+# Прикреплять карточку товара (market-вложение) к посту в ленте VK — даёт кнопку
+# «Смотреть товары». Флаг отката: при false пост публикуется без market-вложения.
+VK_WALL_ATTACH_MARKET = os.getenv("VK_WALL_ATTACH_MARKET", "true").lower() in ("1", "true", "yes")
+
 # VK Report settings (для отправки отчетов о продажах)
 VK_REPORT_USER_IDS = [int(user_id) for user_id in os.getenv("VK_REPORT_USER_IDS", "").split(",") if user_id]
 

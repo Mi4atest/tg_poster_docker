@@ -272,6 +272,8 @@ def format_product_platform_links_html(product: dict) -> str:
     text = ""
     if product.get("vk_product_link"):
         text += f"\n🔗 <a href='{product['vk_product_link']}'>Ссылка на товар в ВК</a>"
+    if product.get("vk_post_link"):
+        text += f"\n🔗 <a href='{product['vk_post_link']}'>Ссылка на пост в ленте ВК</a>"
     if product.get("avito_url"):
         text += f"\n🛒 <a href='{product['avito_url']}'>Ссылка на Авито</a>"
     if product.get("telegram_link"):
@@ -1447,6 +1449,8 @@ async def product_confirm_action(callback: CallbackQuery, state: FSMContext):
             await remove_max_post_unavailable(resolved_max_link)
         if updated_product and resolve_product_instagram_media_id(updated_product):
             await remove_instagram_post_unavailable(updated_product)
+        if updated_product and resolve_product_vk_post_id(updated_product):
+            await remove_vk_post_unavailable(updated_product)
 
         await callback.answer("✅ Товар восстановлен")
         updated_product = await get_product_api(product_id)
@@ -2843,6 +2847,85 @@ async def remove_instagram_post_unavailable(product: dict) -> bool:
         return all_ok
     except Exception as exc:
         logger.error("Error removing Instagram unavailable comment: %s", exc, exc_info=True)
+        return False
+
+
+def resolve_product_vk_post_id(product: Optional[dict]) -> Optional[str]:
+    """vk_post_id товара (формат "{owner_id}_{post_id}")."""
+    if not product:
+        return None
+    vk_post_id = product.get("vk_post_id")
+    if vk_post_id:
+        return str(vk_post_id)
+    return None
+
+
+async def mark_vk_post_unavailable(product: dict) -> bool:
+    """Оставить комментарий «неактуально» от лица группы под постом в ленте VK.
+
+    Только если включён переключатель «Товары ВК» и пост опубликован в ленте.
+    """
+    try:
+        import asyncio
+
+        from app.services.settings_service import get_settings_service
+        from app.workers.vk.wall_comments import VKWallCommentClient, parse_vk_post_id
+
+        if not get_settings_service().is_vk_market_publish_allowed():
+            logger.info(
+                "VK unavailable comment skipped (Товары ВК выключены) product_id=%s",
+                product.get("id"),
+            )
+            return False
+
+        parsed = parse_vk_post_id(resolve_product_vk_post_id(product))
+        if not parsed:
+            logger.info(
+                "VK unavailable: no vk_post_id for product_id=%s, skip",
+                product.get("id"),
+            )
+            return False
+
+        owner_id, post_id = parsed
+        client = VKWallCommentClient()
+        return await asyncio.to_thread(
+            client.create_unavailable_comment, owner_id, post_id
+        )
+    except Exception as exc:
+        logger.error("Error marking VK post unavailable: %s", exc, exc_info=True)
+        return False
+
+
+async def remove_vk_post_unavailable(product: dict) -> bool:
+    """Удалить комментарий «неактуально» от лица группы под постом ленты VK при восстановлении."""
+    try:
+        import asyncio
+
+        from app.services.settings_service import get_settings_service
+        from app.workers.vk.wall_comments import VKWallCommentClient, parse_vk_post_id
+
+        if not get_settings_service().is_vk_market_publish_allowed():
+            logger.info(
+                "VK restore comment cleanup skipped (Товары ВК выключены) product_id=%s",
+                product.get("id"),
+            )
+            return False
+
+        parsed = parse_vk_post_id(resolve_product_vk_post_id(product))
+        if not parsed:
+            logger.info(
+                "VK restore: no vk_post_id for product_id=%s, skip",
+                product.get("id"),
+            )
+            return True
+
+        owner_id, post_id = parsed
+        client = VKWallCommentClient()
+        return await asyncio.to_thread(
+            client.remove_unavailable_comments, owner_id, post_id
+        )
+    except Exception as exc:
+        logger.error("Error removing VK post unavailable comment: %s", exc, exc_info=True)
         return False
 
 

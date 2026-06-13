@@ -1,15 +1,20 @@
 import vk_api
 import logging
 import aiohttp
-import asyncio
 import requests
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone
 
-from app.config.settings import API_HOST, API_PORT, VK_UPLOAD_STRICT_MODE
+from app.config.settings import (
+    API_HOST,
+    API_PORT,
+    VK_UPLOAD_STRICT_MODE,
+    VK_WALL_ATTACH_MARKET,
+)
 from app.utils.vk_client import get_community_vk_session, resolved_vk_group_id_int
 from app.db.database import SessionLocal
 from app.api.models.post import Post, PublicationLog
+from app.api.models.product import Product
 from app.utils.text_formatter import format_for_vk
 
 logger = logging.getLogger(__name__)
@@ -262,16 +267,68 @@ class VKPublisher:
                     f"VK upload strict mode: failed photos={failed_photo_ids}, videos={failed_video_ids}"
                 )
 
-            # Combine all attachments
-            attachments = ",".join(photo_attachments + video_attachments)
+            # --- VK Market: публикуем товар ДО wall.post, чтобы прикрепить карточку
+            # товара к посту (даёт кнопку «Смотреть товары»). Только если включён
+            # переключатель «Товары ВК». При выключенном — поведение как раньше.
+            market_attachment = None
+            try:
+                from app.workers.vk.product_publisher import publish_product_to_vk
+                from app.services.settings_service import get_settings_service
 
-            # Post to VK wall
-            post_result = self.vk.wall.post(
-                owner_id=-self.group_id,
-                from_group=1,  # Post as group
-                message=text,
-                attachments=attachments
-            )
+                if get_settings_service().is_vk_market_publish_allowed():
+                    product_ok = await publish_product_to_vk(post_id)
+                    if product_ok and VK_WALL_ATTACH_MARKET:
+                        # Товар создан в отдельной сессии и уже закоммичен —
+                        # читаем его свежим запросом, чтобы получить vk_product_id.
+                        db.expire_all()
+                        product = (
+                            db.query(Product).filter(Product.post_id == post_id).first()
+                        )
+                        if product and product.vk_product_id:
+                            market_attachment = (
+                                f"market-{self.group_id}_{product.vk_product_id}"
+                            )
+                            logger.info(
+                                f"Attaching market item to wall post {post_id}: {market_attachment}"
+                            )
+            except Exception as e:
+                # Не блокируем публикацию поста, если товар не опубликовался
+                logger.error(
+                    f"Error publishing product before wall post {post_id}: {str(e)}"
+                )
+
+            # Combine all attachments
+            media_attachments = photo_attachments + video_attachments
+            attachments_list = list(media_attachments)
+            if market_attachment:
+                attachments_list.append(market_attachment)
+            attachments = ",".join(attachments_list)
+
+            # Post to VK wall. Если market-вложение отклонено API — повторяем без него,
+            # чтобы не потерять публикацию в ленте.
+            try:
+                post_result = self.vk.wall.post(
+                    owner_id=-self.group_id,
+                    from_group=1,  # Post as group
+                    message=text,
+                    attachments=attachments
+                )
+            except Exception as e:
+                if market_attachment:
+                    logger.error(
+                        f"wall.post failed with market attachment for post {post_id} "
+                        f"({str(e)}); retrying without market attachment"
+                    )
+                    attachments = ",".join(media_attachments)
+                    post_result = self.vk.wall.post(
+                        owner_id=-self.group_id,
+                        from_group=1,
+                        message=text,
+                        attachments=attachments
+                    )
+                    market_attachment = None
+                else:
+                    raise
 
             # Сохраняем ID поста и ссылку
             vk_post_id = post_result.get('post_id')
@@ -304,39 +361,10 @@ class VKPublisher:
             db.commit()
 
             logger.info(f"Post {post_id} published to VK successfully")
-            
-            # Публикуем товар в Market (если включено)
-            try:
-                from app.workers.vk.product_publisher import publish_product_to_vk
-                from app.config.settings import VK_MARKET_ENABLED
-                from app.services.settings_service import get_settings_service
 
-                _svc = get_settings_service()
-                try:
-                    _settings_vk_market = bool(_svc.is_vk_market_enabled())
-                except Exception:
-                    _settings_vk_market = None
-                vk_market_enabled = _svc.is_vk_market_publish_allowed()
+            # Примечание: публикация товара в VK Market теперь выполняется ДО wall.post
+            # (см. блок выше), чтобы прикрепить карточку товара к посту в ленте.
 
-                if vk_market_enabled:
-                    # Публикуем товар в фоне, не блокируя основной процесс
-                    # Используем asyncio.ensure_future для создания задачи
-                    try:
-                        loop = asyncio.get_event_loop()
-                        if loop.is_running():
-                            # Если цикл уже запущен, создаем задачу
-                            asyncio.create_task(publish_product_to_vk(post_id))
-                        else:
-                            # Если цикл не запущен, запускаем корутину
-                            loop.run_until_complete(publish_product_to_vk(post_id))
-                    except RuntimeError:
-                        # Если нет активного event loop, создаем новый
-                        asyncio.run(publish_product_to_vk(post_id))
-                    logger.info(f"Product publication task created for post {post_id}")
-            except Exception as e:
-                # Логируем ошибку, но не блокируем публикацию поста
-                logger.error(f"Error creating product publication task for post {post_id}: {str(e)}")
-            
             return True
         except Exception as e:
             logger.error(f"Error publishing post {post_id} to VK: {str(e)}")

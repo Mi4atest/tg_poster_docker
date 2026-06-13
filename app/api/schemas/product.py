@@ -64,6 +64,8 @@ class Product(ProductBase):
     custom_button_id: Optional[int] = None
     vk_product_id: Optional[int] = None
     vk_product_link: Optional[str] = None
+    vk_post_id: Optional[str] = None  # ID поста в ленте VK (из связанного поста)
+    vk_post_link: Optional[str] = None  # Ссылка на пост в ленте VK (из связанного поста)
     telegram_link: Optional[str] = None
     max_link: Optional[str] = None
     max_share_url: Optional[str] = None

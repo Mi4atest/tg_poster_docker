@@ -2023,12 +2023,16 @@ async def product_payment_method(callback: CallbackQuery, state: FSMContext):
 async def send_vk_report(product: dict, payment_method: str):
     """Отправить отчет о продаже в ВК пользователям."""
     try:
-        from app.config.settings import VK_ACCESS_TOKEN
+        from app.utils.vk_client import community_token
         from app.services.settings_service import get_settings_service
         import vk_api
         import re
         import math
 
+        token = community_token()
+        if not token:
+            logger.warning("VK community token not configured, skipping report")
+            return
         VK_REPORT_USER_IDS = get_settings_service().get_vk_report_user_ids()
         if not VK_REPORT_USER_IDS:
             logger.warning("VK_REPORT_USER_IDS not configured, skipping report")
@@ -2063,7 +2067,7 @@ async def send_vk_report(product: dict, payment_method: str):
             return
         
         # Отправляем сообщение каждому пользователю
-        vk_session = vk_api.VkApi(token=VK_ACCESS_TOKEN)
+        vk_session = vk_api.VkApi(token=token)
         vk = vk_session.get_api()
         
         for user_id in VK_REPORT_USER_IDS:
@@ -3436,9 +3440,14 @@ async def show_evening_report(message: Message, state: FSMContext):
 @router.callback_query(F.data == "evening_report_send")
 async def send_evening_report(callback: CallbackQuery, state: FSMContext):
     """Отправить вечерний отчет в ВК."""
-    from app.config.settings import VK_ACCESS_TOKEN
+    from app.utils.vk_client import community_token
     from app.services.settings_service import get_settings_service
     import vk_api
+
+    token = community_token()
+    if not token:
+        await callback.answer("❌ VK токен не задан", show_alert=True)
+        return
 
     VK_REPORT_USER_IDS = get_settings_service().get_vk_report_user_ids()
     data = await state.get_data()
@@ -3528,7 +3537,7 @@ async def send_evening_report(callback: CallbackQuery, state: FSMContext):
         return
     
     try:
-        vk_session = vk_api.VkApi(token=VK_ACCESS_TOKEN)
+        vk_session = vk_api.VkApi(token=token)
         vk = vk_session.get_api()
         
         for user_id in VK_REPORT_USER_IDS:

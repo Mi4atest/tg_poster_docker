@@ -1,7 +1,7 @@
 """Проверка VK_ACCESS_TOKEN (сообщество) и VK_MARKET_ACCESS_TOKEN (market.*)."""
 import sys
 
-from app.config.settings import VK_APP_ID, VK_GROUP_ID, VK_MARKET_ACCESS_TOKEN
+from app.config.settings import VK_APP_ID, VK_MARKET_ACCESS_TOKEN
 
 
 def _normalize_market_token(raw: str) -> str:
@@ -32,6 +32,7 @@ from app.utils.vk_client import (
     get_market_vk_session,
     market_token,
     market_token_source,
+    resolved_vk_group_id_int,
     vk_api_error_code,
 )
 
@@ -48,7 +49,7 @@ def _check(label: str, fn) -> bool:
 
 
 def main() -> int:
-    gid = abs(int(VK_GROUP_ID or "0"))
+    gid = resolved_vk_group_id_int()
     owner = -gid
     print(f"group_id={gid} market_token_source={market_token_source()}")
     print(f"community_token_set={bool(community_token())} market_token_set={bool(market_token())}")

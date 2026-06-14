@@ -6,8 +6,7 @@ import re
 import asyncio
 from typing import List, Optional, Dict, Any
 
-from app.config.settings import VK_GROUP_ID
-from app.utils.vk_client import get_market_vk_session
+from app.utils.vk_client import get_market_vk_session, resolved_vk_group_id_int
 from app.db.database import SessionLocal
 from app.api.models.product import Product
 from app.api.models.post import Post
@@ -58,7 +57,7 @@ def get_vk_products_from_collection(collection_name: str) -> List[Dict[str, Any]
         Список товаров из ВК API (поля id, owner_id, title, price, etc.)
     """
     vk = _get_vk_api()
-    owner_id = -abs(int(VK_GROUP_ID))
+    owner_id = -resolved_vk_group_id_int()
 
     # Получить список подборок
     try:
@@ -109,8 +108,9 @@ def get_vk_products_from_collection(collection_name: str) -> List[Dict[str, Any]
 def _vk_item_to_product_dict(item: Dict, collection_name: str, collection_id: int) -> Dict:
     """Преобразовать товар из ответа ВК в словарь для Product."""
     vk_product_id = item.get("id")
-    owner_id = item.get("owner_id", -abs(int(VK_GROUP_ID)))
-    vk_product_link = f"https://vk.com/market{VK_GROUP_ID}?w=product-{abs(owner_id)}_{vk_product_id}"
+    group_id = resolved_vk_group_id_int()
+    owner_id = item.get("owner_id", -group_id)
+    vk_product_link = f"https://vk.com/market{group_id}?w=product-{abs(owner_id)}_{vk_product_id}"
     title = item.get("title", "Без названия")
     price_obj = item.get("price", {})
     price_value = price_obj.get("amount") if isinstance(price_obj, dict) else None
@@ -149,7 +149,7 @@ def sync_new_products_from_vk() -> Dict[str, int]:
         Словарь {collection_name: количество синхронизированных товаров}
     """
     vk = _get_vk_api()
-    owner_id = -abs(int(VK_GROUP_ID))
+    owner_id = -resolved_vk_group_id_int()
     db = SessionLocal()
     result = {}
 

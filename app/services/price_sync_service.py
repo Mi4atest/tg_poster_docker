@@ -341,13 +341,13 @@ class PriceSyncService:
 
         if product_dict.get("vk_product_id"):
             try:
-                from app.config.settings import VK_GROUP_ID
-                from app.utils.vk_client import get_market_vk_session
+                from app.utils.vk_client import get_market_vk_session, resolved_vk_group_id_int
 
+                owner_id = -resolved_vk_group_id_int()
                 vk = get_market_vk_session().get_api()
                 await asyncio.to_thread(
                     vk.market.edit,
-                    owner_id=-abs(int(VK_GROUP_ID)),
+                    owner_id=owner_id,
                     item_id=int(product_dict["vk_product_id"]),
                     deleted=1,
                 )

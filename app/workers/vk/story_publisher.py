@@ -10,7 +10,8 @@ from PIL import Image, ImageDraw, ImageFont
 import io
 import re
 
-from app.config.settings import VK_ACCESS_TOKEN, VK_GROUP_ID, API_HOST, API_PORT
+from app.config.settings import API_HOST, API_PORT
+from app.utils.vk_client import community_token, resolved_vk_group_id_int
 from app.db.database import SessionLocal
 from app.api.models.story import Story, StoryPublicationLog
 from app.api.models.post import Post
@@ -23,7 +24,9 @@ class VKStoryPublisher:
 
     def __init__(self):
         """Initialize VK API session."""
-        self.vk_session = vk_api.VkApi(token=VK_ACCESS_TOKEN, api_version="5.131")
+        self.group_id = resolved_vk_group_id_int()
+        token = community_token()
+        self.vk_session = vk_api.VkApi(token=token, api_version="5.131")
         self.vk = self.vk_session.get_api()
         self.upload = vk_api.VkUpload(self.vk_session)
 
@@ -315,7 +318,7 @@ class VKStoryPublisher:
                         repost_result = self.vk.stories.repost(
                             owner_id=owner_id,
                             item_id=post_id,
-                            group_id=abs(int(VK_GROUP_ID))
+                            group_id=self.group_id
                         )
                         logger.info(f"Repost result: {repost_result}")
                         
@@ -323,7 +326,7 @@ class VKStoryPublisher:
                         if repost_result and 'story' in repost_result:
                             story_data = repost_result['story']
                             vk_story_id = story_data.get('id')
-                            story_owner_id = story_data.get('owner_id', VK_GROUP_ID)
+                            story_owner_id = story_data.get('owner_id', self.group_id)
                             story_link = f"https://vk.com/stories{story_owner_id}_{vk_story_id}"
                             
                             logger.info(f"Story created from repost: {story_link}")
@@ -348,7 +351,7 @@ class VKStoryPublisher:
                     )
                     if result and isinstance(result, list) and len(result) > 0:
                         story_data = result[0]
-                        story_owner_id = story_data.get('owner_id', VK_GROUP_ID)
+                        story_owner_id = story_data.get('owner_id', self.group_id)
                         vk_story_id = story_data.get('id', 'unknown')
                         story_link = f"https://vk.com/stories{story_owner_id}_{vk_story_id}"
                     else:
@@ -422,7 +425,7 @@ class VKStoryPublisher:
             logger.info(f"Getting upload server for story with overlay")
             upload_server = self.vk.stories.getPhotoUploadServer(
                 add_to_news=1,
-                group_id=abs(int(VK_GROUP_ID))
+                group_id=self.group_id
             )
 
             if not upload_server or 'upload_url' not in upload_server:
@@ -453,7 +456,7 @@ class VKStoryPublisher:
             logger.info(f"Saving story with post link: {vk_post_link}")
             save_result = self.vk.stories.save(
                 upload_results=upload_result,
-                group_id=abs(int(VK_GROUP_ID)),
+                group_id=self.group_id,
                 link_url=vk_post_link  # Добавляем ссылку на пост
             )
 
@@ -517,10 +520,10 @@ class VKStoryPublisher:
             # Для публикации сторис в группе ВКонтакте
             try:
                 # Получаем адрес сервера для загрузки истории
-                logger.info(f"Getting upload server for VK story, group_id={abs(int(VK_GROUP_ID))}")
+                logger.info(f"Getting upload server for VK story, group_id={self.group_id}")
                 upload_server = self.vk.stories.getPhotoUploadServer(
                     add_to_news=1,  # Добавить в новости
-                    group_id=abs(int(VK_GROUP_ID)),  # ID группы (положительное число)
+                    group_id=self.group_id,  # ID группы (положительное число)
                     user_ids=[],  # Пустой список пользователей
                 )
 
@@ -558,7 +561,7 @@ class VKStoryPublisher:
                 logger.info(f"Saving story to VK with upload_result: {upload_result[:30]}...")
                 save_result = self.vk.stories.save(
                     upload_results=upload_result,
-                    group_id=abs(int(VK_GROUP_ID))
+                    group_id=self.group_id
                 )
 
                 logger.info(f"VK save result: {save_result}")
@@ -570,7 +573,7 @@ class VKStoryPublisher:
 
                 # Получаем ID истории и ссылку
                 story_data = save_result[0]
-                owner_id = story_data.get('owner_id', VK_GROUP_ID)
+                owner_id = story_data.get('owner_id', self.group_id)
                 vk_story_id = story_data.get('id', 'unknown')
                 story_link = f"https://vk.com/stories{owner_id}_{vk_story_id}"
                 logger.info(f"Story published to VK: {story_link}")
@@ -578,12 +581,12 @@ class VKStoryPublisher:
                 # Проверяем, что история действительно опубликована
                 try:
                     # Получаем список историй группы
-                    logger.info(f"Verifying story publication for group {VK_GROUP_ID}")
-                    stories = self.vk.stories.get(owner_id=VK_GROUP_ID)
+                    logger.info(f"Verifying story publication for group {self.group_id}")
+                    stories = self.vk.stories.get(owner_id=self.group_id)
                     logger.info(f"VK stories response: {stories}")
 
                     if not stories or 'items' not in stories or len(stories['items']) == 0:
-                        logger.warning(f"Story may not be published to VK: no stories found for group {VK_GROUP_ID}")
+                        logger.warning(f"Story may not be published to VK: no stories found for group {self.group_id}")
                         # Но продолжаем, так как сохранение истории прошло успешно
                 except Exception as e:
                     logger.warning(f"Could not verify story publication: {str(e)}")
@@ -639,10 +642,10 @@ class VKStoryPublisher:
             return False
         
         # Получаем адрес сервера для загрузки истории
-        logger.info(f"Getting upload server for VK story, group_id={abs(int(VK_GROUP_ID))}")
+        logger.info(f"Getting upload server for VK story, group_id={self.group_id}")
         upload_server = self.vk.stories.getPhotoUploadServer(
             add_to_news=1,
-            group_id=abs(int(VK_GROUP_ID))
+            group_id=self.group_id
         )
         
         logger.info(f"VK upload server response: {upload_server}")
@@ -678,7 +681,7 @@ class VKStoryPublisher:
         logger.info(f"Saving story to VK with upload_result: {upload_result[:30]}...")
         save_result = self.vk.stories.save(
             upload_results=upload_result,
-            group_id=abs(int(VK_GROUP_ID))
+            group_id=self.group_id
         )
         
         logger.info(f"VK save result: {save_result}")
@@ -689,7 +692,7 @@ class VKStoryPublisher:
         
         # Получаем ID истории и ссылку
         story_data = save_result[0]
-        owner_id = story_data.get('owner_id', VK_GROUP_ID)
+        owner_id = story_data.get('owner_id', self.group_id)
         vk_story_id = story_data.get('id', 'unknown')
         story_link = f"https://vk.com/stories{owner_id}_{vk_story_id}"
         logger.info(f"Story published to VK: {story_link}")
@@ -720,24 +723,26 @@ async def test_vk_story_publisher(story_id):
         logger.info(f"Story details: ID={story.id}, Media ID={story.media_file_id}, Model={story.model_name}, Price={story.price}")
         
         # Проверяем токен VK
-        if not VK_ACCESS_TOKEN:
-            logger.error("Test failed: VK_ACCESS_TOKEN is not set")
+        token = community_token()
+        if not token:
+            logger.error("Test failed: VK community token is not set")
             return False
-            
-        logger.info(f"VK_ACCESS_TOKEN is set: {VK_ACCESS_TOKEN[:5]}...{VK_ACCESS_TOKEN[-5:]}")
-        
+
+        logger.info("VK community token is set")
+
         # Проверяем ID группы VK
-        if not VK_GROUP_ID:
-            logger.error("Test failed: VK_GROUP_ID is not set")
+        group_id = publisher.group_id
+        if not group_id:
+            logger.error("Test failed: VK group_id is not set")
             return False
-            
-        logger.info(f"VK_GROUP_ID is set: {VK_GROUP_ID}")
-        
+
+        logger.info("VK group_id is set: %s", group_id)
+
         # Проверяем соединение с VK API
         try:
-            vk_session = vk_api.VkApi(token=VK_ACCESS_TOKEN, api_version="5.131")
+            vk_session = vk_api.VkApi(token=token, api_version="5.131")
             vk = vk_session.get_api()
-            group_info = vk.groups.getById(group_id=abs(int(VK_GROUP_ID)))
+            group_info = vk.groups.getById(group_id=group_id)
             logger.info(f"Successfully connected to VK API. Group info: {group_info}")
         except Exception as e:
             logger.error(f"Test failed: Could not connect to VK API: {str(e)}")
@@ -763,7 +768,7 @@ async def test_vk_story_publisher(story_id):
         try:
             upload_server = vk.stories.getPhotoUploadServer(
                 add_to_news=1,
-                group_id=abs(int(VK_GROUP_ID)),
+                group_id=group_id,
                 user_ids=[]
             )
             logger.info(f"Successfully got upload server: {upload_server}")

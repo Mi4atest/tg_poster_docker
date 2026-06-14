@@ -144,25 +144,25 @@ async def update_product_status(
     vk_sync = PricePlatformSync(status="skipped")
     if status_update.sync_platforms and product.vk_product_id:
         try:
-            from app.config.settings import VK_GROUP_ID
-            from app.utils.vk_client import get_market_vk_session
+            from app.utils.vk_client import get_market_vk_session, resolved_vk_group_id_int
 
+            owner_id = -resolved_vk_group_id_int()
             vk = get_market_vk_session().get_api()
 
             if status_update.status == "deleted":
                 vk.market.delete(
-                    owner_id=-abs(int(VK_GROUP_ID)),
+                    owner_id=owner_id,
                     item_id=product.vk_product_id,
                 )
             elif status_update.status == "unavailable":
                 vk.market.edit(
-                    owner_id=-abs(int(VK_GROUP_ID)),
+                    owner_id=owner_id,
                     item_id=product.vk_product_id,
                     deleted=1,
                 )
             elif status_update.status == "active" and old_status in ["unavailable", "deleted"]:
                 vk.market.edit(
-                    owner_id=-abs(int(VK_GROUP_ID)),
+                    owner_id=owner_id,
                     item_id=product.vk_product_id,
                     deleted=0,
                 )
@@ -254,13 +254,12 @@ async def delete_product(product_id: int, db: Session = Depends(get_db)):
     # Удаляем товар из ВК, если он там есть
     if product.vk_product_id:
         try:
-            from app.config.settings import VK_GROUP_ID
-            from app.utils.vk_client import get_market_vk_session
+            from app.utils.vk_client import get_market_vk_session, resolved_vk_group_id_int
 
             vk = get_market_vk_session().get_api()
 
             vk.market.delete(
-                owner_id=-abs(int(VK_GROUP_ID)),
+                owner_id=-resolved_vk_group_id_int(),
                 item_id=product.vk_product_id
             )
         except Exception as e:

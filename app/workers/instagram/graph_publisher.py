@@ -9,7 +9,8 @@ from typing import List, Optional
 import aiohttp
 
 from app.api.models.post import Post, PublicationLog
-from app.config.settings import MEDIA_DIR, VK_ACCESS_TOKEN
+from app.config.settings import MEDIA_DIR
+from app.utils.vk_client import community_token
 from app.db.database import SessionLocal
 from app.services.admin_alert_service import send_admin_alert
 from app.utils.text_formatter import format_for_instagram
@@ -263,14 +264,15 @@ class InstagramGraphPublisher:
     async def _get_vk_wall_photo_urls(self, post: Post) -> List[str]:
         if not post.vk_post_id:
             return []
-        if not VK_ACCESS_TOKEN:
-            logger.warning("VK_ACCESS_TOKEN не задан, не можем получить фото из VK")
+        token = community_token()
+        if not token:
+            logger.warning("VK community token не задан, не можем получить фото из VK")
             return []
 
         endpoint = "https://api.vk.com/method/wall.getById"
         params = {
             "posts": post.vk_post_id,
-            "access_token": VK_ACCESS_TOKEN,
+            "access_token": token,
             "v": self.vk_api_version,
         }
         timeout = aiohttp.ClientTimeout(total=self.timeout_seconds)

@@ -10,6 +10,17 @@ logger = logging.getLogger(__name__)
 _MEDIA_ATTACHMENT_TYPES = frozenset({"image", "video", "file", "audio"})
 
 
+def create_max_api_client() -> "MaxApiClient":
+    """Клиент Max API: токен из настроек бота (encrypted_secrets), fallback — MAX_BOT_TOKEN из .env."""
+    from app.config.settings import MAX_API_BASE_URL, MAX_BOT_TOKEN
+    from app.services.settings_service import get_settings_service
+
+    service = get_settings_service()
+    token = (service.get_secret("max_bot_token") or MAX_BOT_TOKEN or "").strip()
+    base_url = (MAX_API_BASE_URL or "https://botapi.max.ru").strip()
+    return MaxApiClient(token, base_url)
+
+
 def _preservable_attachments_from_message(msg: dict[str, Any]) -> list[dict[str, Any]]:
     """Медиа-вложения из GET /messages для повторной отправки при PUT (без link preview type=share)."""
     body: dict[str, Any] = {}

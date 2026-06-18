@@ -2603,11 +2603,10 @@ def _extract_max_message_id(max_link: str) -> Optional[str]:
 async def update_max_post_price(max_link: str, old_price: str, new_price: str) -> bool:
     try:
         from app.api.models.post import Post
-        from app.config.settings import MAX_API_BASE_URL, MAX_BOT_TOKEN
         from app.services.settings_service import get_settings_service
         MAX_CHANNEL_ID = get_settings_service().get_max_channel_id()
         from app.db.database import SessionLocal
-        from app.integrations.max.client import MaxApiClient
+        from app.integrations.max.client import create_max_api_client
         from app.utils.text_formatter import format_for_max, format_for_max_plain
 
         message_id = _extract_max_message_id(max_link)
@@ -2645,7 +2644,7 @@ async def update_max_post_price(max_link: str, old_price: str, new_price: str) -
                 logger.warning("Could not find price pattern in Max post text")
                 return False
 
-            client = MaxApiClient(MAX_BOT_TOKEN, MAX_API_BASE_URL)
+            client = create_max_api_client()
             formatted_text = format_for_max(updated_text, signature_enabled=True)
             plain_text = format_for_max_plain(updated_text, signature_enabled=True)
             if post.photos or post.videos:
@@ -2689,11 +2688,10 @@ async def update_max_post_price(max_link: str, old_price: str, new_price: str) -
 async def remove_max_post_unavailable(max_link: str):
     try:
         from app.api.models.post import Post
-        from app.config.settings import MAX_API_BASE_URL, MAX_BOT_TOKEN
         from app.services.settings_service import get_settings_service
         MAX_CHANNEL_ID = get_settings_service().get_max_channel_id()
         from app.db.database import SessionLocal
-        from app.integrations.max.client import MaxApiClient
+        from app.integrations.max.client import create_max_api_client
         from app.utils.text_formatter import format_for_max, format_for_max_plain
 
         message_id = _extract_max_message_id(max_link)
@@ -2713,7 +2711,7 @@ async def remove_max_post_unavailable(max_link: str):
             elif text_without_unavailable.startswith("\\#неактуально"):
                 text_without_unavailable = text_without_unavailable.replace("\\#неактуально", "", 1).strip()
 
-            client = MaxApiClient(MAX_BOT_TOKEN, MAX_API_BASE_URL)
+            client = create_max_api_client()
             formatted_text = format_for_max(text_without_unavailable, signature_enabled=True)
             plain_text = format_for_max_plain(text_without_unavailable, signature_enabled=True)
             if post.photos or post.videos:
@@ -2735,11 +2733,10 @@ async def remove_max_post_unavailable(max_link: str):
 async def mark_max_post_unavailable(max_link: str) -> bool:
     try:
         from app.api.models.post import Post
-        from app.config.settings import MAX_API_BASE_URL, MAX_BOT_TOKEN
         from app.services.settings_service import get_settings_service
         MAX_CHANNEL_ID = get_settings_service().get_max_channel_id()
         from app.db.database import SessionLocal
-        from app.integrations.max.client import MaxApiClient
+        from app.integrations.max.client import create_max_api_client
         from app.utils.text_formatter import format_for_max, format_for_max_plain
 
         message_id = _extract_max_message_id(max_link)
@@ -2757,7 +2754,7 @@ async def mark_max_post_unavailable(max_link: str) -> bool:
                 return True
             text_with_unavailable = f"#неактуально\n\n{original_text}"
 
-            client = MaxApiClient(MAX_BOT_TOKEN, MAX_API_BASE_URL)
+            client = create_max_api_client()
             formatted_text = format_for_max(text_with_unavailable, signature_enabled=True)
             plain_text = format_for_max_plain(text_with_unavailable, signature_enabled=True)
             if post.photos or post.videos:
@@ -2807,7 +2804,17 @@ async def mark_instagram_post_unavailable(product: dict) -> bool:
                 product.get("id"),
                 media_id,
             )
-        return ok
+            return True
+
+        # Graph API иногда отвечает 400 (spam filter), хотя комментарий уже в ленте.
+        if await client.has_unavailable_comment(media_id):
+            logger.info(
+                "Instagram media %s has #неактуально after post_comment failure (idempotent ok)",
+                media_id,
+            )
+            return True
+
+        return False
     except Exception as exc:
         logger.error("Error marking Instagram post unavailable: %s", exc, exc_info=True)
         return False

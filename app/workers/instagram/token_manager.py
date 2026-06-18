@@ -10,6 +10,10 @@ from app.services.settings_service import get_settings_service
 logger = logging.getLogger(__name__)
 
 
+def _is_api_access_blocked(error: str) -> bool:
+    return "API access blocked" in (error or "")
+
+
 class InstagramGraphTokenManager:
     def __init__(self) -> None:
         self.settings_service = get_settings_service()
@@ -249,13 +253,21 @@ class InstagramGraphTokenManager:
                     }
                 )
                 return True, ""
+            if _is_api_access_blocked(error):
+                user_error = (
+                    "Meta заблокировала доступ к Graph API приложения (API access blocked, OAuthException #200). "
+                    "Это не истёкший токен: проверьте Meta for Developers → ваше приложение → Alerts "
+                    "и выполните требуемые действия (верификация бизнеса, App Review, снятие ограничений)."
+                )
+            else:
+                user_error = f"Instagram Graph token невалиден: {error}"
             self._update_integrations(
                 {
                     "instagram_graph_token_last_check_at": self._now_iso(),
-                    "instagram_graph_token_last_error": error,
+                    "instagram_graph_token_last_error": user_error,
                 }
             )
-            return False, f"Instagram Graph token невалиден: {error}"
+            return False, user_error
 
         patch = {
             "instagram_graph_token_last_check_at": self._now_iso(),

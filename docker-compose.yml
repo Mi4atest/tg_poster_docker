@@ -10,6 +10,9 @@ services:
       - ./alembic.ini:/app/alembic.ini
       - ./migrations:/app/migrations
       - ./.cursor:/app/.cursor
+      # Корень проекта на хосте — для git pull / update.sh из бота
+      - .:/host_project
+      - /var/run/docker.sock:/var/run/docker.sock
       # Монтирование кода для разработки (изменения применяются сразу без пересборки)
       - ./app:/app/app
       - ./main.py:/app/main.py
@@ -22,6 +25,9 @@ services:
       - DATABASE_URL=${DATABASE_URL:-postgresql://postgres:postgres@db:5432/tg_poster}
       - API_HOST=0.0.0.0
       - API_PORT=8002
+      - TG_POSTER_HOST_DIR=/host_project
+      - TG_POSTER_APP_IMAGE=tg_poster_docker_app:latest
+      - TG_POSTER_BRANCH=${TG_POSTER_BRANCH:-Test_planner}
 
   db:
     image: postgres:14-alpine

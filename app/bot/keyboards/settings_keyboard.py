@@ -9,6 +9,7 @@ def get_settings_root_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="🔐 Интеграции и токены", callback_data="settings_integrations")],
         [InlineKeyboardButton(text="🗂 Отчёты и списки", callback_data="settings_reports")],
         [InlineKeyboardButton(text="💾 Резервное копирование", callback_data="settings_backup")],
+        [InlineKeyboardButton(text="🔄 Обновить с GitHub", callback_data="settings_update_project")],
         [InlineKeyboardButton(text="🧩 Меню новые", callback_data="mc_open")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main")],
     ]
@@ -29,6 +30,15 @@ def get_settings_reports_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="📊 VK: получатели отчёта", callback_data="settings_edit_report_vk_report_user_ids")],
         [InlineKeyboardButton(text="🆕 ID сообщений «Наличие»", callback_data="settings_edit_report_availability_message_ids")],
         [InlineKeyboardButton(text="♻️ ID сообщений «Список б/у»", callback_data="settings_edit_report_used_products_list_message_ids")],
+        [InlineKeyboardButton(text="⬅️ Назад к настройкам", callback_data="settings_root")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_settings_update_keyboard() -> InlineKeyboardMarkup:
+    buttons = [
+        [InlineKeyboardButton(text="✅ Да, обновить", callback_data="settings_update_project_confirm")],
+        [InlineKeyboardButton(text="📋 Статус / лог", callback_data="settings_update_project_status")],
         [InlineKeyboardButton(text="⬅️ Назад к настройкам", callback_data="settings_root")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)

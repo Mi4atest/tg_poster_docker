@@ -16,6 +16,7 @@ from app.bot.keyboards.settings_keyboard import (
     get_settings_intervals_keyboard,
     get_settings_reports_keyboard,
     get_settings_root_keyboard,
+    get_settings_update_keyboard,
     get_signature_platform_fields_keyboard,
     get_settings_signatures_edit_keyboard,
     get_settings_signatures_keyboard,
@@ -1034,4 +1035,52 @@ async def save_backup_schedule(message: Message, state: FSMContext):
     get_settings_service().update({"backup": {"hour": hour, "minute": minute}})
     await state.clear()
     await message.answer(f"✅ Время бэкапа: {hour:02d}:{minute:02d}")
+
+
+@router.callback_query(F.data == "settings_update_project")
+async def settings_update_project(callback: CallbackQuery):
+    from app.services.project_update_service import is_update_running
+
+    running = await is_update_running()
+    status_line = "⏳ Сейчас идёт обновление." if running else "Готово к обновлению."
+    await callback.message.edit_text(
+        "🔄 <b>Обновить с GitHub</b>\n\n"
+        f"{status_line}\n\n"
+        "Подтянет одобренные коммиты из ветки <code>Test_planner</code>, "
+        "пересоберёт контейнер приложения и перезапустит бота.\n\n"
+        "<b>Не затрагивается:</b> база данных, токены, настройки, ссылки, "
+        "кнопки «В наличии», медиа.\n\n"
+        "<b>Рекомендуется</b> сделать бэкап перед обновлением "
+        "(«💾 Резервное копирование»).\n\n"
+        "Продолжить?",
+        reply_markup=get_settings_update_keyboard(),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "settings_update_project_confirm")
+async def settings_update_project_confirm(callback: CallbackQuery):
+    from app.services.project_update_service import start_project_update
+
+    ok, msg = await start_project_update()
+    await callback.answer("Запускаю обновление…" if ok else "Не удалось запустить")
+    await callback.message.edit_text(
+        msg,
+        reply_markup=get_settings_update_keyboard(),
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data == "settings_update_project_status")
+async def settings_update_project_status(callback: CallbackQuery):
+    from app.services.project_update_service import get_update_status_message
+
+    text = await get_update_status_message()
+    await callback.message.edit_text(
+        f"🔄 <b>Статус обновления</b>\n\n{text}",
+        reply_markup=get_settings_update_keyboard(),
+        parse_mode="HTML",
+    )
+    await callback.answer()
 

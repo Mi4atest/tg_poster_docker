@@ -248,21 +248,21 @@ fi
 
 # --- 4. Сборка и запуск -----------------------------------------------------
 info ""
-info "Сборка образов..."
-$DC build
-
-info "Запуск контейнеров (миграции применятся автоматически в entrypoint)..."
-$DC up -d
-
-# H1: volume Postgres мог быть создан со старым паролем, а .env — с новым DB_PASSWORD
-if [ -f "scripts/sync_db_password.sh" ]; then
-    bash scripts/sync_db_password.sh --restart-app || warn "Синхронизация пароля БД не удалась — проверьте логи db/app"
+if [ -f "scripts/update.sh" ]; then
+    TG_POSTER_SKIP_GIT=1 bash scripts/update.sh
+else
+    info "Сборка образов..."
+    $DC build
+    info "Запуск контейнеров (миграции применятся автоматически в entrypoint)..."
+    $DC up -d
+    if [ -f "scripts/sync_db_password.sh" ]; then
+        bash scripts/sync_db_password.sh --restart-app || warn "Синхронизация пароля БД не удалась — проверьте логи db/app"
+    fi
+    info "Статус контейнеров:"
+    $DC ps
 fi
 
-info "Статус контейнеров:"
-$DC ps
-
-# --- 5. Восстановление из бэкапа (опционально) ------------------------------
+# --- 5. Восстановление из бэкапа (опционально, только первичная установка) ---
 mkdir -p backups
 
 LATEST_BACKUP=""

@@ -30,15 +30,23 @@ def format_avito_text_step_block(screen_level: int, body_level: int) -> str:
     )
 
 
-def format_post_creation_text_prompt(status_hint: str, screen_level: int, body_level: int) -> str:
+def format_post_creation_text_prompt(
+    status_hint: str,
+    screen_level: int,
+    body_level: int,
+    *,
+    avito_enabled: bool = True,
+) -> str:
     """Текст экрана «отправьте текст» с подсказкой по площадкам и блоком Авито."""
-    block = format_avito_text_step_block(screen_level, body_level)
-    return (
+    base = (
         "📝 Отправьте текст для нового поста.\n\n"
         "После этого вы сможете добавить фотографии и видео.\n\n"
-        f"{status_hint}\n\n"
-        f"{block}"
+        f"{status_hint}"
     )
+    if not avito_enabled:
+        return base
+    block = format_avito_text_step_block(screen_level, body_level)
+    return f"{base}\n\n{block}"
 
 
 def format_avito_publish_block(screen_level: int, body_level: int) -> str:

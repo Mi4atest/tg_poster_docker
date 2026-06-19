@@ -32,16 +32,18 @@ async def create_post_callback(callback: CallbackQuery, state: FSMContext):
     """Handle the 'Create Post' button."""
     service = get_settings_service()
     vk_market_enabled = service.is_vk_market_enabled()
+    avito_enabled = service.is_platform_enabled("avito")
     await state.update_data(avito_screen_level=1, avito_body_level=1, photos=[], videos=[])
     keyboard = get_create_post_entry_keyboard(
         vk_market_enabled,
+        avito_enabled=avito_enabled,
         avito_screen_level=1,
         avito_body_level=1,
     )
     status_hint = get_platform_status_hint_text()
 
     await callback.message.edit_text(
-        format_post_creation_text_prompt(status_hint, 1, 1),
+        format_post_creation_text_prompt(status_hint, 1, 1, avito_enabled=avito_enabled),
         reply_markup=keyboard,
         parse_mode="HTML",
     )
@@ -55,6 +57,7 @@ async def toggle_vk_market_from_create_post(callback: CallbackQuery, state: FSMC
     service = get_settings_service()
     next_state = not service.is_vk_market_enabled()
     service.set_vk_market_enabled(next_state)
+    avito_enabled = service.is_platform_enabled("avito")
     data = await state.get_data()
     from app.integrations.avito.condition_maps import clamp_avito_level
 
@@ -62,12 +65,13 @@ async def toggle_vk_market_from_create_post(callback: CallbackQuery, state: FSMC
     bl = clamp_avito_level(data.get("avito_body_level", 1))
     keyboard = get_create_post_entry_keyboard(
         next_state,
+        avito_enabled=avito_enabled,
         avito_screen_level=sl,
         avito_body_level=bl,
     )
     status_hint = get_platform_status_hint_text()
     await callback.message.edit_text(
-        format_post_creation_text_prompt(status_hint, sl, bl),
+        format_post_creation_text_prompt(status_hint, sl, bl, avito_enabled=avito_enabled),
         reply_markup=keyboard,
         parse_mode="HTML",
     )

@@ -166,13 +166,18 @@ async def skip_videos(callback: CallbackQuery, state: FSMContext):
 
 
 async def _render_post_creation_text_entry(message, state: FSMContext) -> None:
-    vk_market_enabled = get_settings_service().is_vk_market_enabled()
+    service = get_settings_service()
+    vk_market_enabled = service.is_vk_market_enabled()
+    avito_enabled = service.is_platform_enabled("avito")
     data = await state.get_data()
     sl = clamp_avito_level(data.get("avito_screen_level", 1))
     bl = clamp_avito_level(data.get("avito_body_level", 1))
-    text = format_post_creation_text_prompt(get_platform_status_hint_text(), sl, bl)
+    text = format_post_creation_text_prompt(
+        get_platform_status_hint_text(), sl, bl, avito_enabled=avito_enabled
+    )
     kb = get_create_post_entry_keyboard(
         vk_market_enabled,
+        avito_enabled=avito_enabled,
         avito_screen_level=sl,
         avito_body_level=bl,
     )
@@ -386,13 +391,18 @@ async def back_to_text(callback: CallbackQuery, state: FSMContext):
     """Go back to entering text."""
     data = await state.get_data()
     await state.update_data(photos=[], videos=[])
-    vk_market_enabled = get_settings_service().is_vk_market_enabled()
+    service = get_settings_service()
+    vk_market_enabled = service.is_vk_market_enabled()
+    avito_enabled = service.is_platform_enabled("avito")
     sl = clamp_avito_level(data.get("avito_screen_level", 1))
     bl = clamp_avito_level(data.get("avito_body_level", 1))
     await callback.message.edit_text(
-        format_post_creation_text_prompt(get_platform_status_hint_text(), sl, bl),
+        format_post_creation_text_prompt(
+            get_platform_status_hint_text(), sl, bl, avito_enabled=avito_enabled
+        ),
         reply_markup=get_create_post_entry_keyboard(
             vk_market_enabled,
+            avito_enabled=avito_enabled,
             avito_screen_level=sl,
             avito_body_level=bl,
         ),

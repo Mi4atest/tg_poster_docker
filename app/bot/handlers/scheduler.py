@@ -474,14 +474,19 @@ async def add_to_queue_and_create(callback: CallbackQuery, state: FSMContext):
             from app.bot.handlers.post_creation import PostCreation
 
             await state.update_data(avito_screen_level=1, avito_body_level=1)
-            vk_market_enabled = get_settings_service().is_vk_market_enabled()
+            service = get_settings_service()
+            vk_market_enabled = service.is_vk_market_enabled()
+            avito_enabled = service.is_platform_enabled("avito")
             status_hint = get_platform_status_hint_text()
             await safe_edit_message(
                 callback.message,
                 "✅ Пост добавлен в очередь публикации!\n\n"
-                + format_post_creation_text_prompt(status_hint, 0, 0),
+                + format_post_creation_text_prompt(
+                    status_hint, 0, 0, avito_enabled=avito_enabled
+                ),
                 reply_markup=get_create_post_entry_keyboard(
                     vk_market_enabled,
+                    avito_enabled=avito_enabled,
                     avito_screen_level=1,
                     avito_body_level=1,
                 ),

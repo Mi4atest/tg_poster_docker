@@ -37,28 +37,31 @@ def get_main_keyboard(queue_count: int = 0, drafts_count: int = 0) -> InlineKeyb
 def get_create_post_entry_keyboard(
     vk_market_enabled: bool,
     *,
+    avito_enabled: bool = True,
     avito_screen_level: int = 1,
     avito_body_level: int = 1,
 ) -> InlineKeyboardMarkup:
-    """Клавиатура шага «текст»: Назад, Товары ВК, затем цикл Экран/Корпус только для черновика Авито."""
+    """Клавиатура шага «текст»: Назад, Товары ВК; Экран/Корпус — только если Авито включено."""
     vk_market_icon = "🟢" if vk_market_enabled else "🔴"
-    sl = clamp_avito_level(avito_screen_level)
-    bl = clamp_avito_level(avito_body_level)
     row1 = [
         InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main"),
         InlineKeyboardButton(text=f"{vk_market_icon} Товары ВК", callback_data="create_post_toggle_vk_market"),
     ]
-    row2 = [
-        InlineKeyboardButton(
-            text=f"📱 {_label_for_level(sl, AVITO_SCREEN_LABELS)}"[:64],
-            callback_data="pc_text_avito_cycle_scr",
-        ),
-        InlineKeyboardButton(
-            text=f"📦 {_label_for_level(bl, AVITO_BODY_LABELS)}"[:64],
-            callback_data="pc_text_avito_cycle_bod",
-        ),
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=[row1, row2])
+    rows = [row1]
+    if avito_enabled:
+        sl = clamp_avito_level(avito_screen_level)
+        bl = clamp_avito_level(avito_body_level)
+        rows.append([
+            InlineKeyboardButton(
+                text=f"📱 {_label_for_level(sl, AVITO_SCREEN_LABELS)}"[:64],
+                callback_data="pc_text_avito_cycle_scr",
+            ),
+            InlineKeyboardButton(
+                text=f"📦 {_label_for_level(bl, AVITO_BODY_LABELS)}"[:64],
+                callback_data="pc_text_avito_cycle_bod",
+            ),
+        ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def get_post_actions_keyboard(from_archive=False) -> InlineKeyboardMarkup:

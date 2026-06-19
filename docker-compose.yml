@@ -14,6 +14,9 @@ services:
       # Корень проекта на хосте — для git pull / update.sh из бота
       - .:/host_project
       - /var/run/docker.sock:/var/run/docker.sock
+      # Docker CLI с хоста — в образе docker.io API 1.41, демон требует >= 1.44
+      - /usr/bin/docker:/usr/bin/docker:ro
+      - /usr/bin/docker-compose:/usr/bin/docker-compose:ro
       # Монтирование кода для разработки (изменения применяются сразу без пересборки)
       - ./app:/app/app
       - ./main.py:/app/main.py
@@ -30,6 +33,8 @@ services:
       - TG_POSTER_HOST_DIR=/host_project
       - TG_POSTER_APP_IMAGE=tg_poster_docker_app:latest
       - TG_POSTER_BRANCH=${TG_POSTER_BRANCH:-Test_planner}
+      - TG_POSTER_DOCKER_BIN=/usr/bin/docker
+      - TG_POSTER_DOCKER_COMPOSE_BIN=/usr/bin/docker-compose
 
   db:
     image: postgres:14-alpine

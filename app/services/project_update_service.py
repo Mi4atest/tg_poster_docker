@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import shutil
 from pathlib import Path
 from typing import Tuple
 
@@ -19,10 +18,17 @@ UPDATE_SCRIPT = HOST_PROJECT / "scripts" / "update.sh"
 UPDATE_LOG = HOST_PROJECT / "backups" / "last_update.log"
 UPDATER_CONTAINER = "tg_poster_updater"
 DEFAULT_APP_IMAGE = os.environ.get("TG_POSTER_APP_IMAGE", "tg_poster_docker_app:latest")
+DOCKER_BIN = os.environ.get("TG_POSTER_DOCKER_BIN", "/usr/bin/docker")
+DOCKER_COMPOSE_BIN = os.environ.get("TG_POSTER_DOCKER_COMPOSE_BIN", "/usr/bin/docker-compose")
+
+
+def _docker_binaries() -> tuple[Path, Path]:
+    return Path(DOCKER_BIN), Path(DOCKER_COMPOSE_BIN)
 
 
 def _docker_available() -> bool:
-    return Path("/var/run/docker.sock").exists() and shutil.which("docker") is not None
+    docker_bin, _ = _docker_binaries()
+    return Path("/var/run/docker.sock").exists() and docker_bin.is_file()
 
 
 async def _resolve_host_bind_path() -> str:
@@ -41,8 +47,9 @@ async def _resolve_host_bind_path() -> str:
                     return candidate
 
     container = os.environ.get("TG_POSTER_CONTAINER_NAME", "tg_poster_app")
+    docker_bin, _ = _docker_binaries()
     proc = await asyncio.create_subprocess_exec(
-        "docker",
+        str(docker_bin),
         "inspect",
         container,
         "--format",
@@ -75,7 +82,7 @@ async def is_update_running() -> bool:
     if not _docker_available():
         return False
     proc = await asyncio.create_subprocess_exec(
-        "docker", "ps", "--filter", f"name={UPDATER_CONTAINER}", "--format", "{{.Names}}",
+        str(_docker_binaries()[0]), "ps", "--filter", f"name={UPDATER_CONTAINER}", "--format", "{{.Names}}",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
     )
@@ -107,19 +114,22 @@ async def start_project_update() -> Tuple[bool, str]:
             f"<pre>{_read_update_log_tail()}</pre>"
         )
 
+    docker_bin, compose_bin = _docker_binaries()
     host_bind = await _resolve_host_bind_path()
     logger.info("Запуск обновления: host_bind=%s image=%s", host_bind, DEFAULT_APP_IMAGE)
 
     UPDATE_LOG.parent.mkdir(parents=True, exist_ok=True)
 
     cmd = [
-        "docker", "run", "--rm", "-d",
+        str(docker_bin), "run", "--rm", "-d",
         "--name", UPDATER_CONTAINER,
         "--entrypoint", "bash",
         # Монтируем по тому же абсолютному пути, что на хосте — иначе docker-compose v1
         # внутри updater подставляет /host_project/... с хоста (пустая папка).
         "-v", f"{host_bind}:{host_bind}",
         "-v", "/var/run/docker.sock:/var/run/docker.sock",
+        "-v", f"{docker_bin}:{docker_bin}:ro",
+        "-v", f"{compose_bin}:{compose_bin}:ro",
         "-e", f"TG_POSTER_DIR={host_bind}",
         "-e", "COMPOSE_PROJECT_NAME=tg_poster_docker",
         "-e", f"TG_POSTER_BRANCH={os.environ.get('TG_POSTER_BRANCH', 'Test_planner')}",

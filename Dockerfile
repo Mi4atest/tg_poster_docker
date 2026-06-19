@@ -10,7 +10,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     postgresql-client \
     git \
-    docker.io \
     docker-compose \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*

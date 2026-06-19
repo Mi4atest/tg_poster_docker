@@ -1,5 +1,6 @@
 services:
   app:
+    image: tg_poster_docker_app:latest
     build: .
     container_name: tg_poster_app
     restart: always
@@ -22,7 +23,8 @@ services:
       tg_poster_network:
         ipv4_address: 172.20.0.3
     environment:
-      - DATABASE_URL=${DATABASE_URL:-postgresql://postgres:postgres@db:5432/tg_poster}
+      # DATABASE_URL и токены — только из смонтированного .env (load_dotenv в приложении).
+      # Явная подстановка ${DATABASE_URL} ломается при update из docker-compose v1 в updater.
       - API_HOST=0.0.0.0
       - API_PORT=8002
       - TG_POSTER_HOST_DIR=/host_project

@@ -3,6 +3,13 @@
 # 1) ждём готовности БД, 2) создаём/обновляем схему и миграции, 3) запускаем приложение.
 set -e
 
+if [ -f /app/.env ]; then
+    set -a
+    # shellcheck disable=SC1091
+    source /app/.env
+    set +a
+fi
+
 DB_URL="${DATABASE_URL:-postgresql://postgres:postgres@db:5432/tg_poster}"
 
 echo "[entrypoint] Ожидание готовности базы данных..."

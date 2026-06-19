@@ -25,6 +25,41 @@ def _docker_available() -> bool:
     return Path("/var/run/docker.sock").exists() and shutil.which("docker") is not None
 
 
+async def _resolve_host_bind_path() -> str:
+    """Путь на хосте для docker run -v (не путать с /host_project внутри контейнера)."""
+    explicit = os.environ.get("TG_POSTER_HOST_BIND", "").strip()
+    if explicit and Path(explicit).is_dir():
+        return explicit
+
+    mountinfo = Path("/proc/self/mountinfo")
+    if mountinfo.is_file():
+        for line in mountinfo.read_text(encoding="utf-8", errors="replace").splitlines():
+            parts = line.split()
+            if len(parts) >= 5 and parts[4] == "/host_project":
+                candidate = parts[3]
+                if candidate.startswith("/"):
+                    return candidate
+
+    container = os.environ.get("TG_POSTER_CONTAINER_NAME", "tg_poster_app")
+    proc = await asyncio.create_subprocess_exec(
+        "docker",
+        "inspect",
+        container,
+        "--format",
+        '{{range .Mounts}}{{if eq .Destination "/host_project"}}{{.Source}}{{end}}{{end}}',
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate()
+    source = (stdout or b"").decode().strip()
+    if source and Path(source).is_dir():
+        return source
+
+    err = (stderr or b"").decode(errors="replace").strip()
+    logger.warning("Не удалось определить host bind для /host_project: %s", err or "пусто")
+    return str(HOST_PROJECT)
+
+
 def _read_update_log_tail(max_lines: int = 25) -> str:
     if not UPDATE_LOG.is_file():
         return "Лог обновления пока пуст."
@@ -72,19 +107,25 @@ async def start_project_update() -> Tuple[bool, str]:
             f"<pre>{_read_update_log_tail()}</pre>"
         )
 
+    host_bind = await _resolve_host_bind_path()
+    logger.info("Запуск обновления: host_bind=%s image=%s", host_bind, DEFAULT_APP_IMAGE)
+
     UPDATE_LOG.parent.mkdir(parents=True, exist_ok=True)
 
     cmd = [
         "docker", "run", "--rm", "-d",
         "--name", UPDATER_CONTAINER,
         "--entrypoint", "bash",
-        "-v", f"{HOST_PROJECT}:/host_project",
+        # Монтируем по тому же абсолютному пути, что на хосте — иначе docker-compose v1
+        # внутри updater подставляет /host_project/... с хоста (пустая папка).
+        "-v", f"{host_bind}:{host_bind}",
         "-v", "/var/run/docker.sock:/var/run/docker.sock",
-        "-e", "TG_POSTER_DIR=/host_project",
+        "-e", f"TG_POSTER_DIR={host_bind}",
+        "-e", "COMPOSE_PROJECT_NAME=tg_poster_docker",
         "-e", f"TG_POSTER_BRANCH={os.environ.get('TG_POSTER_BRANCH', 'Test_planner')}",
-        "-w", "/host_project",
+        "-w", host_bind,
         DEFAULT_APP_IMAGE,
-        "-c", f"bash scripts/update.sh > /host_project/backups/last_update.log 2>&1",
+        "-c", f"bash scripts/update.sh > {host_bind}/backups/last_update.log 2>&1",
     ]
 
     try:
@@ -94,10 +135,11 @@ async def start_project_update() -> Tuple[bool, str]:
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await proc.communicate()
+        out = (stdout or b"").decode(errors="replace").strip()
+        err = (stderr or b"").decode(errors="replace").strip()
         if proc.returncode != 0:
-            err = (stderr or stdout or b"").decode(errors="replace").strip()
-            logger.error("Updater container failed to start: %s", err)
-            return False, f"Не удалось запустить обновление:\n<pre>{err[:500]}</pre>"
+            logger.error("Updater container failed to start: %s", err or out)
+            return False, f"Не удалось запустить обновление:\n<pre>{(err or out)[:500]}</pre>"
     except Exception as exc:
         logger.exception("start_project_update")
         return False, f"Ошибка запуска: {exc}"

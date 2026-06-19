@@ -32,7 +32,6 @@ RUN mkdir -p /app/media /app/backups && chmod 777 /app/media /app/backups \
 # Переменные окружения по умолчанию
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    DATABASE_URL=postgresql://postgres:postgres@db:5432/tg_poster \
     API_HOST=0.0.0.0 \
     API_PORT=8002 \
     INSTAGRAM_GRAPH_API_VERSION=v19.0 \

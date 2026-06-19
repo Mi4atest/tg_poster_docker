@@ -1065,11 +1065,15 @@ async def settings_update_project_confirm(callback: CallbackQuery):
 
     ok, msg = await start_project_update()
     await callback.answer("Запускаю обновление…" if ok else "Не удалось запустить")
-    await callback.message.edit_text(
-        msg,
-        reply_markup=get_settings_update_keyboard(),
-        parse_mode="HTML",
-    )
+    try:
+        await callback.message.edit_text(
+            msg,
+            reply_markup=get_settings_update_keyboard(),
+            parse_mode="HTML",
+        )
+    except TelegramBadRequest as e:
+        if "message is not modified" not in str(e).lower():
+            raise
 
 
 @router.callback_query(F.data == "settings_update_project_status")
@@ -1077,10 +1081,14 @@ async def settings_update_project_status(callback: CallbackQuery):
     from app.services.project_update_service import get_update_status_message
 
     text = await get_update_status_message()
-    await callback.message.edit_text(
-        f"🔄 <b>Статус обновления</b>\n\n{text}",
-        reply_markup=get_settings_update_keyboard(),
-        parse_mode="HTML",
-    )
+    try:
+        await callback.message.edit_text(
+            f"🔄 <b>Статус обновления</b>\n\n{text}",
+            reply_markup=get_settings_update_keyboard(),
+            parse_mode="HTML",
+        )
+    except TelegramBadRequest as e:
+        if "message is not modified" not in str(e).lower():
+            raise
     await callback.answer()
 

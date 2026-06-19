@@ -12,6 +12,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="${TG_POSTER_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 BRANCH="${TG_POSTER_BRANCH:-Test_planner}"
 SKIP_GIT="${TG_POSTER_SKIP_GIT:-0}"
+COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-tg_poster_docker}"
+COMPOSE_FILE="${PROJECT_DIR}/docker-compose.yml"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 info() { echo -e "${GREEN}[INFO]${NC} $1"; }
@@ -20,10 +22,17 @@ error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 cd "$PROJECT_DIR"
 
+if [ -f ".env" ]; then
+    set -a
+    # shellcheck disable=SC1091
+    source .env
+    set +a
+fi
+
 if docker compose version >/dev/null 2>&1; then
-    DC="docker compose"
+    DC=(docker compose -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}")
 elif command -v docker-compose >/dev/null 2>&1; then
-    DC="docker-compose"
+    DC=(docker-compose -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}")
 else
     error "docker compose / docker-compose не найден"
     exit 1
@@ -47,8 +56,7 @@ git_pull_with_retry() {
 if [ "$SKIP_GIT" != "1" ]; then
     info "Обновление кода (ветка ${BRANCH})..."
     if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
-        warn "Есть незакоммиченные изменения — сохраняю в stash"
-        git stash push -u -m "update_autostash_$(date +%Y%m%d_%H%M%S)" || true
+        warn "Есть локальные изменения — stash не делаем, чтобы не потерять правки деплоя"
     fi
     if ! git_pull_with_retry; then
         error "Не удалось подтянуть код с GitHub после 3 попыток"
@@ -66,11 +74,12 @@ else
 fi
 
 info "Сборка образа app..."
-$DC build app
+"${DC[@]}" build app
 
-info "Пересоздание контейнера app (обход бага docker-compose ContainerConfig)..."
+info "Пересоздание только контейнера app (db/nginx не трогаем)..."
 docker rm -f tg_poster_app 2>/dev/null || true
-$DC up -d
+docker start tg_poster_db 2>/dev/null || "${DC[@]}" up -d --no-recreate db
+"${DC[@]}" up -d --no-deps app
 
 if [ -f "$PROJECT_DIR/scripts/sync_db_password.sh" ]; then
     bash "$PROJECT_DIR/scripts/sync_db_password.sh" --restart-app \
@@ -78,6 +87,6 @@ if [ -f "$PROJECT_DIR/scripts/sync_db_password.sh" ]; then
 fi
 
 info "Статус контейнеров:"
-$DC ps
+"${DC[@]}" ps
 
 info "Обновление завершено."

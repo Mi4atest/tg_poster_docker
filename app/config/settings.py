@@ -4,8 +4,8 @@ from typing import List, Optional
 from dotenv import load_dotenv
 from pathlib import Path
 
-# Load environment variables from .env file
-load_dotenv()
+# Load environment variables from .env file (override image ENV defaults)
+load_dotenv(override=True)
 
 # Base directory
 BASE_DIR = Path(__file__).resolve().parent.parent.parent

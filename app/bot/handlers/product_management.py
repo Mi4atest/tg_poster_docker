@@ -42,6 +42,21 @@ def _products_back_from_state(data: dict) -> str:
     return data.get("products_back") or "products_list"
 
 
+def _archive_products_back_data(
+    year: Optional[int] = None,
+    month: Optional[int] = None,
+    day: Optional[int] = None,
+) -> str:
+    """Callback для «Назад к списку» из карточки товара в архиве."""
+    if day is not None:
+        return f"products_archive_day_{year}_{month}_{day}"
+    if month is not None:
+        return f"products_archive_month_{year}_{month}"
+    if year is not None:
+        return f"products_archive_year_{year}"
+    return "products_archive"
+
+
 async def _clear_state_keep_products_back(state: FSMContext) -> str:
     """Сброс FSM с сохранением точки возврата в списке б/у."""
     data = await state.get_data()
@@ -1665,13 +1680,13 @@ async def products_search_back(callback: CallbackQuery, state: FSMContext):
 
 
 @router.callback_query(F.data == "products_archive")
-async def products_archive(callback: CallbackQuery, year=None, month=None, day=None):
+async def products_archive(callback: CallbackQuery, state: FSMContext, year=None, month=None, day=None):
     """Показать архив товаров с навигацией по датам."""
-    await show_archived_products(callback.message, year=year, month=month, day=day)
+    await show_archived_products(callback.message, year=year, month=month, day=day, state=state)
     await callback.answer()
 
 
-async def show_archived_products(message, year=None, month=None, day=None):
+async def show_archived_products(message, year=None, month=None, day=None, state: Optional[FSMContext] = None):
     """Показать архив товаров с группировкой по датам архивации."""
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
     from datetime import datetime
@@ -1846,23 +1861,27 @@ async def show_archived_products(message, year=None, month=None, day=None):
     )])
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+    if state is not None:
+        await state.update_data(
+            products_back=_archive_products_back_data(year, month, day)
+        )
     await safe_edit_message(message, response_text, reply_markup=keyboard)
 
 
 @router.callback_query(F.data.startswith("products_archive_year_"))
-async def products_archive_year(callback: CallbackQuery):
+async def products_archive_year(callback: CallbackQuery, state: FSMContext):
     """Показать месяцы выбранного года."""
     try:
         year = int(callback.data.replace("products_archive_year_", ""))
     except ValueError:
         await callback.answer("Ошибка")
         return
-    await show_archived_products(callback.message, year=year)
+    await show_archived_products(callback.message, year=year, state=state)
     await callback.answer()
 
 
 @router.callback_query(F.data.startswith("products_archive_month_"))
-async def products_archive_month(callback: CallbackQuery):
+async def products_archive_month(callback: CallbackQuery, state: FSMContext):
     """Показать дни выбранного месяца."""
     try:
         parts = callback.data.replace("products_archive_month_", "").split("_")
@@ -1871,12 +1890,12 @@ async def products_archive_month(callback: CallbackQuery):
     except (ValueError, IndexError):
         await callback.answer("Ошибка")
         return
-    await show_archived_products(callback.message, year=year, month=month)
+    await show_archived_products(callback.message, year=year, month=month, state=state)
     await callback.answer()
 
 
 @router.callback_query(F.data.startswith("products_archive_day_"))
-async def products_archive_day(callback: CallbackQuery):
+async def products_archive_day(callback: CallbackQuery, state: FSMContext):
     """Показать товары выбранного дня."""
     try:
         parts = callback.data.replace("products_archive_day_", "").split("_")
@@ -1886,7 +1905,7 @@ async def products_archive_day(callback: CallbackQuery):
     except (ValueError, IndexError):
         await callback.answer("Ошибка")
         return
-    await show_archived_products(callback.message, year=year, month=month, day=day)
+    await show_archived_products(callback.message, year=year, month=month, day=day, state=state)
     await callback.answer()
 
 

@@ -23,3 +23,8 @@ def format_dashboard_ts_msk(dt: datetime) -> str:
     if local.date() == datetime.now(MSK).date():
         return local.strftime("%H:%M")
     return local.strftime("%d.%m %H:%M")
+
+
+def format_status_date_msk(dt: datetime) -> str:
+    """Дата и время для подписи под статусом товара (МСК)."""
+    return to_msk(dt).strftime("%d.%m.%Y, %H:%M")

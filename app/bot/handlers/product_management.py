@@ -9,6 +9,7 @@ import html
 import logging
 import re
 import math
+from datetime import datetime
 from typing import Optional
 
 from app.bot.keyboards.product_keyboard import (
@@ -25,6 +26,7 @@ from app.bot.keyboards.product_keyboard import (
 from app.utils.iphone_parser import group_products_by_model, get_model_display_name
 from app.bot.utils.product_list_formatter import format_full_products_list
 from app.config.settings import API_HOST, API_PORT, MAX_SHARE_FALLBACK_PREFIX
+from app.utils.time_msk import format_status_date_msk
 from app.utils.price_change import (
     PriceChangeInfo,
     analyze_price_change,
@@ -306,6 +308,32 @@ def format_product_platform_links_html(product: dict) -> str:
     if ig_link:
         text += f"\n🔗 <a href='{html.escape(ig_link, quote=True)}'>Ссылка на товар в IG</a>"
     return text
+
+
+def _parse_product_datetime(value) -> Optional[datetime]:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+
+
+def format_product_status_html(product: dict) -> str:
+    """Строка статуса товара; для «недоступен» — мелкая подпись с датой снятия (МСК)."""
+    status = product.get("status", "active")
+    status_emoji = {"active": "✅", "unavailable": "🚫", "deleted": "🗑️"}
+    status_text = {"active": "Активен", "unavailable": "Недоступен", "deleted": "Удален"}
+    line = f"\n{status_emoji.get(status, '❓')} Статус: {status_text.get(status, status)}"
+    if status == "unavailable":
+        dt = _parse_product_datetime(product.get("archived_at")) or _parse_product_datetime(
+            product.get("updated_at")
+        )
+        if dt:
+            line += f"\n<i>с {format_status_date_msk(dt)}</i>"
+    return line + "\n"
 
 
 _MAX_TELEGRAM_CHANNEL_LINK_RE = re.compile(
@@ -887,18 +915,8 @@ async def product_detail(callback: CallbackQuery, state: FSMContext):
     if product.get('collection_name'):
         text += f"📁 Подборка: {product['collection_name']}\n"
     
-    status_emoji = {
-        "active": "✅",
-        "unavailable": "🚫",
-        "deleted": "🗑️"
-    }
-    status_text = {
-        "active": "Активен",
-        "unavailable": "Недоступен",
-        "deleted": "Удален"
-    }
     status = product.get('status', 'active')
-    text += f"\n{status_emoji.get(status, '❓')} Статус: {status_text.get(status, status)}\n"
+    text += format_product_status_html(product)
     text += format_product_platform_links_html(product)
 
     await safe_edit_message(
@@ -1134,10 +1152,8 @@ async def _return_to_used_product_detail(
         text += f"📂 Категория: {product['category_name']}\n"
     if product.get("collection_name"):
         text += f"📁 Подборка: {product['collection_name']}\n"
-    status_emoji = {"active": "✅", "unavailable": "🚫", "deleted": "🗑️"}
-    status_text = {"active": "Активен", "unavailable": "Недоступен", "deleted": "Удален"}
-    status_val = product.get("status", "active")
-    text += f"\n{status_emoji.get(status_val, '❓')} Статус: {status_text.get(status_val, status_val)}\n"
+    status = product.get("status", "active")
+    text += format_product_status_html(product)
     text += format_product_platform_links_html(product)
 
     await safe_edit_message(
@@ -1266,10 +1282,7 @@ async def _after_product_price_updated(
         text += f"📂 Категория: {updated_product['category_name']}\n"
     if updated_product.get("collection_name"):
         text += f"📁 Подборка: {updated_product['collection_name']}\n"
-    status_emoji = {"active": "✅", "unavailable": "🚫", "deleted": "🗑️"}
-    status_text = {"active": "Активен", "unavailable": "Недоступен", "deleted": "Удален"}
-    status_val = updated_product.get("status", "active")
-    text += f"\n{status_emoji.get(status_val, '❓')} Статус: {status_text.get(status_val, status_val)}\n"
+    text += format_product_status_html(updated_product)
     text += format_product_platform_links_html(updated_product)
     from app.bot.keyboards.product_keyboard import get_product_detail_keyboard
 
@@ -1478,9 +1491,7 @@ async def product_confirm_action(callback: CallbackQuery, state: FSMContext):
                 text += f"📂 Категория: {updated_product['category_name']}\n"
             if updated_product.get("collection_name"):
                 text += f"📁 Подборка: {updated_product['collection_name']}\n"
-            status_emoji = {"active": "✅", "unavailable": "🚫", "deleted": "🗑️"}
-            status_text = {"active": "Активен", "unavailable": "Недоступен", "deleted": "Удален"}
-            text += f"\n{status_emoji.get(status, '❓')} Статус: {status_text.get(status, status)}\n"
+            text += format_product_status_html(updated_product)
             text += format_product_platform_links_html(updated_product)
             await safe_edit_message(
                 callback.message,
@@ -2004,9 +2015,7 @@ async def process_product_unavailable(product_id: int, payment_method: Optional[
             text += f"📂 Категория: {refreshed['category_name']}\n"
         if refreshed.get("collection_name"):
             text += f"📁 Подборка: {refreshed['collection_name']}\n"
-        status_emoji = {"active": "✅", "unavailable": "🚫", "deleted": "🗑️"}
-        status_text = {"active": "Активен", "unavailable": "Недоступен", "deleted": "Удален"}
-        text += f"\n{status_emoji.get(status, '❓')} Статус: {status_text.get(status, status)}\n"
+        text += format_product_status_html(refreshed)
         text += format_product_platform_links_html(refreshed)
         await safe_edit_message(
             callback.message,

@@ -24,6 +24,7 @@ class Product(Base):
 
     # Product information
     name = Column(String, nullable=False)  # Название товара
+    display_label = Column(String(128), nullable=True)  # Короткая подпись для кнопок/списка
     price = Column(String, nullable=True)  # Цена (строка, т.к. может содержать валюту)
     payment_method = Column(String, nullable=True)  # Способ оплаты при архивации (cash, card, credit)
     final_price = Column(String, nullable=True)  # Финальная цена с учетом способа оплаты

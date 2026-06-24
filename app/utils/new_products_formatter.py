@@ -5,7 +5,7 @@ from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Optional
 
 from app.utils.iphone_parser import group_products_by_model, sort_models_for_display
-from app.utils.product_formatter import format_product_name_for_list
+from app.utils.product_label import availability_line_for_product
 
 
 def _parse_price_number(price: str) -> float:
@@ -74,9 +74,8 @@ def format_availability_list(
         prods = grouped_av.get(model, [])
         prods = sorted(prods, key=_product_sort_key)
         for p in prods:
-            name = format_product_name_for_list(p.get("name", "Без названия"))
-            price = p.get("price") or "—"
-            lines_av.append(f"🟢{name} - {price}")
+            name = availability_line_for_product(p)
+            lines_av.append(f"🟢{name}")
         if prods:
             lines_av.append("")
 
@@ -85,9 +84,8 @@ def format_availability_list(
         prods = grouped_order.get(model, [])
         prods = sorted(prods, key=_product_sort_key)
         for p in prods:
-            name = format_product_name_for_list(p.get("name", "Без названия"))
-            price = p.get("price") or "—"
-            lines_order.append(f"🔴{name} - {price}")
+            name = availability_line_for_product(p)
+            lines_order.append(f"🔴{name}")
         if prods:
             lines_order.append("")
 

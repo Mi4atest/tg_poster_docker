@@ -25,6 +25,7 @@ from app.bot.keyboards.menu_constructor_keyboard import (
 )
 from app.db.database import SessionLocal
 from app.services import menu_constructor_service as mcs
+from app.utils.product_label import button_label_for_product
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,13 @@ class MenuConstructorState(StatesGroup):
     waiting_for_product_link = State()
     waiting_for_product_name = State()
     waiting_for_product_price = State()
+    waiting_for_product_short_label = State()
     waiting_for_hardcoded_label = State()
+
+
+def _set_constructor_input_mode(bot, user_id: int, enabled: bool) -> None:
+    if hasattr(bot, "user_data"):
+        bot.user_data.setdefault(user_id, {})["in_menu_constructor_mode"] = enabled
 
 
 def _editor_message_html(db, path: str, nodes: List[mcs.MenuNode]) -> str:
@@ -55,11 +62,11 @@ def _insert_unlink_product_rows(markup: InlineKeyboardMarkup, extra_rows: list) 
 def _editor_markup_with_products(db, path: str, nodes: List[mcs.MenuNode]) -> InlineKeyboardMarkup:
     kb = get_constructor_node_keyboard(nodes, editor=True)
     extra = []
-    for p in mcs.list_detachable_custom_products_at_path(db, path):
+    for p in mcs.list_custom_products_at_node(db, path):
         pid = p.get("id")
         if pid is None:
             continue
-        nm = ((p.get("name") or "?").replace("\n", " "))[:34]
+        nm = button_label_for_product(p).replace("\n", " ")[:34]
         extra.append([InlineKeyboardButton(text=f"🗑 {nm}", callback_data=f"mc_rmp_{int(pid)}")])
     return _insert_unlink_product_rows(kb, extra)
 
@@ -206,18 +213,33 @@ async def mc_manage(callback: CallbackQuery, state: FSMContext):
     db = SessionLocal()
     try:
         human = mcs.human_constructor_breadcrumb(path, db)
+        prod_rows = []
+        for p in mcs.list_custom_products_at_node(db, path, limit=8):
+            pid = p.get("id")
+            if pid is None:
+                continue
+            nm = button_label_for_product(p).replace("\n", " ")[:40]
+            prod_rows.append(
+                [InlineKeyboardButton(text=f"🗑 {nm}", callback_data=f"mc_rmp_{int(pid)}")]
+            )
     finally:
         db.close()
+    body = (
+        f"⚙️ Управление: <b>{html_escape(r['label'])}</b>\n"
+        f"📍 {html_escape(human)}\n<code>{html_escape(path)}</code>"
+    )
+    if prod_rows:
+        body += "\n\n<b>Свои товары на этом узле</b> — 🗑 удалить из базы."
     await safe_edit_message(
         callback.message,
-        f"⚙️ Управление: <b>{html_escape(r['label'])}</b>\n"
-        f"📍 {html_escape(human)}\n<code>{html_escape(path)}</code>",
+        body,
         reply_markup=get_constructor_manage_keyboard(
             node,
             can_hide=can_hide,
             is_hidden=hidden,
             can_delete_custom=bool(can_del),
             can_rename_hardcoded=can_rename,
+            product_delete_rows=prod_rows,
         ),
         parse_mode="HTML",
         disable_link_preview=True,
@@ -270,7 +292,7 @@ async def mc_del_confirm(callback: CallbackQuery, state: FSMContext):
             callback.message,
             "🗑 <b>Удаление пользовательской кнопки</b>\n\n"
             f"Будет удалено кнопок (с поддеревом): <b>{n_btn}</b>\n"
-            f"Товаров сейчас привязано: <b>{n_prod}</b> — они будут <b>отвязаны</b> (остаются в базе).\n\n"
+            f"Товаров сейчас привязано: <b>{n_prod}</b> — они будут <b>удалены из базы</b>.\n\n"
             "Продолжить?",
             reply_markup=get_constructor_delete_confirm_keyboard(),
             parse_mode="HTML",
@@ -320,6 +342,8 @@ async def mc_del_yes(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "mc_add_btn")
 async def mc_add_btn(callback: CallbackQuery, state: FSMContext):
     cur = await _current_path(state)
+    if callback.from_user:
+        _set_constructor_input_mode(callback.bot, callback.from_user.id, True)
     await state.set_state(MenuConstructorState.waiting_for_button_label)
     await state.update_data(mc_input_parent=cur)
     await safe_edit_message(
@@ -334,8 +358,8 @@ async def mc_add_btn(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "mc_add_prod")
 async def mc_add_prod(callback: CallbackQuery, state: FSMContext):
     cur = await _current_path(state)
-    if hasattr(callback.bot, "user_data"):
-        callback.bot.user_data.setdefault(callback.from_user.id, {})["in_menu_constructor_mode"] = True
+    if callback.from_user:
+        _set_constructor_input_mode(callback.bot, callback.from_user.id, True)
     await state.set_state(MenuConstructorState.waiting_for_product_link)
     await state.update_data(mc_prod_parent=cur)
     await safe_edit_message(
@@ -352,8 +376,8 @@ async def mc_add_prod(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "mc_cancel_input")
 async def mc_cancel_input(callback: CallbackQuery, state: FSMContext):
-    if hasattr(callback.bot, "user_data"):
-        callback.bot.user_data.setdefault(callback.from_user.id, {})["in_menu_constructor_mode"] = False
+    if callback.from_user:
+        _set_constructor_input_mode(callback.bot, callback.from_user.id, False)
     await state.set_state(None)
     db = SessionLocal()
     try:
@@ -381,6 +405,8 @@ async def mc_lbl_edit(callback: CallbackQuery, state: FSMContext):
         return
     await state.update_data(mc_lbl_path=path)
     await state.set_state(MenuConstructorState.waiting_for_hardcoded_label)
+    if callback.from_user:
+        _set_constructor_input_mode(callback.bot, callback.from_user.id, True)
     await safe_edit_message(
         callback.message,
         "✏️ <b>Подпись в «Список новых»</b>\n\n"
@@ -402,13 +428,13 @@ async def mc_remove_product(callback: CallbackQuery, state: FSMContext):
         return
     db = SessionLocal()
     try:
-        ok = mcs.detach_custom_product(db, pid)
+        ok = mcs.delete_custom_product(db, pid)
     finally:
         db.close()
     if not ok:
-        await callback.answer("Не удалось отвязать (не кастом или не найден)", show_alert=True)
+        await callback.answer("Не удалось удалить (не свой товар или не найден)", show_alert=True)
         return
-    await callback.answer("✅ Товар отвязан от меню")
+    await callback.answer("✅ Товар удалён")
     db = SessionLocal()
     try:
         cur = await _current_path(state)
@@ -434,6 +460,8 @@ async def mc_lbl_apply(message: Message, state: FSMContext):
     cur = stack[-1] if stack else "root"
     await state.set_state(None)
     await state.update_data(mc_lbl_path=None, mc_manage_path=None, mc_manage_custom_id=None, mc_manage_kind=None)
+    if message.from_user:
+        _set_constructor_input_mode(message.bot, message.from_user.id, False)
     if path and not str(path).startswith("custom:"):
         if raw.lower() in ("-", "сброс", "сбросить"):
             mcs.set_label_override(str(path), "")
@@ -473,6 +501,8 @@ async def mc_save_button_label(message: Message, state: FSMContext):
         return
     finally:
         db.close()
+    if message.from_user:
+        _set_constructor_input_mode(message.bot, message.from_user.id, False)
     await state.set_state(None)
     await message.answer("✅ Кнопка добавлена.")
     # refresh: send new message with keyboard — user may continue in chat
@@ -527,16 +557,37 @@ async def mc_save_product_price(message: Message, state: FSMContext):
     if not raw.isdigit():
         await message.answer("❌ Нужно целое число (руб.)")
         return
+    await state.update_data(mc_prod_price=raw)
+    await state.set_state(MenuConstructorState.waiting_for_product_short_label)
+    await message.answer(
+        "Введите <b>короткую подпись</b> для кнопки (одна строка), как в «Список новых»:\n"
+        "Например: <code>MacBook Air M2 256 ⚫️</code> или <code>AirPods 4 ANC</code>\n\n"
+        "Отправьте <code>-</code> — подставить автоматически из названия.",
+        parse_mode="HTML",
+        reply_markup=get_constructor_input_cancel_keyboard(),
+    )
+
+
+@router.message(MenuConstructorState.waiting_for_product_short_label)
+async def mc_save_product_short_label(message: Message, state: FSMContext):
+    raw = (message.text or "").strip()
     data = await state.get_data()
     parent = data.get("mc_prod_parent", "root")
     link = data.get("mc_prod_link", "")
     name = data.get("mc_prod_name", "")
+    price = data.get("mc_prod_price", "")
+    display_label = None if raw.lower() in ("-", "пропустить", "авто") else raw[:128]
     await state.set_state(None)
-    await state.update_data(mc_prod_link=None, mc_prod_name=None, mc_prod_parent=None)
+    await state.update_data(
+        mc_prod_link=None,
+        mc_prod_name=None,
+        mc_prod_parent=None,
+        mc_prod_price=None,
+    )
     db = SessionLocal()
     try:
         uid = message.from_user.id if message.from_user else 0
-        product = mcs.attach_custom_product(db, parent, link, name, raw, uid)
+        mcs.attach_custom_product(db, parent, link, name, price, uid, display_label=display_label)
     except ValueError as e:
         if hasattr(message.bot, "user_data"):
             message.bot.user_data.setdefault(message.from_user.id, {})["in_menu_constructor_mode"] = False

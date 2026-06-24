@@ -20,7 +20,7 @@ from app.api.models.product import Product
 from app.api.models.post import Post
 from app.db.database import SessionLocal
 from app.services.settings_service import get_settings_service
-from app.utils.color_emoji import replace_color_with_emoji
+from app.utils.product_label import button_label_for_product, render_label, describe_product
 from app.utils.iphone_parser import (
     parse_iphone_model,
     get_model_display_name,
@@ -158,10 +158,20 @@ def detach_custom_product(db: Session, product_id: int) -> bool:
     return True
 
 
-def list_detachable_custom_products_at_path(db: Session, path: str, limit: int = 12) -> List[Dict[str, Any]]:
-    """Кастом-товары, привязанные к этому узлу (для кнопок «отвязать» в редакторе)."""
-    # Показываем отвязку только для точного узла привязки товара, без родителей/префиксов.
-    # Иначе в корне/верхних разделах всплывают все товары.
+def list_custom_products_at_node(db: Session, path: str, limit: int = 12) -> List[Dict[str, Any]]:
+    """Кастом-товары на узле (лист, custom:N) — для управления в редакторе."""
+    if path.startswith("custom:"):
+        try:
+            bid = int(path.split(":", 1)[1])
+        except ValueError:
+            return []
+        return list_products_for_custom_leaf(db, bid)[:limit]
+    if is_hardcoded_leaf_with_products(path):
+        return list_custom_products_for_path(db, path)[:limit]
+    return _detachable_custom_products_exact_path(db, path, limit)
+
+
+def _detachable_custom_products_exact_path(db: Session, path: str, limit: int = 12) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     for p in (
         db.query(Product)
@@ -179,6 +189,11 @@ def list_detachable_custom_products_at_path(db: Session, path: str, limit: int =
     return out
 
 
+def list_detachable_custom_products_at_path(db: Session, path: str, limit: int = 12) -> List[Dict[str, Any]]:
+    """Алиас для обратной совместимости."""
+    return list_custom_products_at_node(db, path, limit)
+
+
 @dataclass
 class MenuNode:
     path: str
@@ -194,6 +209,7 @@ def _product_to_dict(p: Product) -> Dict[str, Any]:
     return {
         "id": p.id,
         "name": p.name or "",
+        "display_label": (p.display_label or "").strip() or None,
         "price": p.price,
         "collection_name": (p.collection_name or "").strip(),
         "status": p.status,
@@ -813,6 +829,8 @@ def get_merged_menu_nodes(db: Session, parent_path: str, editor: bool) -> List[M
     for b in buttons:
         if b.parent_path != parent_path:
             continue
+        if getattr(b, "is_service", False):
+            continue
         pth = custom_node_path(b.id)
         custom_nodes.append(
             MenuNode(
@@ -867,13 +885,11 @@ def _descendant_button_ids(db: Session, root_id: int) -> Set[int]:
 
 
 def delete_custom_button_cascade(db: Session, button_id: int) -> Tuple[int, int]:
-    """Удаляет кнопку и потомков. Возвращает (удалено кнопок, отвязано товаров)."""
+    """Удаляет кнопку и потомков. Возвращает (удалено кнопок, удалено товаров)."""
     ids = _descendant_button_ids(db, button_id)
     id_list = list(ids)
-    n_prod = (
-        db.query(Product)
-        .filter(Product.custom_button_id.in_(id_list))
-        .update({Product.custom_button_id: None}, synchronize_session=False)
+    n_prod = db.query(Product).filter(Product.custom_button_id.in_(id_list)).delete(
+        synchronize_session=False
     )
     n_btn = 0
     for bid in id_list:
@@ -928,6 +944,29 @@ def _get_or_create_sync_post(db: Session) -> Optional[str]:
         return None
 
 
+def get_or_create_service_button(db: Session, leaf_path: str, user_id: int = 0) -> NewMenuButton:
+    """Служебная кнопка-привязка на захардкоженном листе (не показывается в меню)."""
+    existing = (
+        db.query(NewMenuButton)
+        .filter(NewMenuButton.parent_path == leaf_path, NewMenuButton.is_service.is_(True))
+        .first()
+    )
+    if existing:
+        return existing
+    row = NewMenuButton(
+        parent_path=leaf_path,
+        label="_service_",
+        sort_order=9999,
+        is_service=True,
+        created_by_user_id=user_id,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    logger.info("menu_constructor: service button %s under %s", row.id, leaf_path)
+    return row
+
+
 def attach_custom_product(
     db: Session,
     parent_path: str,
@@ -935,6 +974,7 @@ def attach_custom_product(
     name: str,
     price: str,
     user_id: int,
+    display_label: Optional[str] = None,
 ) -> Product:
     vk_link = _normalize_vk_link(vk_link)
     if not vk_link or "product-" not in vk_link:
@@ -953,15 +993,24 @@ def attach_custom_product(
         leaf = db.query(NewMenuButton).filter(NewMenuButton.id == target_button_id).first()
         if not leaf:
             raise ValueError("Кнопка не найдена")
+    elif is_hardcoded_leaf_with_products(parent_path):
+        svc = get_or_create_service_button(db, parent_path, user_id)
+        target_button_id = svc.id
     else:
         buttons = (
             db.query(NewMenuButton)
-            .filter(NewMenuButton.parent_path == parent_path)
+            .filter(
+                NewMenuButton.parent_path == parent_path,
+                NewMenuButton.is_service.is_(False),
+            )
             .order_by(NewMenuButton.sort_order, NewMenuButton.id)
             .all()
         )
         if not buttons:
-            raise ValueError("Сначала создайте пользовательскую кнопку в этом разделе.")
+            raise ValueError(
+                "Сначала создайте пользовательскую кнопку в этом разделе "
+                "или откройте лист модели и добавьте товар там."
+            )
         if len(buttons) > 1:
             raise ValueError(
                 "Несколько пользовательских кнопок. Откройте нужную (внутрь) и добавьте товар там."
@@ -973,11 +1022,13 @@ def attach_custom_product(
         raise ValueError("Не удалось создать пост-заглушку")
 
     vk_product_id = _extract_vk_product_id(vk_link)
+    dl = (display_label or "").strip()[:128] or None
     product = Product(
         post_id=post_id,
         vk_product_id=vk_product_id,
         vk_product_link=vk_link,
         name=name,
+        display_label=dl,
         price=price_str,
         collection_name=CUSTOM_COLLECTION,
         custom_button_id=target_button_id,
@@ -988,6 +1039,25 @@ def attach_custom_product(
     db.refresh(product)
     logger.info("menu_constructor: product %s user=%s button=%s", product.id, user_id, target_button_id)
     return product
+
+
+def delete_custom_product(db: Session, product_id: int) -> bool:
+    """Удалить кастом-товар из БД; пустую служебную кнопку тоже убрать."""
+    p = db.query(Product).filter(Product.id == int(product_id)).first()
+    if not p or (p.collection_name or "").strip() != CUSTOM_COLLECTION:
+        return False
+    bid = p.custom_button_id
+    db.delete(p)
+    db.flush()
+    if bid:
+        btn = db.query(NewMenuButton).filter(NewMenuButton.id == int(bid)).first()
+        if btn and btn.is_service:
+            left = db.query(Product).filter(Product.custom_button_id == btn.id).count()
+            if left == 0:
+                db.delete(btn)
+    db.commit()
+    logger.info("menu_constructor: deleted product %s", product_id)
+    return True
 
 
 def list_products_for_custom_leaf(db: Session, button_id: int) -> List[Dict[str, Any]]:
@@ -1102,112 +1172,6 @@ def human_constructor_breadcrumb(path: str, db: Optional[Session] = None) -> str
     return " → ".join(bits)
 
 
-def _mc_iphone_model_display_label(version: str, model_key: str) -> str:
-    mk = (model_key or "").lower()
-    if "air" in mk:
-        return "Air"
-    if "pro_max" in mk or "promax" in mk:
-        return f"{version} Pro Max"
-    if "pro" in mk:
-        return f"{version} Pro"
-    if "plus" in mk:
-        return f"{version} Plus"
-    if "mini" in mk:
-        return f"{version} mini"
-    if "16e" in mk or "16_e" in mk:
-        return "16E"
-    if "17e" in mk or "17_e" in mk:
-        return "17E"
-    return version
-
-
-def _mc_short_label_iphone_product(
-    p: dict, version: str, model_key: str, memory_key: str, storage_key: str
-) -> str:
-    mem_display = "1Tb" if (memory_key or "").lower() == "1tb" else f"{memory_key}Gb"
-    stor_norm = storage_key.replace("p", "+") if "p" in storage_key else storage_key
-    stor_label = "eSim" if stor_norm == "esim" else "(1+1)" if stor_norm == "1+1" else "2sim"
-    name = p.get("name", "")
-    color_emoji = parse_iphone_color_key(name)
-    if not color_emoji:
-        replaced = replace_color_with_emoji(name)
-        for em in ("🟣", "🟢", "🔵", "⚪️", "⚫️", "🟠", "🟡", "🌸", "🔴", "⭐"):
-            if em in replaced:
-                color_emoji = em
-                break
-        color_emoji = color_emoji or "⚫️"
-    model_label = _mc_iphone_model_display_label(version, model_key)
-    return f"{model_label} {mem_display} {color_emoji} {stor_label}"
-
-
-def _mc_short_label_iphone_12_16(p: dict, version: str, model_key: str, memory_key: str) -> str:
-    mem_display = "1Tb" if (memory_key or "").lower() == "1tb" else f"{memory_key}Gb"
-    name = p.get("name", "")
-    color_emoji = parse_iphone_color_key(name)
-    if not color_emoji:
-        replaced = replace_color_with_emoji(name)
-        for em in ("🟣", "🟢", "🔵", "⚪️", "⚫️", "🟠", "🟡", "🌸", "🔴", "⭐"):
-            if em in replaced:
-                color_emoji = em
-                break
-        color_emoji = color_emoji or "⚫️"
-    model_label = _mc_iphone_model_display_label(version, model_key)
-    return f"{model_label} {mem_display} {color_emoji}"
-
-
-def _mc_parse_ipad_color_emoji(name: str) -> str:
-    name_lower = (name or "").lower()
-    if "rose gold" in name_lower or "pink" in name_lower:
-        return "🌸"
-    if "blue" in name_lower:
-        return "🔵"
-    if "yellow" in name_lower or "gold" in name_lower:
-        return "🟡"
-    if "white" in name_lower:
-        return "⚪️"
-    if "space gray" in name_lower or "space grey" in name_lower:
-        return "🔘"
-    if "starlight" in name_lower:
-        return "⭐"
-    if "purple" in name_lower or "lavender" in name_lower:
-        return "🟣"
-    replaced = replace_color_with_emoji(name or "")
-    for emoji in ("🌸", "🔵", "🟡", "⚪️", "🔘", "⭐", "🟣"):
-        if emoji in replaced:
-            return emoji
-    return "⚫️"
-
-
-def _mc_parse_apple_watch_color_emoji(name: str) -> str:
-    name_lower = (name or "").lower()
-    if "starlight" in name_lower:
-        return "⭐"
-    if "silver" in name_lower:
-        return "⚪️"
-    if "space gray" in name_lower or "space grey" in name_lower:
-        return "🔘"
-    if "midnight" in name_lower:
-        return "⚫️"
-    if "rose gold" in name_lower:
-        return "🌸"
-    replaced = replace_color_with_emoji(name or "")
-    for emoji in ("⭐", "⚪️", "🔘", "⚫️", "🌸", "🔵", "🟣"):
-        if emoji in replaced:
-            return emoji
-    return "⚫️"
-
-
-def _mc_parse_ipad_air_generation(name: str) -> Optional[str]:
-    low = (name or "").lower()
-    if "ipad air" not in low:
-        return None
-    if "m4" in low:
-        return "M4"
-    if "m3" in low:
-        return "M3"
-    return None
-
-
 def _mc_product_row_tag(p: dict) -> str:
     cn = (p.get("collection_name") or "").strip()
     if cn == CUSTOM_COLLECTION:
@@ -1215,45 +1179,27 @@ def _mc_product_row_tag(p: dict) -> str:
     return "стандартная"
 
 
-def _mc_price_disp(p: dict) -> str:
-    s = (p.get("price") or "").strip()
-    return s or "—"
+def collect_leaf_products(db: Session, path: str) -> List[Dict[str, Any]]:
+    """Классические + custom товары на листе меню (с дедупликацией)."""
+    if path.startswith("custom:"):
+        try:
+            bid = int(path.split(":", 1)[1])
+        except ValueError:
+            return []
+        return list_products_for_custom_leaf(db, bid)
 
+    if not is_hardcoded_leaf_with_products(path):
+        return []
 
-def constructor_leaf_inline_like_list_new(
-    db: Session, path: str
-) -> List[Tuple[str, str]]:
-    """
-    Подписи inline-кнопок как в «Список новых» на листьях с товарами (без HTML).
-    Возвращает (текст кнопки, метка: стандартная / свой товар).
-    """
-    out: List[Tuple[str, str]] = []
     parts = path.split(">")
+    items = load_new_products_dicts(db)
+    plist: List[dict] = []
 
     if path.startswith("root>cat>iPhone") and ">stor>" in path and len(parts) >= 11:
         version, model_key, mem_key, stor_key = parts[4], parts[6], parts[8], parts[10]
-        items = load_new_products_dicts(db)
         iphone_new = _filter_classical(items, "iPhone новые")
-        plist: List[dict] = list(
-            _iphone_products_for_storage(iphone_new, version, model_key, mem_key, stor_key)
-        )
-        seen: Set[int] = {int(p["id"]) for p in plist if p.get("id") is not None}
-        for p in list_custom_products_for_path(db, path):
-            pid = p.get("id")
-            if pid is None or int(pid) in seen:
-                continue
-            plist.append(p)
-            seen.add(int(pid))
-        for p in plist:
-            if version == "17":
-                lbl = _mc_short_label_iphone_product(p, version, model_key, mem_key, stor_key)
-            else:
-                raw = replace_color_with_emoji(p.get("name", "Без названия"))
-                lbl = raw[:35] + ("..." if len(raw) > 35 else "")
-            out.append((lbl, _mc_product_row_tag(p)))
-        return out
-
-    if (
+        plist = list(_iphone_products_for_storage(iphone_new, version, model_key, mem_key, stor_key))
+    elif (
         path.startswith("root>cat>iPhone")
         and len(parts) >= 9
         and parts[3] == "ver"
@@ -1264,107 +1210,60 @@ def constructor_leaf_inline_like_list_new(
     ):
         version, model_key, mem_key = parts[4], parts[6], parts[8]
         memory_norm = "1Tb" if mem_key.lower() == "1tb" else mem_key
-        items = load_new_products_dicts(db)
         iphone_new = _filter_classical(items, "iPhone новые")
         plist = list(_iphone_products_for_memory(iphone_new, version, model_key, memory_norm))
-        seen = {int(p["id"]) for p in plist if p.get("id") is not None}
-        for p in list_custom_products_for_path(db, path):
-            pid = p.get("id")
-            if pid is None or int(pid) in seen:
-                continue
-            plist.append(p)
-            seen.add(int(pid))
-        for p in plist:
-            lbl = _mc_short_label_iphone_12_16(p, version, model_key, mem_key)
-            out.append((lbl, _mc_product_row_tag(p)))
-        return out
-
-    if len(parts) == 5 and parts[:4] == ["root", "cat", "Airpods", "md"]:
+    elif len(parts) == 5 and parts[:4] == ["root", "cat", "Airpods", "md"]:
         mk = parts[4]
         inv = {v: k for k, v in AIRPODS_KEY.items()}
         model_name = inv.get(mk)
         if not model_name:
             return []
-        items = load_new_products_dicts(db)
-        plist: List[dict] = []
-        seen: Set[int] = set()
         for p in _filter_classical(items, "Airpods"):
             if _parse_airpods_model(p.get("name", "")) == model_name:
                 plist.append(p)
-                if p.get("id") is not None:
-                    seen.add(int(p["id"]))
-        for p in list_custom_products_for_path(db, path):
-            pid = p.get("id")
-            if pid is None or int(pid) in seen:
-                continue
-            plist.append(p)
-            seen.add(int(pid))
-        for p in plist:
-            lbl = f"{model_name} - {_mc_price_disp(p)}"
-            out.append((lbl, _mc_product_row_tag(p)))
-        return out
-
-    if len(parts) == 5 and parts[:4] == ["root", "cat", "iPad", "md"]:
+    elif len(parts) == 5 and parts[:4] == ["root", "cat", "iPad", "md"]:
         mk = parts[4]
         inv = {v: k for k, v in IPAD_KEY.items()}
         model_name = inv.get(mk)
         if not model_name:
             return []
-        items = load_new_products_dicts(db)
-        plist = []
-        seen = set()
         for p in _filter_classical(items, "iPad"):
             if _parse_ipad_model(p.get("name", "")) == model_name:
                 plist.append(p)
-                if p.get("id") is not None:
-                    seen.add(int(p["id"]))
-        for p in list_custom_products_for_path(db, path):
-            pid = p.get("id")
-            if pid is None or int(pid) in seen:
-                continue
-            plist.append(p)
-            seen.add(int(pid))
-        for p in plist:
-            base = model_name
-            if model_name == "iPad Air":
-                gen = _mc_parse_ipad_air_generation(p.get("name", ""))
-                if gen:
-                    base = f"iPad Air {gen}"
-            lbl = f"{base} {_mc_parse_ipad_color_emoji(p.get('name', ''))}"
-            out.append((lbl, _mc_product_row_tag(p)))
-        return out
-
-    if "Apple Watch" in path and ">sz>" in path and len(parts) >= 7 and parts[5] == "sz":
+    elif "Apple Watch" in path and ">sz>" in path and len(parts) >= 7 and parts[5] == "sz":
         ck, szk = parts[4], parts[6]
         inv = {v: k for k, v in WATCH_KEY.items()}
         cat_watch = inv.get(ck)
         if not cat_watch:
             return []
-        items = load_new_products_dicts(db)
-        plist = []
-        seen = set()
         for p in _filter_classical(items, "Apple Watch"):
             if _parse_apple_watch_category(p.get("name", "")) != cat_watch:
                 continue
             sz = _parse_apple_watch_size(p.get("name", ""))
             if sz and sz.replace(" ", "").lower() == szk.replace("_", ""):
                 plist.append(p)
-                if p.get("id") is not None:
-                    seen.add(int(p["id"]))
-        for p in list_custom_products_for_path(db, path):
-            pid = p.get("id")
-            if pid is None or int(pid) in seen:
-                continue
-            plist.append(p)
-            seen.add(int(pid))
-        for p in plist:
-            size = _parse_apple_watch_size(p.get("name", "")) or "—"
-            col = _mc_parse_apple_watch_color_emoji(p.get("name", ""))
-            lbl = f"AW {cat_watch} {size} {col}"
-            out.append((lbl, _mc_product_row_tag(p)))
-        return out
+    else:
+        return []
 
-    return []
+    seen: Set[int] = {int(p["id"]) for p in plist if p.get("id") is not None}
+    for p in list_custom_products_for_path(db, path):
+        pid = p.get("id")
+        if pid is None or int(pid) in seen:
+            continue
+        plist.append(p)
+        seen.add(int(pid))
+    return plist
+
+
+def constructor_leaf_inline_like_list_new(
+    db: Session, path: str
+) -> List[Tuple[str, str]]:
+    """Подписи inline-кнопок на листьях (без цены)."""
+    out: List[Tuple[str, str]] = []
+    for p in collect_leaf_products(db, path):
+        lbl = button_label_for_product(p)
+        out.append((lbl, _mc_product_row_tag(p)))
+    return out
 
 
 def format_constructor_nodes_summary_html(
@@ -1406,125 +1305,15 @@ def format_constructor_nodes_summary_html(
 
 
 def list_constructor_preview_product_names(db: Session, path: str, limit: int = 12) -> List[str]:
-    """Краткие названия товаров на «листьях», где они есть."""
-    if path.startswith("custom:"):
-        try:
-            bid = int(path.split(":", 1)[1])
-        except ValueError:
-            return []
-        rows = list_products_for_custom_leaf(db, bid)
-        out = [(r.get("name") or "").strip() for r in rows if (r.get("name") or "").strip()]
-        return out[:limit]
-    if not is_hardcoded_leaf_with_products(path):
-        return []
-    items = load_new_products_dicts(db)
-    parts = path.split(">")
-    iphone_new = _filter_classical(items, "iPhone новые")
-
-    if len(parts) == 5 and parts[:4] == ["root", "cat", "Airpods", "md"]:
-        mk = parts[4]
-        inv = {v: k for k, v in AIRPODS_KEY.items()}
-        model_name = inv.get(mk)
-        if not model_name:
-            return []
-        plist: List[dict] = []
-        seen: Set[int] = set()
-        for p in _filter_classical(items, "Airpods"):
-            if _parse_airpods_model(p.get("name", "")) == model_name:
-                plist.append(p)
-                if p.get("id") is not None:
-                    seen.add(int(p["id"]))
-        for p in list_custom_products_for_path(db, path):
-            pid = p.get("id")
-            if pid is None or int(pid) in seen:
-                continue
-            plist.append(p)
-            seen.add(int(pid))
-        out = [(p.get("name") or "").strip() for p in plist if (p.get("name") or "").strip()]
-        return out[:limit]
-
-    if len(parts) == 5 and parts[:4] == ["root", "cat", "iPad", "md"]:
-        mk = parts[4]
-        inv = {v: k for k, v in IPAD_KEY.items()}
-        model_name = inv.get(mk)
-        if not model_name:
-            return []
-        plist = []
-        seen = set()
-        for p in _filter_classical(items, "iPad"):
-            if _parse_ipad_model(p.get("name", "")) == model_name:
-                plist.append(p)
-                if p.get("id") is not None:
-                    seen.add(int(p["id"]))
-        for p in list_custom_products_for_path(db, path):
-            pid = p.get("id")
-            if pid is None or int(pid) in seen:
-                continue
-            plist.append(p)
-            seen.add(int(pid))
-        out = [(p.get("name") or "").strip() for p in plist if (p.get("name") or "").strip()]
-        return out[:limit]
-
-    if "Apple Watch" in path and ">sz>" in path and len(parts) >= 7 and parts[5] == "sz":
-        ck, szk = parts[4], parts[6]
-        inv = {v: k for k, v in WATCH_KEY.items()}
-        cat_watch = inv.get(ck)
-        if not cat_watch:
-            return []
-        plist = []
-        seen = set()
-        for p in _filter_classical(items, "Apple Watch"):
-            if _parse_apple_watch_category(p.get("name", "")) != cat_watch:
-                continue
-            sz = _parse_apple_watch_size(p.get("name", ""))
-            if sz and sz.replace(" ", "").lower() == szk.replace("_", ""):
-                plist.append(p)
-                if p.get("id") is not None:
-                    seen.add(int(p["id"]))
-        for p in list_custom_products_for_path(db, path):
-            pid = p.get("id")
-            if pid is None or int(pid) in seen:
-                continue
-            plist.append(p)
-            seen.add(int(pid))
-        out = [(p.get("name") or "").strip() for p in plist if (p.get("name") or "").strip()]
-        return out[:limit]
-
-    if (
-        path.startswith("root>cat>iPhone")
-        and len(parts) >= 9
-        and parts[3] == "ver"
-        and parts[5] == "md"
-        and parts[7] == "mem"
-        and ">stor>" not in path
-    ):
-        ver, mk, mem = parts[4], parts[6], parts[8]
-        memory_norm = "1Tb" if mem.lower() == "1tb" else mem
-        plist = list(_iphone_products_for_memory(iphone_new, ver, mk, memory_norm))
-        seen = {int(p["id"]) for p in plist if p.get("id") is not None}
-        for p in list_custom_products_for_path(db, path):
-            pid = p.get("id")
-            if pid is None or int(pid) in seen:
-                continue
-            plist.append(p)
-            seen.add(int(pid))
-        out = [(p.get("name") or "").strip() for p in plist if (p.get("name") or "").strip()]
-        return out[:limit]
-
-    if path.startswith("root>cat>iPhone") and ">stor>" in path and len(parts) >= 11:
-        ver, mk, mem, stor = parts[4], parts[6], parts[8], parts[10]
-        plist = list(_iphone_products_for_storage(iphone_new, ver, mk, mem, stor))
-        seen = {int(p["id"]) for p in plist if p.get("id") is not None}
-        for p in list_custom_products_for_path(db, path):
-            pid = p.get("id")
-            if pid is None or int(pid) in seen:
-                continue
-            plist.append(p)
-            seen.add(int(pid))
-        out = [(p.get("name") or "").strip() for p in plist if (p.get("name") or "").strip()]
-        return out[:limit]
-
-    return []
+    """Краткие подписи товаров на листьях (без цены)."""
+    out: List[str] = []
+    for p in collect_leaf_products(db, path):
+        lbl = button_label_for_product(p)
+        if lbl:
+            out.append(lbl)
+        if len(out) >= limit:
+            break
+    return out
 
 
 def format_constructor_editor_message_html(path: str, nodes: List[MenuNode], db: Session) -> str:
@@ -1541,7 +1330,7 @@ def format_constructor_editor_message_html(path: str, nodes: List[MenuNode], db:
         prod_block = f"\n\n<b>Товары в этом узле:</b>\n{prod_lines}{more}"
     hint = (
         "Строка слева — переход в подменю. ⚙️ — скрыть/показать или своя подпись (стандарт), "
-        "удалить кнопку (своя), 🗑 — отвязать кастом-товар от этого узла."
+        "удалить кнопку (своя), 🗑 — удалить свой товар."
     )
     return (
         f"🧩 <b>Редактор меню «Список новых»</b>\n\n"

@@ -245,6 +245,36 @@ def ensure_post_vk_and_queue_columns_if_missing() -> bool:
         return False
 
 
+def ensure_new_menu_constructor_columns() -> bool:
+    """Колонки конструктора меню: is_service на кнопках, display_label на товарах."""
+    try:
+        inspector = inspect(engine)
+        statements = []
+        if "new_menu_buttons" in inspector.get_table_names():
+            btn_cols = {col["name"] for col in inspector.get_columns("new_menu_buttons")}
+            if "is_service" not in btn_cols:
+                statements.append(
+                    "ALTER TABLE new_menu_buttons ADD COLUMN is_service BOOLEAN NOT NULL DEFAULT FALSE"
+                )
+        if "products" in inspector.get_table_names():
+            prod_cols = {col["name"] for col in inspector.get_columns("products")}
+            if "display_label" not in prod_cols:
+                statements.append(
+                    "ALTER TABLE products ADD COLUMN display_label VARCHAR(128)"
+                )
+        if statements:
+            with engine.connect() as conn:
+                for stmt in statements:
+                    conn.execute(text(stmt))
+                conn.commit()
+            logger.info("Колонки конструктора меню добавлены: %s", ", ".join(statements))
+            return True
+        return False
+    except Exception as e:
+        logger.error("Ошибка ensure_new_menu_constructor_columns: %s", e)
+        return False
+
+
 def ensure_database_schema():
     """Обеспечивает актуальность схемы базы данных."""
     logger.info("Проверка схемы базы данных...")
@@ -256,6 +286,7 @@ def ensure_database_schema():
     ensure_post_vk_and_queue_columns_if_missing()
     ensure_avito_feed_operations_table()
     ensure_avito_item_id_bigint()
+    ensure_new_menu_constructor_columns()
     
     # Инициализируем alembic_version, если нужно
     init_alembic_version_table()

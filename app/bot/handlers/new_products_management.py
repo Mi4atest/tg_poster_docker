@@ -45,6 +45,7 @@ from app.config.settings import API_HOST, API_PORT
 from app.db.database import SessionLocal
 from app.api.models.product import Product
 from app.services import menu_constructor_service as mcs
+from app.utils.product_label import availability_line_for_product, button_label_for_product
 
 from app.bot.handlers.product_management import (
     update_product_avito_link_api,
@@ -644,6 +645,7 @@ async def new_products_menu(callback: CallbackQuery):
             {
                 "id": r.id,
                 "name": r.name,
+                "display_label": (r.display_label or "").strip() or None,
                 "price": r.price,
                 "vk_product_link": r.vk_product_link,
                 "availability_status": r.availability_status,
@@ -963,44 +965,13 @@ def _compact_label_for_product(
     p: dict,
     custom_label_by_button: Optional[Dict[int, str]] = None,
 ) -> str:
-    name = p.get("name", "") or ""
-    collection = (p.get("collection_name") or "").strip()
-
-    bid = p.get("custom_button_id")
+    row = dict(p)
+    bid = row.get("custom_button_id")
     if bid and custom_label_by_button:
-        custom_label = custom_label_by_button.get(int(bid))
-        if custom_label:
-            return custom_label
-
-    if collection == "iPhone новые":
-        line = _short_line_iphone_by_product(p)
-        return line.split(" - ")[0] if " - " in line else line
-
-    if collection == "Airpods":
-        return _parse_airpods_model(name) or "AirPods"
-
-    if collection == "Apple Watch":
-        cat = _parse_apple_watch_category(name) or "—"
-        size = _parse_apple_watch_size(name) or "—"
-        em = _parse_apple_watch_color_emoji(name)
-        return f"AW {cat} {size} {em}"
-
-    if collection == "iPad":
-        model = _parse_ipad_model(name) or "iPad"
-        if model == "iPad Air":
-            gen = _parse_ipad_air_generation(name)
-            if gen:
-                model = f"iPad Air {gen}"
-        em = _parse_ipad_color_emoji(name)
-        return f"{model} {em}"
-
-    # Для custom/fallback оставляем максимально читабельное имя.
-    try:
-        from app.utils.color_emoji import replace_color_with_emoji as _rce
-
-        return _rce(name or "Без названия")
-    except Exception:
-        return name or "Без названия"
+        cl = custom_label_by_button.get(int(bid))
+        if cl:
+            row["custom_button_label"] = cl
+    return button_label_for_product(row)
 
 
 def _available_sort_key(
@@ -1521,7 +1492,11 @@ async def new_airpods_model(callback: CallbackQuery, state: FSMContext):
         parsed_model = _parse_airpods_model(p.get("name", ""))
         if parsed_model == model_name:
             model_products.append(p)
-    
+
+    ap_path = f"root>cat>Airpods>md>{model_key}"
+    with SessionLocal() as db:
+        model_products.extend(mcs.list_custom_products_for_path(db, ap_path))
+
     # Если один товар — сразу открываем карточку редактирования
     if len(model_products) == 1:
         p = model_products[0]
@@ -1555,32 +1530,34 @@ async def new_airpods_model(callback: CallbackQuery, state: FSMContext):
         await callback.answer()
         return
     
-    # Несколько товаров: список сверху и короткие кнопки (модель — цена), каждая открывает карточку
+    # Несколько товаров: список с ценой сверху, кнопки без цены
     text = f"🆕 {model_name}\n\n"
     lines = []
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
     buttons = []
+    custom_map = _custom_label_map_for_products(model_products)
     for p in model_products:
         price = _normalize_price_display(p.get("price"))
         vk_link = p.get("vk_product_link", "")
-        label = _compact_label_for_product(p)
+        label = _compact_label_for_product(p, custom_map)
         if vk_link:
             lines.append(f"{label} - {price} <a href=\"{vk_link}\">ВК</a>")
         else:
             lines.append(f"{label} - {price}")
         buttons.append([
-            InlineKeyboardButton(text=f"{label} - {price}", callback_data=f"new_product_{p['id']}")
+            InlineKeyboardButton(text=label, callback_data=f"new_product_{p['id']}")
         ])
     text += "\n".join(lines) if lines else "Товары не найдены"
     text += "\n\nВыберите позицию:"
     await state.update_data(new_products_back=f"new_airpods_{model_key}")
-    ap_path = f"root>cat>Airpods>md>{model_key}"
+    has_custom_in_list = any(bool(p.get("custom_button_id")) for p in model_products)
     with SessionLocal() as db:
         extras = mcs.get_custom_extra_entries(db, ap_path)
         from aiogram.types import InlineKeyboardButton as IKB
 
-        for e in extras:
-            buttons.append([IKB(text=e["text"], callback_data=e["callback"])])
+        if not has_custom_in_list:
+            for e in extras:
+                buttons.append([IKB(text=e["text"], callback_data=e["callback"])])
     buttons.append([
         InlineKeyboardButton(text="⬅️ Назад", callback_data="new_cat_Airpods")
     ])
@@ -1904,7 +1881,11 @@ async def new_iphone_variants(callback: CallbackQuery, state: FSMContext):
         buttons = []
         cmap = _custom_button_labels_map(mem_products)
         for p in mem_products:
-            lbl = _short_label_iphone_12_16(p, version, model_key, memory_key, custom_labels=cmap)
+            row = dict(p)
+            bid = row.get("custom_button_id")
+            if bid is not None and cmap.get(int(bid)):
+                row["custom_button_label"] = cmap[int(bid)]
+            lbl = button_label_for_product(row)
             buttons.append([
                 InlineKeyboardButton(text=lbl, callback_data=f"new_product_{p['id']}")
             ])
@@ -2008,15 +1989,14 @@ async def new_iphone_storage(callback: CallbackQuery, state: FSMContext):
     text += "\n\nВыберите позицию:"
     
     back_data = format_new_iphone_var_nav(version, model_key, memory_key)
-    short_labels = None
-    if version == "17":
-        short_labels = {}
-        cmap = _custom_button_labels_map(plist)
-        for p in plist:
-            lbl = _short_label_iphone_product(
-                p, version, model_key, memory_key, storage_key, custom_labels=cmap
-            )
-            short_labels[p["id"]] = lbl
+    short_labels = {}
+    cmap = _custom_button_labels_map(plist)
+    for p in plist:
+        row = dict(p)
+        bid = row.get("custom_button_id")
+        if bid is not None and cmap.get(int(bid)):
+            row["custom_button_label"] = cmap[int(bid)]
+        short_labels[p["id"]] = button_label_for_product(row)
 
     stor_path = f"root>cat>iPhone>ver>{version}>md>{model_key}>mem>{memory_key}>stor>{storage_key}"
     has_custom_in_plist = any(bool(p.get("custom_button_id")) for p in plist)

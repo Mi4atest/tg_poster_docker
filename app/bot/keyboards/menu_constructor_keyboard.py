@@ -1,4 +1,6 @@
 """Inline-клавиатуры редактора «Меню новые»."""
+from typing import Optional
+
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.services.menu_constructor_service import MenuNode
@@ -58,8 +60,11 @@ def get_constructor_manage_keyboard(
     is_hidden: bool,
     can_delete_custom: bool,
     can_rename_hardcoded: bool = False,
+    product_delete_rows: Optional[list] = None,
 ) -> InlineKeyboardMarkup:
     rows = []
+    if product_delete_rows:
+        rows.extend(product_delete_rows)
     if can_hide:
         txt = "👁 Показать в меню" if is_hidden else "🚫 Скрыть из меню"
         rows.append([InlineKeyboardButton(text=txt, callback_data="mc_toggle_hide")])

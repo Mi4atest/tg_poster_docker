@@ -176,7 +176,10 @@ def _pending_posts_filter(query):
     """Черновики: не опубликованы в основных сетях и не в очереди публикации."""
     from sqlalchemy import or_
 
+    from app.utils.vk_market_sync import POST_ID_FOR_NEW_PRODUCTS
+
     return query.filter(
+        Post.id != POST_ID_FOR_NEW_PRODUCTS,
         Post.is_published_vk.is_(False),
         Post.is_published_telegram.is_(False),
         Post.is_published_instagram.is_(False),
@@ -353,11 +356,21 @@ def get_post(post_id: str, db: Session = Depends(get_db)):
 @router.delete("/{post_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_post(post_id: str, db: Session = Depends(get_db)):
     """Delete a post."""
+    from app.utils.vk_market_sync import POST_ID_FOR_NEW_PRODUCTS
+
+    if post_id == POST_ID_FOR_NEW_PRODUCTS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Служебный пост синхронизации новых товаров нельзя удалить как черновик.",
+        )
+
     post = db.query(Post).filter(Post.id == post_id).first()
     if post is None:
         raise HTTPException(status_code=404, detail="Post not found")
 
-    # Delete post from database
+    from app.api.models.product import Product
+
+    db.query(Product).filter(Product.post_id == post_id).delete(synchronize_session=False)
     db.delete(post)
     db.commit()
 

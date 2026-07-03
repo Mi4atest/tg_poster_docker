@@ -24,6 +24,13 @@ COLOR_PALETTE = (
 )
 
 APPLE_COLLECTIONS = frozenset({"iPhone новые", "Airpods", "Apple Watch", "iPad"})
+SERVICE_BUTTON_LABEL = "_service_"
+
+
+def is_usable_menu_button_label(label: Optional[str]) -> bool:
+    """Подпись кнопки пригодна для показа пользователю (не служебная)."""
+    t = (label or "").strip()
+    return bool(t) and t != SERVICE_BUTTON_LABEL
 
 
 @dataclass
@@ -232,7 +239,7 @@ def describe_product(p: dict) -> ProductLabel:
         return ProductLabel(model=dl[:128], price=_price_from_product(p))
 
     bl = (p.get("custom_button_label") or "").strip()
-    if bl:
+    if is_usable_menu_button_label(bl):
         return ProductLabel(model=bl[:128], price=_price_from_product(p))
 
     collection = (p.get("collection_name") or "").strip()
@@ -244,6 +251,17 @@ def describe_product(p: dict) -> ProductLabel:
         return _describe_watch(p)
     if collection == "iPad":
         return _describe_ipad(p)
+
+    if collection == "custom":
+        nl = (p.get("name") or "").lower()
+        if "iphone" in nl:
+            return _describe_iphone(p)
+        if "airpod" in nl:
+            return _describe_airpods(p)
+        if "watch" in nl or " aw " in f" {nl} ":
+            return _describe_watch(p)
+        if "ipad" in nl:
+            return _describe_ipad(p)
 
     return ProductLabel(model=_compact_generic_name(p.get("name", "") or ""), price=_price_from_product(p))
 

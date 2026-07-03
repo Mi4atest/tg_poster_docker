@@ -144,7 +144,47 @@ def get_custom_button_label(db: Session, button_id: Optional[int]) -> Optional[s
     if not button_id:
         return None
     b = db.query(NewMenuButton).filter(NewMenuButton.id == int(button_id)).first()
-    return (b.label or "").strip() if b else None
+    if not b or getattr(b, "is_service", False):
+        return None
+    lbl = (b.label or "").strip()
+    from app.utils.product_label import is_usable_menu_button_label
+
+    return lbl if is_usable_menu_button_label(lbl) else None
+
+
+def is_iphone_hardcoded_menu_path(path: str) -> bool:
+    """Узлы дерева iPhone (хардкод-пути)."""
+    return (path or "").startswith("root>cat>iPhone")
+
+
+def is_iphone_hardcoded_intermediate_path(path: str) -> bool:
+    """Промежуточный узел iPhone (не лист): навигация без кнопок-товаров."""
+    if not is_iphone_hardcoded_menu_path(path):
+        return False
+    return not is_hardcoded_leaf_with_products(path)
+
+
+def list_products_at_hardcoded_leaf(db: Session, path: str) -> List[Dict[str, Any]]:
+    """Custom-товары, привязанные ровно к hardcoded-листу (parent_path служебной кнопки == path)."""
+    path = (path or "").strip()
+    if not is_hardcoded_leaf_with_products(path):
+        return []
+    buttons = _load_buttons(db)
+    btn_map = {b.id: b for b in buttons}
+    out: List[Dict[str, Any]] = []
+    for p in (
+        db.query(Product)
+        .filter(Product.collection_name == CUSTOM_COLLECTION, Product.custom_button_id.isnot(None))
+        .order_by(Product.id)
+        .all()
+    ):
+        bid = p.custom_button_id
+        if not bid:
+            continue
+        btn = btn_map.get(int(bid))
+        if btn and (btn.parent_path or "") == path:
+            out.append(_product_to_dict(p))
+    return out
 
 
 def detach_custom_product(db: Session, product_id: int) -> bool:
@@ -167,7 +207,7 @@ def list_custom_products_at_node(db: Session, path: str, limit: int = 12) -> Lis
             return []
         return list_products_for_custom_leaf(db, bid)[:limit]
     if is_hardcoded_leaf_with_products(path):
-        return list_custom_products_for_path(db, path)[:limit]
+        return list_products_at_hardcoded_leaf(db, path)[:limit]
     return _detachable_custom_products_exact_path(db, path, limit)
 
 
@@ -391,6 +431,19 @@ def _iphone_products_for_model(products: List[dict], version: str, model_key: st
     return out
 
 
+def _iphone_products_for_version(products: List[dict], version: str) -> List[dict]:
+    out = []
+    for p in products:
+        name = p.get("name", "")
+        model = parse_iphone_model(name)
+        ver = get_iphone_version_from_model(model) if model else None
+        if ver == version:
+            out.append(p)
+        elif version in ("12", "14") and (name or "").lower().count(f"iphone {version}") > 0:
+            out.append(p)
+    return out
+
+
 def _parse_airpods_model(name: str) -> Optional[str]:
     nl = name.lower()
     if "airpods pro 3" in nl or "pro 3" in nl:
@@ -599,6 +652,83 @@ def total_count_for_path(db: Session, path: str, items: List[dict]) -> int:
     return classical_count_for_path(path, items) + custom_count_for_path(path, items, btn_map)
 
 
+def collect_products_for_path(
+    db: Session, path: str, items: Optional[List[dict]] = None
+) -> List[Dict[str, Any]]:
+    """Классические + custom товары в поддереве path (для текстовых списков в навигации)."""
+    if items is None:
+        items = load_new_products_dicts(db)
+    parts = path.split(">")
+    plist: List[dict] = []
+
+    if parts[:4] == ["root", "cat", "iPhone", "ver"] and len(parts) == 5:
+        iphone_new = _filter_classical(items, "iPhone новые")
+        plist = list(_iphone_products_for_version(iphone_new, parts[4]))
+    elif parts[:4] == ["root", "cat", "iPhone", "ver"] and len(parts) == 7 and parts[5] == "md":
+        iphone_new = _filter_classical(items, "iPhone новые")
+        plist = list(_iphone_products_for_model(iphone_new, parts[4], parts[6]))
+    elif (
+        parts[:4] == ["root", "cat", "iPhone", "ver"]
+        and len(parts) == 9
+        and parts[5] == "md"
+        and parts[7] == "mem"
+    ):
+        iphone_new = _filter_classical(items, "iPhone новые")
+        plist = list(_iphone_products_for_memory(iphone_new, parts[4], parts[6], parts[8]))
+    elif parts[:3] == ["root", "cat", "Airpods"] and len(parts) == 3:
+        plist = list(_filter_classical(items, "Airpods"))
+    elif parts[:3] == ["root", "cat", "Airpods"] and len(parts) == 5 and parts[3] == "md":
+        inv = {v: k for k, v in AIRPODS_KEY.items()}
+        model_name = inv.get(parts[4])
+        if model_name:
+            for p in _filter_classical(items, "Airpods"):
+                if _parse_airpods_model(p.get("name", "")) == model_name:
+                    plist.append(p)
+    elif parts[:3] == ["root", "cat", "Apple Watch"] and len(parts) == 3:
+        plist = list(_filter_classical(items, "Apple Watch"))
+    elif parts[:3] == ["root", "cat", "Apple Watch"] and len(parts) == 5 and parts[3] == "wc":
+        inv = {v: k for k, v in WATCH_KEY.items()}
+        cat = inv.get(parts[4])
+        if cat:
+            for p in _filter_classical(items, "Apple Watch"):
+                if _parse_apple_watch_category(p.get("name", "")) == cat:
+                    plist.append(p)
+    elif (
+        len(parts) == 7
+        and parts[:3] == ["root", "cat", "Apple Watch"]
+        and parts[3] == "wc"
+        and parts[5] == "sz"
+    ):
+        inv = {v: k for k, v in WATCH_KEY.items()}
+        cat = inv.get(parts[4])
+        szk = parts[6]
+        if cat:
+            for p in _filter_classical(items, "Apple Watch"):
+                if _parse_apple_watch_category(p.get("name", "")) != cat:
+                    continue
+                sz = _parse_apple_watch_size(p.get("name", ""))
+                if sz and sz.replace(" ", "").lower() == szk.replace("_", ""):
+                    plist.append(p)
+    elif parts[:3] == ["root", "cat", "iPad"] and len(parts) == 3:
+        plist = list(_filter_classical(items, "iPad"))
+    elif parts[:3] == ["root", "cat", "iPad"] and len(parts) == 5 and parts[3] == "md":
+        inv = {v: k for k, v in IPAD_KEY.items()}
+        model_name = inv.get(parts[4])
+        if model_name:
+            for p in _filter_classical(items, "iPad"):
+                if _parse_ipad_model(p.get("name", "")) == model_name:
+                    plist.append(p)
+
+    seen: Set[int] = {int(p["id"]) for p in plist if p.get("id") is not None}
+    for p in list_custom_products_for_path(db, path):
+        pid = p.get("id")
+        if pid is None or int(pid) in seen:
+            continue
+        plist.append(p)
+        seen.add(int(pid))
+    return plist
+
+
 def _tc(path: str, items: List[dict], btn_map: Dict[int, NewMenuButton]) -> int:
     return classical_count_for_path(path, items) + custom_count_for_path(path, items, btn_map)
 
@@ -775,11 +905,10 @@ def _hardcoded_children(
         var_counts = _iphone_memory_counts(iphone_new, ver, mk)
         order = ["64", "128", "256", "512", "1Tb"]
         for mem in order:
-            c = var_counts.get(mem, 0)
-            if not editor and c <= 0:
-                continue
             mem_seg = mem.lower()
             pth = f"{path}>mem>{mem_seg}"
+            if not editor and _tc(pth, items, btn_map) <= 0:
+                continue
             label = "1Tb" if mem == "1Tb" else f"{mem}Gb"
             out.append(
                 MenuNode(
@@ -799,10 +928,10 @@ def _hardcoded_children(
             return out
         stor_counts = _iphone_storage_counts(iphone_new, ver, mk, mem)
         for stor, c in stor_counts.items():
-            if not editor and c <= 0:
-                continue
             stor_safe = stor.replace("+", "p")
             pth = f"{path}>stor>{stor_safe}"
+            if not editor and _tc(pth, items, btn_map) <= 0:
+                continue
             lbl = "eSim" if stor == "esim" else "(1+1)" if stor == "1+1" else "2sim"
             out.append(
                 MenuNode(
@@ -843,6 +972,9 @@ def get_merged_menu_nodes(db: Session, parent_path: str, editor: bool) -> List[M
             )
         )
     custom_nodes.sort(key=lambda x: (x.label, x.custom_id or 0))
+    if not editor:
+        hard = [n for n in hard if n.count > 0]
+        custom_nodes = [n for n in custom_nodes if n.count > 0]
     return hard + custom_nodes
 
 
@@ -1023,6 +1155,12 @@ def attach_custom_product(
 
     vk_product_id = _extract_vk_product_id(vk_link)
     dl = (display_label or "").strip()[:128] or None
+    if not dl:
+        from app.utils.product_label import button_label_for_product
+
+        dl = button_label_for_product(
+            {"name": name, "price": price_str, "collection_name": CUSTOM_COLLECTION}
+        )[:128] or None
     product = Product(
         post_id=post_id,
         vk_product_id=vk_product_id,

@@ -75,8 +75,8 @@ def get_product_dashboard_label(product: dict) -> str:
         return _dashboard_label_new_iphone(product)
 
     if coll == "custom":
-        custom = _custom_button_label(product)
-        if custom:
-            return custom
+        from app.utils.product_label import button_label_for_product
+
+        return button_label_for_product(product)
 
     return format_product_name_for_list(name)

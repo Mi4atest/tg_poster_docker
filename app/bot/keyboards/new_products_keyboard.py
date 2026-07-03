@@ -84,6 +84,8 @@ def get_new_iphone_versions_keyboard(
     buttons = []
     for v in ["12", "13", "14", "15", "16", "17"]:
         c = version_counts.get(v, 0)
+        if c <= 0:
+            continue
         pth = f"root>cat>iPhone>ver>{v}"
         disp = label_resolver(pth, f"iPhone {v}") if label_resolver else f"iPhone {v}"
         buttons.append([
@@ -256,6 +258,8 @@ def get_airpods_models_keyboard(
     order = ["AirPods 3", "AirPods 3 Magsafe", "AirPods 4", "AirPods 4 ANC", "AirPods Pro 2", "AirPods Pro 3"]
     for model in order:
         c = model_counts.get(model, 0)
+        if c <= 0:
+            continue
         model_key = model.replace(" ", "_").lower().replace("airpods", "airpods")
         mk = mcs_paths.AIRPODS_KEY.get(model, model_key)
         pth = f"root>cat>Airpods>md>{mk}"
@@ -288,6 +292,8 @@ def get_apple_watch_categories_keyboard(
     order = ["SE 2", "SE 3", "11"]
     for cat in order:
         c = category_counts.get(cat, 0)
+        if c <= 0:
+            continue
         cat_key = cat.replace(" ", "_").lower()
         ck = mcs_paths.WATCH_KEY[cat]
         pth = f"root>cat>Apple Watch>wc>{ck}"
@@ -321,6 +327,8 @@ def get_apple_watch_sizes_keyboard(
     order = ["40mm", "44mm"]
     for size in order:
         c = size_counts.get(size, 0)
+        if c <= 0:
+            continue
         buttons.append([
             InlineKeyboardButton(
                 text=f"AW {category} {size} ({c})",
@@ -349,6 +357,8 @@ def get_ipad_models_keyboard(
     order = ["iPad 11", "iPad Air"]
     for model in order:
         c = model_counts.get(model, 0)
+        if c <= 0:
+            continue
         model_key = model.replace(" ", "_").lower()
         mk = mcs_paths.IPAD_KEY[model]
         pth = f"root>cat>iPad>md>{mk}"

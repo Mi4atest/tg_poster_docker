@@ -3,12 +3,10 @@ from __future__ import annotations
 
 import json
 import re
-import time
 from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
-_DEBUG_LOG_PATH = Path(__file__).resolve().parents[3] / ".cursor" / "debug-7ef12c.log"
 _MAP_PATH = Path(__file__).resolve().parent / "data" / "iphone_color_map.json"
 
 _CATALOG_PATHS = (
@@ -106,25 +104,6 @@ def _validate_allowed(avito_color: str, model: str) -> str:
     return by_norm.get(_norm(avito_color), avito_color)
 
 
-def _debug_log(hypothesis_id: str, message: str, data: dict) -> None:
-    # #region agent log
-    try:
-        payload = {
-            "sessionId": "7ef12c",
-            "hypothesisId": hypothesis_id,
-            "location": "phone_color_catalog.py:resolve",
-            "message": message,
-            "data": data,
-            "timestamp": int(time.time() * 1000),
-        }
-        _DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with _DEBUG_LOG_PATH.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    except OSError:
-        pass
-    # #endregion
-
-
 def resolve_avito_color_from_catalog(
     model: Optional[str],
     color_token: Optional[str],
@@ -135,21 +114,9 @@ def resolve_avito_color_from_catalog(
     color_map = load_color_map()
     model_key = _find_model_key(model, color_map)
     if not model_key:
-        _debug_log("H2", "model_not_in_map", {"model": model, "token": color_token})
         return None
     model_map = color_map[model_key]
     result = _match_token_in_map(color_token, model_map)
     if result and model_key in load_apple_model_colors():
         result = _validate_allowed(result, model_key)
-    _debug_log(
-        "H1",
-        "color_resolved",
-        {
-            "model": model,
-            "model_key": model_key,
-            "token": color_token,
-            "result": result,
-            "map_keys": len(model_map),
-        },
-    )
     return result

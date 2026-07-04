@@ -1,9 +1,7 @@
 """Сборка XML-фида автозагрузки Авито (формат 3, категория «Телефоны»)."""
 from __future__ import annotations
 
-import json
 import re
-import time
 import xml.sax.saxutils as saxutils
 from typing import Any, Dict, List, Optional
 
@@ -21,32 +19,6 @@ from app.utils.product_parser import extract_product_description, extract_produc
 
 # Допустимые символы в Id по документации Авито
 _AD_ID_RE = re.compile(r"[^0-9A-Za-z,\\/\(\)\[\]\-=|]+")
-
-_DEBUG_LOG_PATH = "/root/tg_poster_docker/.cursor/debug-7ef12c.log"
-
-
-def _agent_log(location: str, message: str, data: dict, hypothesis_id: str) -> None:
-    # #region agent log
-    try:
-        with open(_DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(
-                json.dumps(
-                    {
-                        "sessionId": "7ef12c",
-                        "location": location,
-                        "message": message,
-                        "data": data,
-                        "timestamp": int(time.time() * 1000),
-                        "hypothesisId": hypothesis_id,
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
-    except Exception:
-        pass
-    # #endregion
-
 
 def sanitize_ad_id(post_id: str) -> str:
     raw = (post_id or "").strip()
@@ -217,20 +189,6 @@ def build_autoload_ad_xml(
 ) -> str:
     """Одно объявление в фиде."""
     photo_count = len(build_image_url_list(photo_file_ids, public_base_url))
-    # #region agent log
-    _agent_log(
-        "autoload_xml.py:build_autoload_ad_xml",
-        "feed ad fields",
-        {
-            "post_id": post_id,
-            "screen_condition": screen_condition_from_draft(avito_draft),
-            "case_condition": case_condition_from_draft(avito_draft),
-            "photo_count": photo_count,
-            "draft": avito_draft,
-        },
-        "H1-H3",
-    )
-    # #endregion
     return build_feed_xml_for_posts(
         [
             {

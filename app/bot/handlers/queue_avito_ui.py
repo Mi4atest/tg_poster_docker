@@ -11,6 +11,7 @@ from app.integrations.avito.avito_feed_dispatcher import (
     get_queue_summary,
 )
 from app.scheduler.queue_manager import QueueManager
+from app.scheduler.queue_ui import queue_item_display_name
 
 
 def format_recent_archive_lines() -> List[str]:
@@ -66,7 +67,7 @@ def build_avito_platform_text(
         lines.append("— пусто")
     else:
         for i, item in enumerate(publish_items[:12], 1):
-            name = item.post.name if item.post else f"Пост {item.post_id[:8]}"
+            name = queue_item_display_name(item)
             lines.append(f"{i}. ⏳ {html.escape(name[:50])}")
         if len(publish_items) > 12:
             lines.append(f"… ещё {len(publish_items) - 12}")

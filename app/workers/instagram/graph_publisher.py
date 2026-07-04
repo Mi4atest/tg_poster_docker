@@ -4,16 +4,18 @@ import ssl
 import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import aiohttp
+from sqlalchemy import text
 
-from app.api.models.post import Post, PublicationLog
+from app.api.models.post import PublicationLog
 from app.config.settings import MEDIA_DIR
-from app.utils.vk_client import community_token
 from app.db.database import SessionLocal
+from app.db.post_queries import fetch_post, insert_publication_log
 from app.services.admin_alert_service import send_admin_alert
 from app.utils.text_formatter import format_for_instagram
+from app.utils.vk_client import community_token
 from app.workers.instagram.token_manager import InstagramGraphTokenManager
 from app.workers.instagram.graph_client import InstagramGraphClient
 
@@ -47,7 +49,7 @@ class InstagramGraphPublisher:
         db = SessionLocal()
         self._last_graph_error = None
         try:
-            post = db.query(Post).filter(Post.id == post_id).first()
+            post = fetch_post(db, post_id)
             if not post:
                 logger.error(f"Пост с ID {post_id} не найден")
                 return False
@@ -102,31 +104,37 @@ class InstagramGraphPublisher:
             graph_client = InstagramGraphClient()
             permalink, _shortcode = await graph_client.fetch_media_permalink(published_media_id)
 
-            post.is_published_instagram = True
-            post.published_instagram_at = datetime.now(timezone.utc)
-            post.instagram_media_id = published_media_id
-            if permalink:
-                post.instagram_link = permalink
-                logger.info("Saved Instagram link for post %s: %s", post_id, permalink)
-            else:
-                logger.warning(
-                    "Instagram post %s published (media_id=%s) but permalink not fetched",
-                    post_id,
-                    published_media_id,
-                )
-
+            now = datetime.now(timezone.utc)
+            db.execute(
+                text(
+                    "UPDATE posts SET is_published_instagram = true, published_instagram_at = :now, "
+                    "instagram_media_id = :media_id, "
+                    "instagram_link = COALESCE(:link, instagram_link), updated_at = NOW() "
+                    "WHERE id = :id"
+                ),
+                {
+                    "id": post_id,
+                    "now": now,
+                    "media_id": published_media_id,
+                    "link": permalink,
+                },
+            )
             db.commit()
 
-            if post.instagram_link or post.instagram_media_id:
+            if permalink or published_media_id:
                 try:
-                    from app.api.models.product import Product
-
-                    products_for_post = db.query(Product).filter(Product.post_id == post_id).all()
-                    for product in products_for_post:
-                        if post.instagram_link:
-                            product.instagram_link = post.instagram_link
-                        if post.instagram_media_id:
-                            product.instagram_media_id = post.instagram_media_id
+                    db.execute(
+                        text(
+                            "UPDATE products SET instagram_link = COALESCE(:link, instagram_link), "
+                            "instagram_media_id = COALESCE(:media_id, instagram_media_id) "
+                            "WHERE post_id = :post_id"
+                        ),
+                        {
+                            "post_id": post_id,
+                            "link": permalink,
+                            "media_id": published_media_id,
+                        },
+                    )
                     db.commit()
                 except Exception as sync_err:
                     logger.warning(
@@ -135,13 +143,8 @@ class InstagramGraphPublisher:
                         sync_err,
                     )
                     db.rollback()
-            db.add(
-                PublicationLog(
-                    post_id=post_id,
-                    platform="instagram",
-                    status="success",
-                    message="Пост опубликован через Instagram Graph API",
-                )
+            insert_publication_log(
+                db, post_id, "instagram", "success", "Пост опубликован через Instagram Graph API"
             )
             db.commit()
             logger.info(f"Пост {post_id} успешно опубликован через Graph API")
@@ -157,7 +160,7 @@ class InstagramGraphPublisher:
         db.add(PublicationLog(post_id=post_id, platform="instagram", status="error", message=message))
         db.commit()
 
-    async def _prepare_media_urls(self, post: Post) -> List[str]:
+    async def _prepare_media_urls(self, post: Any) -> List[str]:
         # Приоритетный источник: уже опубликованный VK-пост.
         vk_photo_urls = await self._get_vk_wall_photo_urls(post)
         if vk_photo_urls:
@@ -185,7 +188,7 @@ class InstagramGraphPublisher:
                 media_urls.append(self._to_public_url(local_path))
         return media_urls[:6]
 
-    async def _get_telegram_photo_urls(self, post: Post) -> List[str]:
+    async def _get_telegram_photo_urls(self, post: Any) -> List[str]:
         bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
         if not bot_token:
             return []
@@ -261,7 +264,7 @@ class InstagramGraphPublisher:
 
         return None
 
-    async def _get_vk_wall_photo_urls(self, post: Post) -> List[str]:
+    async def _get_vk_wall_photo_urls(self, post: Any) -> List[str]:
         if not post.vk_post_id:
             return []
         token = community_token()

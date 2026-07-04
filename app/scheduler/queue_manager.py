@@ -1,8 +1,11 @@
 import logging
+import threading
+from contextlib import contextmanager
+from types import SimpleNamespace
 from typing import List, Optional, Dict
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
-from sqlalchemy import and_, or_, desc
+from sqlalchemy import and_, or_, desc, text
 
 from app.db.database import SessionLocal
 from app.api.models.post import Post, PublicationQueue
@@ -16,6 +19,26 @@ class QueueManager:
     def __init__(self, db: Optional[Session] = None):
         """Инициализация менеджера очереди."""
         self.db = db or SessionLocal()
+        self._db_lock = threading.RLock()
+
+    @contextmanager
+    def _isolated_session(self):
+        """Отдельная сессия для конкурентных воркеров (не делят self.db)."""
+        db = SessionLocal()
+        try:
+            yield db
+        finally:
+            try:
+                db.close()
+            except Exception:
+                pass
+
+    def _release_read_transaction(self) -> None:
+        """Сбросить read-only транзакцию, чтобы не держать соединение idle in transaction."""
+        try:
+            self.db.rollback()
+        except Exception as e:
+            logger.debug("QueueManager rollback after read: %s", e)
 
     def add_post_to_queue(
         self,
@@ -24,65 +47,88 @@ class QueueManager:
         priority: int = 0,
         scheduled_at: Optional[datetime] = None
     ) -> List[PublicationQueue]:
-        """Добавить пост в очередь для указанных платформ.
-        
-        Args:
-            post_id: ID поста
-            platforms: Список платформ ["vk", "telegram", "instagram", "max"]
-            priority: Приоритет (чем выше, тем раньше публикуется)
-            scheduled_at: Запланированное время публикации
-            
-        Returns:
-            Список созданных записей очереди
-        """
+        """Добавить пост в очередь для указанных платформ."""
         try:
-            # Получаем пост
-            post = self.db.query(Post).filter(Post.id == post_id).first()
-            if not post:
-                logger.error(f"Post {post_id} not found")
+            post_row = (
+                self.db.execute(
+                    text("SELECT id FROM posts WHERE id = :id LIMIT 1"),
+                    {"id": post_id},
+                )
+                .first()
+            )
+            if not post_row:
+                logger.error("Post %s not found", post_id)
                 return []
 
-            queue_items = []
+            queue_items: List[PublicationQueue] = []
+            now = datetime.now(timezone.utc)
 
             for platform in platforms:
-                # Проверяем, не находится ли уже пост в очереди для этой платформы
-                existing = self.db.query(PublicationQueue).filter(
-                    and_(
-                        PublicationQueue.post_id == post_id,
-                        PublicationQueue.platform == platform,
-                        PublicationQueue.status.in_(["pending", "publishing", "paused"])
+                existing = (
+                    self.db.execute(
+                        text(
+                            "SELECT id FROM publication_queue "
+                            "WHERE post_id = :post_id AND platform = :platform "
+                            "AND status IN ('pending', 'publishing', 'paused') "
+                            "LIMIT 1"
+                        ),
+                        {"post_id": post_id, "platform": platform},
                     )
-                ).first()
-                
+                    .first()
+                )
                 if existing:
-                    logger.info(f"Post {post_id} already in queue for platform {platform}")
+                    logger.info(
+                        "Post %s already in queue for platform %s", post_id, platform
+                    )
                     continue
 
-                # Создаем запись в очереди
-                queue_item = PublicationQueue(
-                    post_id=post_id,
-                    platform=platform,
-                    status="pending",
-                    priority=priority,
-                    scheduled_at=scheduled_at,
-                    created_at=datetime.now(timezone.utc)
+                qid = self.db.execute(
+                    text(
+                        "INSERT INTO publication_queue "
+                        "(post_id, platform, status, priority, scheduled_at, created_at) "
+                        "VALUES (:post_id, :platform, 'pending', :priority, :scheduled_at, :created_at) "
+                        "RETURNING id"
+                    ),
+                    {
+                        "post_id": post_id,
+                        "platform": platform,
+                        "priority": priority,
+                        "scheduled_at": scheduled_at,
+                        "created_at": now,
+                    },
+                ).scalar()
+                queue_items.append(
+                    PublicationQueue(
+                        id=qid,
+                        post_id=post_id,
+                        platform=platform,
+                        status="pending",
+                        priority=priority,
+                        scheduled_at=scheduled_at,
+                        created_at=now,
+                    )
                 )
-                self.db.add(queue_item)
-                queue_items.append(queue_item)
 
-            # Обновляем статус поста
-            post.in_queue = True
-            post.queue_status = "pending"
-            if scheduled_at:
-                post.scheduled_at = scheduled_at
+            if queue_items:
+                self.db.execute(
+                    text(
+                        "UPDATE posts SET in_queue = true, queue_status = 'pending', "
+                        "scheduled_at = COALESCE(:scheduled_at, scheduled_at), "
+                        "updated_at = NOW() WHERE id = :id"
+                    ),
+                    {"id": post_id, "scheduled_at": scheduled_at},
+                )
 
             self.db.commit()
-            
-            logger.info(f"Added post {post_id} to queue for platforms: {platforms}")
+
+            if queue_items:
+                logger.info(
+                    "Added post %s to queue for platforms: %s", post_id, platforms
+                )
             return queue_items
 
         except Exception as e:
-            logger.error(f"Error adding post {post_id} to queue: {str(e)}")
+            logger.error("Error adding post %s to queue: %s", post_id, e)
             self.db.rollback()
             return []
 
@@ -113,6 +159,8 @@ class QueueManager:
                     updated += 1
             if updated:
                 self.db.commit()
+            else:
+                self.db.rollback()
             return updated
         except Exception as e:
             logger.error(f"Error bumping queue priority for {post_id}: {str(e)}")
@@ -140,6 +188,8 @@ class QueueManager:
                 updated += 1
             if updated:
                 self.db.commit()
+            else:
+                self.db.rollback()
             return updated
         except Exception as e:
             logger.error(f"Error bumping queue priority for post {post_id}: {str(e)}")
@@ -150,48 +200,48 @@ class QueueManager:
         self, platform: str, limit: int = 50
     ) -> List[PublicationQueue]:
         """Все готовые pending-задачи платформы (для батча Авито)."""
-        try:
-            now = datetime.now(timezone.utc)
-            return (
-                self.db.query(PublicationQueue)
-                .filter(
-                    and_(
-                        PublicationQueue.platform == platform,
-                        PublicationQueue.status == "pending",
-                        or_(
-                            PublicationQueue.scheduled_at.is_(None),
-                            PublicationQueue.scheduled_at <= now,
+        with self._isolated_session() as db:
+            try:
+                now = datetime.now(timezone.utc)
+                rows = (
+                    db.execute(
+                        text(
+                            "SELECT id, post_id, platform, status, priority, scheduled_at, "
+                            "published_at, error_message, created_at "
+                            "FROM publication_queue "
+                            "WHERE platform = :platform AND status = 'pending' "
+                            "AND (scheduled_at IS NULL OR scheduled_at <= :now) "
+                            "ORDER BY priority DESC, created_at ASC "
+                            "LIMIT :limit"
                         ),
+                        {"platform": platform, "now": now, "limit": limit},
                     )
+                    .mappings()
+                    .all()
                 )
-                .order_by(desc(PublicationQueue.priority), PublicationQueue.created_at)
-                .limit(limit)
-                .all()
-            )
-        except Exception as e:
-            logger.error("Error getting pending items for %s: %s", platform, e)
-            return []
+                return [PublicationQueue(**dict(row)) for row in rows]
+            except Exception as e:
+                logger.error("Error getting pending items for %s: %s", platform, e)
+                return []
 
     def count_pending(self, platform: str) -> int:
-        try:
-            now = datetime.now(timezone.utc)
-            return (
-                self.db.query(PublicationQueue)
-                .filter(
-                    and_(
-                        PublicationQueue.platform == platform,
-                        PublicationQueue.status == "pending",
-                        or_(
-                            PublicationQueue.scheduled_at.is_(None),
-                            PublicationQueue.scheduled_at <= now,
+        with self._isolated_session() as db:
+            try:
+                now = datetime.now(timezone.utc)
+                return (
+                    db.execute(
+                        text(
+                            "SELECT COUNT(*) FROM publication_queue "
+                            "WHERE platform = :platform AND status = 'pending' "
+                            "AND (scheduled_at IS NULL OR scheduled_at <= :now)"
                         ),
-                    )
+                        {"platform": platform, "now": now},
+                    ).scalar()
+                    or 0
                 )
-                .count()
-            )
-        except Exception as e:
-            logger.error("Error counting pending for %s: %s", platform, e)
-            return 0
+            except Exception as e:
+                logger.error("Error counting pending for %s: %s", platform, e)
+                return 0
 
     def reset_items_to_pending(
         self,
@@ -220,6 +270,8 @@ class QueueManager:
                 updated += 1
             if updated:
                 self.db.commit()
+            else:
+                self.db.rollback()
             return updated
         except Exception as e:
             logger.error("Error resetting queue items: %s", e)
@@ -227,37 +279,33 @@ class QueueManager:
             return 0
 
     def get_next_post(self, platform: str) -> Optional[PublicationQueue]:
-        """Получить следующий пост для публикации на указанной платформе.
-        
-        Args:
-            platform: Платформа ("vk", "telegram", "instagram", "max")
-            
-        Returns:
-            Следующая запись очереди или None
-        """
-        try:
-            now = datetime.now(timezone.utc)
-            
-            # Ищем пост с наивысшим приоритетом, который готов к публикации
-            queue_item = self.db.query(PublicationQueue).filter(
-                and_(
-                    PublicationQueue.platform == platform,
-                    PublicationQueue.status == "pending",
-                    or_(
-                        PublicationQueue.scheduled_at.is_(None),
-                        PublicationQueue.scheduled_at <= now
+        """Получить следующий пост для публикации на указанной платформе."""
+        with self._isolated_session() as db:
+            try:
+                now = datetime.now(timezone.utc)
+                row = (
+                    db.execute(
+                        text(
+                            "SELECT id, post_id, platform, status, priority, scheduled_at, "
+                            "published_at, error_message, created_at "
+                            "FROM publication_queue "
+                            "WHERE platform = :platform AND status = 'pending' "
+                            "AND (scheduled_at IS NULL OR scheduled_at <= :now) "
+                            "ORDER BY priority DESC, created_at ASC "
+                            "LIMIT 1"
+                        ),
+                        {"platform": platform, "now": now},
                     )
+                    .mappings()
+                    .first()
                 )
-            ).order_by(
-                desc(PublicationQueue.priority),
-                PublicationQueue.created_at
-            ).first()
+                if not row:
+                    return None
+                return PublicationQueue(**dict(row))
 
-            return queue_item
-
-        except Exception as e:
-            logger.error(f"Error getting next post for platform {platform}: {str(e)}")
-            return None
+            except Exception as e:
+                logger.error("Error getting next post for platform %s: %s", platform, e)
+                return None
 
     def mark_as_publishing(self, queue_item_id: int) -> bool:
         """Отметить запись как публикующуюся.
@@ -268,22 +316,21 @@ class QueueManager:
         Returns:
             True если успешно, False иначе
         """
-        try:
-            queue_item = self.db.query(PublicationQueue).filter(
-                PublicationQueue.id == queue_item_id
-            ).first()
-            
-            if not queue_item:
+        with self._isolated_session() as db:
+            try:
+                row = db.execute(
+                    text("UPDATE publication_queue SET status = 'publishing' WHERE id = :id RETURNING id"),
+                    {"id": queue_item_id},
+                ).first()
+                if not row:
+                    return False
+                db.commit()
+                return True
+
+            except Exception as e:
+                logger.error("Error marking queue item %s as publishing: %s", queue_item_id, e)
+                db.rollback()
                 return False
-
-            queue_item.status = "publishing"
-            self.db.commit()
-            return True
-
-        except Exception as e:
-            logger.error(f"Error marking queue item {queue_item_id} as publishing: {str(e)}")
-            self.db.rollback()
-            return False
 
     def mark_as_completed(self, queue_item_id: int) -> bool:
         """Отметить запись как завершенную.
@@ -294,45 +341,47 @@ class QueueManager:
         Returns:
             True если успешно, False иначе
         """
-        try:
-            queue_item = self.db.query(PublicationQueue).filter(
-                PublicationQueue.id == queue_item_id
-            ).first()
-            
-            if not queue_item:
-                return False
-
-            queue_item.status = "completed"
-            queue_item.published_at = datetime.now(timezone.utc)
-            
-            # Проверяем, все ли платформы для этого поста завершены
-            post_id = queue_item.post_id
-            remaining = self.db.query(PublicationQueue).filter(
-                and_(
-                    PublicationQueue.post_id == post_id,
-                    PublicationQueue.status.in_(["pending", "publishing", "paused"])
+        with self._isolated_session() as db:
+            try:
+                now = datetime.now(timezone.utc)
+                row = (
+                    db.execute(
+                        text(
+                            "UPDATE publication_queue SET status = 'completed', published_at = :now "
+                            "WHERE id = :id RETURNING post_id"
+                        ),
+                        {"id": queue_item_id, "now": now},
+                    )
+                    .first()
                 )
-            ).count()
-            
-            if remaining == 0:
-                # Все платформы завершены, обновляем статус поста
-                post = self.db.query(Post).filter(Post.id == post_id).first()
-                if post:
-                    post.in_queue = False
-                    post.queue_status = "completed"
-                    # Пост считается архивированным, если опубликован во все основные платформы
-                    # (ВК и Telegram - обязательные, Instagram - опциональный)
-                    if post.is_published_vk and post.is_published_telegram:
-                        # Пост автоматически попадает в архив через фильтрацию в get_posts_api
-                        pass
+                if not row:
+                    return False
 
-            self.db.commit()
-            return True
+                post_id = row[0]
+                remaining = db.execute(
+                    text(
+                        "SELECT COUNT(*) FROM publication_queue "
+                        "WHERE post_id = :post_id AND status IN ('pending', 'publishing', 'paused')"
+                    ),
+                    {"post_id": post_id},
+                ).scalar() or 0
 
-        except Exception as e:
-            logger.error(f"Error marking queue item {queue_item_id} as completed: {str(e)}")
-            self.db.rollback()
-            return False
+                if remaining == 0:
+                    db.execute(
+                        text(
+                            "UPDATE posts SET in_queue = false, queue_status = 'completed', "
+                            "updated_at = NOW() WHERE id = :id"
+                        ),
+                        {"id": post_id},
+                    )
+
+                db.commit()
+                return True
+
+            except Exception as e:
+                logger.error("Error marking queue item %s as completed: %s", queue_item_id, e)
+                db.rollback()
+                return False
 
     def mark_as_failed(self, queue_item_id: int, error_message: str) -> bool:
         """Отметить запись как неудачную.
@@ -344,23 +393,24 @@ class QueueManager:
         Returns:
             True если успешно, False иначе
         """
-        try:
-            queue_item = self.db.query(PublicationQueue).filter(
-                PublicationQueue.id == queue_item_id
-            ).first()
-            
-            if not queue_item:
+        with self._isolated_session() as db:
+            try:
+                row = db.execute(
+                    text(
+                        "UPDATE publication_queue SET status = 'failed', error_message = :msg "
+                        "WHERE id = :id RETURNING id"
+                    ),
+                    {"id": queue_item_id, "msg": (error_message or "")[:2000]},
+                ).first()
+                if not row:
+                    return False
+                db.commit()
+                return True
+
+            except Exception as e:
+                logger.error("Error marking queue item %s as failed: %s", queue_item_id, e)
+                db.rollback()
                 return False
-
-            queue_item.status = "failed"
-            queue_item.error_message = error_message
-            self.db.commit()
-            return True
-
-        except Exception as e:
-            logger.error(f"Error marking queue item {queue_item_id} as failed: {str(e)}")
-            self.db.rollback()
-            return False
 
     def pause_queue_item(self, queue_item_id: int) -> bool:
         """Приостановить публикацию записи.
@@ -499,54 +549,83 @@ class QueueManager:
             return 0
 
     def get_queue_stats(self) -> Dict[str, int]:
-        """Получить статистику очереди.
-        
-        Returns:
-            Словарь со статистикой по платформам
-        """
-        try:
-            stats = {}
-            platforms = ["vk", "telegram", "instagram", "max", "avito"]
-            
-            for platform in platforms:
-                count = self.db.query(PublicationQueue).filter(
-                    and_(
-                        PublicationQueue.platform == platform,
-                        PublicationQueue.status.in_(["pending", "publishing", "paused"])
+        """Получить статистику очереди."""
+        with self._isolated_session() as db:
+            try:
+                platforms = ["vk", "telegram", "instagram", "max", "avito"]
+                rows = (
+                    db.execute(
+                        text(
+                            "SELECT platform, COUNT(*) AS cnt FROM publication_queue "
+                            "WHERE status IN ('pending', 'publishing', 'paused') "
+                            "AND platform = ANY(:platforms) "
+                            "GROUP BY platform"
+                        ),
+                        {"platforms": platforms},
                     )
-                ).count()
-                stats[platform] = count
-            
-            stats["total"] = sum(stats.values())
-            return stats
-
-        except Exception as e:
-            logger.error(f"Error getting queue stats: {str(e)}")
-            return {}
-
-    def get_queue_for_platform(self, platform: str) -> List[PublicationQueue]:
-        """Получить все записи очереди для платформы.
-        
-        Args:
-            platform: Платформа ("vk", "telegram", "instagram", "max")
-            
-        Returns:
-            Список записей очереди
-        """
-        try:
-            return self.db.query(PublicationQueue).filter(
-                and_(
-                    PublicationQueue.platform == platform,
-                    PublicationQueue.status.in_(["pending", "publishing", "paused"])
+                    .mappings()
+                    .all()
                 )
-            ).order_by(
-                desc(PublicationQueue.priority),
-                PublicationQueue.created_at
-            ).all()
+                stats = {p: 0 for p in platforms}
+                for row in rows:
+                    stats[row["platform"]] = int(row["cnt"])
+                stats["total"] = sum(stats.values())
+                return stats
 
-        except Exception as e:
-            logger.error(f"Error getting queue for platform {platform}: {str(e)}")
-            return []
+            except Exception as e:
+                logger.error("Error getting queue stats: %s", e)
+                return {}
+
+    def get_queue_for_platform(self, platform: str) -> List[SimpleNamespace]:
+        """Получить записи очереди для платформы (с именем поста, без lazy-load ORM)."""
+        with self._isolated_session() as db:
+            try:
+                rows = (
+                    db.execute(
+                        text(
+                            "SELECT pq.id, pq.post_id, pq.platform, pq.status, pq.priority, "
+                            "pq.scheduled_at, pq.published_at, pq.error_message, pq.created_at, "
+                            "COALESCE(p.name, '') AS post_name "
+                            "FROM publication_queue pq "
+                            "LEFT JOIN posts p ON p.id = pq.post_id "
+                            "WHERE pq.platform = :platform "
+                            "AND pq.status IN ('pending', 'publishing', 'paused') "
+                            "ORDER BY pq.priority DESC, pq.created_at ASC"
+                        ),
+                        {"platform": platform},
+                    )
+                    .mappings()
+                    .all()
+                )
+                return [SimpleNamespace(**dict(row)) for row in rows]
+
+            except Exception as e:
+                logger.error("Error getting queue for platform %s: %s", platform, e)
+                return []
+
+    def fetch_queue_item(self, queue_item_id: int) -> Optional[SimpleNamespace]:
+        """Одна запись очереди с именем поста (raw SQL)."""
+        with self._isolated_session() as db:
+            try:
+                row = (
+                    db.execute(
+                        text(
+                            "SELECT pq.id, pq.post_id, pq.platform, pq.status, pq.priority, "
+                            "pq.scheduled_at, pq.published_at, pq.error_message, pq.created_at, "
+                            "COALESCE(p.name, '') AS post_name "
+                            "FROM publication_queue pq "
+                            "LEFT JOIN posts p ON p.id = pq.post_id "
+                            "WHERE pq.id = :id LIMIT 1"
+                        ),
+                        {"id": queue_item_id},
+                    )
+                    .mappings()
+                    .first()
+                )
+                return SimpleNamespace(**dict(row)) if row else None
+            except Exception as e:
+                logger.error("Error fetching queue item %s: %s", queue_item_id, e)
+                return None
 
     def close(self):
         """Закрыть сессию базы данных."""

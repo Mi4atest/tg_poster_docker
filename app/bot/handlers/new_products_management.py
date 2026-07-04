@@ -53,6 +53,7 @@ from app.bot.handlers.product_management import (
     update_product_status_api,
     execute_product_price_update,
     get_price_change_confirm_keyboard,
+    get_product_api,
 )
 from app.utils.price_change import (
     analyze_price_change,
@@ -122,17 +123,27 @@ async def get_products_api(limit: int = 5000):
         return [], 0
 
 
-async def get_product_api(product_id: int):
-    try:
-        async with aiohttp.ClientSession() as session:
-            url = f"http://{API_HOST}:{API_PORT}/api/products/{product_id}"
-            async with session.get(url) as response:
-                if response.status == 200:
-                    return await response.json()
-                return None
-    except Exception as e:
-        logger.error("Error getting product %s: %s", product_id, e)
-        return None
+def _fetch_available_products_for_menu() -> List[dict]:
+    """Доступные новые и custom-товары для корневого меню (raw SQL, без ORM)."""
+    from sqlalchemy import text
+
+    sql = text(
+        """
+        SELECT id, name, display_label, price, vk_product_link,
+               availability_status, collection_name, custom_button_id
+        FROM products
+        WHERE availability_status = 'available'
+          AND (
+            collection_name = ANY(:cols)
+            OR (collection_name = 'custom' AND custom_button_id IS NOT NULL)
+          )
+        ORDER BY id DESC
+        LIMIT 500
+        """
+    )
+    with SessionLocal() as db:
+        rows = db.execute(sql, {"cols": list(NEW_COLLECTION_VALUES)}).mappings().all()
+    return [dict(r) for r in rows]
 
 
 def _filter_new_products(items: List[dict], collection_value: Optional[str] = None) -> List[dict]:
@@ -153,42 +164,81 @@ def _normalize_price_display(price_str: Optional[str]) -> str:
     return f"{num}₽"
 
 
+def _price_sort_value(row: dict) -> int:
+    num = price_string_to_int_rub(row.get("price"))
+    if num is not None:
+        return num
+    s = _normalize_price_display(row.get("price"))
+    m = re.search(r"\d+", s or "")
+    return int(m.group()) if m else 10**9
+
+
+def _sort_products_by_price(products: List[dict]) -> List[dict]:
+    """Сортировка листа меню: по цене, при равенстве — по id."""
+    return sorted(
+        products,
+        key=lambda p: (_price_sort_value(p), int(p.get("id") or 0)),
+    )
+
+
+def _iphone_model_sort_order(short: str) -> float:
+    """Порядок модели внутри версии iPhone."""
+    mk = (short or "").lower()
+    if "promax" in mk or "pro_max" in mk:
+        return 4
+    if "pro" in mk:
+        return 3
+    if "plus" in mk:
+        return 2
+    if "air" in mk:
+        return 0.5
+    if "16e" in mk or "16_e" in mk or "17e" in mk or "17_e" in mk:
+        return 1
+    if "mini" in mk:
+        return 0.3
+    return 0
+
+
+def _iphone_storage_sort_order(name: str, version_num: int) -> int:
+    """Порядок типа сим-карты: esim → 1+1 → 2sim (как в клавиатуре меню)."""
+    st = parse_iphone_storage_type(name)
+    if st == "esim":
+        return 0
+    if st == "1+1":
+        return 1
+    if st == "2sim":
+        return 2
+    if version_num == 17:
+        return 1
+    return 0
+
+
+def _iphone_color_sort_order(color_emoji: Optional[str]) -> int:
+    color_order_map = {
+        "🟣": 1, "🟢": 2, "🔵": 3, "⚪️": 4, "⚫️": 5,
+        "🟠": 6, "🟡": 7, "🌸": 8, "🔴": 9, "⭐": 10,
+    }
+    if color_emoji and color_emoji in color_order_map:
+        return color_order_map[color_emoji]
+    return 99
+
+
 def _sort_iphone_products(products: List[dict]) -> List[dict]:
     """
-    Сортирует товары iPhone по версии, модели, памяти, цвету и цене.
-    Порядок: версия (12-17) -> модель (базовая, E, Plus, Pro, Pro Max, Air) -> память (64, 128, 256, 512, 1Tb) -> цвет -> цена.
+    Сортирует товары iPhone по дереву меню, затем по цене внутри группы.
+    Порядок: версия → модель → память → тип сим (17) → цена → цвет.
     """
     def sort_key(p: dict) -> tuple:
         name = p.get("name", "")
         model = parse_iphone_model(name)
-        ver = get_iphone_version_from_model(model) if model else "99"  # Неизвестные версии в конец
+        ver = get_iphone_version_from_model(model) if model else "99"
         short = get_short_model_key_for_new(model or "")
         mem = parse_iphone_memory(name)
         color_emoji = parse_iphone_color_key(name)
-        price = _normalize_price_display(p.get("price"))
-        
-        # Версия: 12=12, 13=13, ..., 17=17, Air=17, SE=99, X=99
+
         version_num = int(ver) if ver.isdigit() else (17 if ver == "17" else 99)
-        
-        # Модель: базовая=0, mini=0.3, E=1, Plus=2, Pro=3, Pro Max=4, Air=0.5 (между базовой и Plus)
-        mk = (short or "").lower()
-        model_order = 0
-        if "promax" in mk or "pro_max" in mk:
-            model_order = 4
-        elif "pro" in mk:
-            model_order = 3
-        elif "plus" in mk:
-            model_order = 2
-        elif "air" in mk:
-            model_order = 0.5  # Air после базовой модели, но перед Plus
-        elif "16e" in mk or "16_e" in mk:
-            model_order = 1  # 16E после базовой модели, но перед Plus
-        elif "17e" in mk or "17_e" in mk:
-            model_order = 1  # 17E после базовой модели, но перед Pro
-        elif "mini" in mk:
-            model_order = 0.3  # mini перед базовой моделью
-        
-        # Память: 64=64, 128=128, 256=256, 512=512, 1Tb=1024
+        model_order = _iphone_model_sort_order(short)
+
         mem_num = 0
         if mem:
             if mem.lower() == "1tb":
@@ -198,29 +248,21 @@ def _sort_iphone_products(products: List[dict]) -> List[dict]:
                     mem_num = int(mem)
                 except (ValueError, TypeError):
                     mem_num = 0
-        
-        # Цвет: порядок эмодзи
-        color_order = 99
-        color_order_map = {
-            "🟣": 1, "🟢": 2, "🔵": 3, "⚪️": 4, "⚫️": 5,
-            "🟠": 6, "🟡": 7, "🌸": 8, "🔴": 9, "⭐": 10
-        }
-        if color_emoji and color_emoji in color_order_map:
-            color_order = color_order_map[color_emoji]
-        
-        # Цена: число или 999999 если нет
-        price_num = 999999
-        if price:
-            # Убираем все нецифровые символы кроме точки и запятой
-            price_clean = re.sub(r'[^\d.,]', '', str(price))
-            price_clean = price_clean.replace(',', '.')
-            try:
-                price_num = float(price_clean)
-            except (ValueError, TypeError):
-                price_num = 999999
-        
-        return (version_num, model_order, mem_num, color_order, price_num)
-    
+
+        storage_order = _iphone_storage_sort_order(name, version_num)
+        color_order = _iphone_color_sort_order(color_emoji)
+        pid = int(p.get("id") or 0)
+
+        return (
+            version_num,
+            model_order,
+            mem_num,
+            storage_order,
+            _price_sort_value(p),
+            color_order,
+            pid,
+        )
+
     return sorted(products, key=sort_key)
 
 
@@ -682,35 +724,11 @@ async def new_products_menu(callback: CallbackQuery):
     """Главное меню категорий новых товаров."""
     try:
         text = "🆕 Список новых товаров\n\n"
-        items, _ = await get_products_api(limit=5000)
-        new_items = _filter_new_products(items)
-        available_new = _available_only(new_items)
-        with SessionLocal() as db:
-            custom_available_rows = (
-                db.query(Product)
-                .filter(
-                    Product.collection_name == "custom",
-                    Product.custom_button_id.isnot(None),
-                    Product.availability_status == "available",
-                )
-                .order_by(Product.id.desc())
-                .limit(120)
-                .all()
-            )
+        all_available = _fetch_available_products_for_menu()
+        available_new = _filter_new_products(all_available)
         custom_available = [
-            {
-                "id": r.id,
-                "name": r.name,
-                "display_label": (r.display_label or "").strip() or None,
-                "price": r.price,
-                "vk_product_link": r.vk_product_link,
-                "availability_status": r.availability_status,
-                "collection_name": r.collection_name,
-                "custom_button_id": r.custom_button_id,
-            }
-            for r in custom_available_rows
+            p for p in all_available if (p.get("collection_name") or "").strip() == "custom"
         ]
-        all_available = available_new + custom_available
         if all_available:
             text += "🟢 В наличии:\n\n"
             text += _format_available_lines(all_available)
@@ -783,6 +801,7 @@ async def new_custom_branch(callback: CallbackQuery, state: FSMContext):
         path = mcs.custom_node_path(bid)
         nodes = mcs.get_merged_menu_nodes(db, path, editor=False)
         prods = mcs.list_products_for_custom_leaf(db, bid)
+        prods = _sort_products_by_price(prods)
         if not nodes and len(prods) == 1:
             p = prods[0]
             back_cb = mcs.back_callback_for_custom_parent(btn.parent_path)
@@ -1034,11 +1053,6 @@ def _available_sort_key(
     p: dict,
     custom_parent_by_button: Optional[Dict[int, str]] = None,
 ) -> tuple:
-    def _price_value(row: dict) -> int:
-        s = _normalize_price_display(row.get("price"))
-        m = re.search(r"\d+", s or "")
-        return int(m.group()) if m else 10**9
-
     group = _group_for_product(p, custom_parent_by_button)
     group_order = {"Airpods": 0, "Apple Watch": 1, "iPad": 2, "iPhone новые": 3, "custom": 4}
     g = group_order.get(group, 99)
@@ -1053,29 +1067,28 @@ def _available_sort_key(
             "AirPods Pro 2": 4,
             "AirPods Pro 3": 5,
         }.get(model, 99)
-        return (g, model_order, _price_value(p), p.get("id", 0))
+        return (g, model_order, _price_sort_value(p), p.get("id", 0))
 
     if group == "Apple Watch":
         cat = _parse_apple_watch_category(p.get("name", "")) or ""
         cat_order = {"SE 2": 0, "SE 3": 1, "11": 2}.get(cat, 99)
         size = _parse_apple_watch_size(p.get("name", "")) or ""
         size_num = int(re.sub(r"[^\d]", "", size) or "0")
-        return (g, cat_order, size_num, _price_value(p), p.get("id", 0))
+        return (g, cat_order, size_num, _price_sort_value(p), p.get("id", 0))
 
     if group == "iPad":
         model = _parse_ipad_model(p.get("name", "")) or ""
         model_order = {"iPad 11": 0, "iPad Air": 1}.get(model, 99)
         gen = _parse_ipad_air_generation(p.get("name", "")) or ""
         gen_order = {"M3": 0, "M4": 1}.get(gen, 99)
-        return (g, model_order, gen_order, _price_value(p), p.get("id", 0))
+        return (g, model_order, gen_order, _price_sort_value(p), p.get("id", 0))
 
     if group == "iPhone новые":
-        # Используем уже существующую доменную сортировку iPhone.
         sorted_ids = [x.get("id") for x in _sort_iphone_products([p])]
         rank = sorted_ids.index(p.get("id")) if p.get("id") in sorted_ids else 0
-        return (g, rank, _price_value(p), p.get("id", 0))
+        return (g, rank, _price_sort_value(p), p.get("id", 0))
 
-    return (g, p.get("id", 0))
+    return (g, _price_sort_value(p), p.get("id", 0))
 
 
 def _format_available_lines(products: List[dict]) -> str:
@@ -1386,6 +1399,7 @@ async def new_iphone_versions(callback: CallbackQuery, state: FSMContext):
         with SessionLocal() as db:
             version_products.extend(mcs.list_custom_products_for_path(db, parent_path))
         if version_products:
+            version_products = _sort_iphone_products(version_products)
             text = f"🆕 iPhone {version} ({len(version_products)}):\n\n"
             text += _format_new_iphone_products_text(version_products)
             from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -1460,6 +1474,7 @@ async def new_airpods_model(callback: CallbackQuery, state: FSMContext):
     with SessionLocal() as db:
         all_items = mcs.load_new_products_dicts(db)
         model_products = mcs.collect_products_for_path(db, ap_path, all_items)
+    model_products = _sort_products_by_price(model_products)
 
     if not model_products:
         await callback.answer("Товары не найдены", show_alert=True)
@@ -1561,6 +1576,7 @@ async def new_apple_watch_category(callback: CallbackQuery, state: FSMContext):
     with SessionLocal() as db:
         all_items = mcs.load_new_products_dicts(db)
         category_products = mcs.collect_products_for_path(db, wc_path, all_items)
+    category_products = _sort_products_by_price(category_products)
 
     if not category_products:
         await callback.answer("Товары не найдены", show_alert=True)
@@ -1670,6 +1686,7 @@ async def new_ipad_model(callback: CallbackQuery, state: FSMContext):
     with SessionLocal() as db:
         all_items = mcs.load_new_products_dicts(db)
         model_products = mcs.collect_products_for_path(db, ipad_path, all_items)
+    model_products = _sort_products_by_price(model_products)
 
     if not model_products:
         await callback.answer("Товары не найдены", show_alert=True)
@@ -1811,6 +1828,7 @@ async def new_iphone_variants(callback: CallbackQuery, state: FSMContext):
     with SessionLocal() as db:
         all_items = mcs.load_new_products_dicts(db)
         mem_products = mcs.collect_products_for_path(db, mem_path, all_items)
+    mem_products = _sort_iphone_products(mem_products)
     mem_display = "1Tb" if memory_key == "1tb" else f"{memory_key}Gb"
 
     # iPhone 12–16: после выбора памяти сразу список товаров (без шага esim/1+1/2sim)
@@ -1910,6 +1928,7 @@ async def new_iphone_storage(callback: CallbackQuery, state: FSMContext):
     stor_path = f"root>cat>iPhone>ver>{version}>md>{model_key}>mem>{memory_key}>stor>{storage_key}"
     with SessionLocal() as db:
         plist.extend(mcs.list_products_at_hardcoded_leaf(db, stor_path))
+    plist = _sort_iphone_products(plist)
     text = "🆕 Товары:\n\n"
     if plist:
         text += _format_new_iphone_products_text(plist, version, model_key, memory_key, storage_key)

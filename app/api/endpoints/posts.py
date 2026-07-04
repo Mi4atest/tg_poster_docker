@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Body, Response
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 from typing import List, Optional
 from datetime import datetime, timezone
 import os
@@ -14,6 +15,25 @@ from app.config.settings import MEDIA_DIR, MEDIA_STRUCTURE
 from app.integrations.avito.errors import AvitoAutoCreateUnavailableError
 
 router = APIRouter()
+
+
+def _fetch_post_row(db: Session, post_id: str) -> Optional[dict]:
+    row = (
+        db.execute(text("SELECT * FROM posts WHERE id = :id LIMIT 1"), {"id": post_id})
+        .mappings()
+        .first()
+    )
+    return dict(row) if row else None
+
+
+def _row_as_post_schema(db: Session, row: dict) -> PostSchema:
+    data = dict(row)
+    if data.get("photos") is None:
+        data["photos"] = []
+    if data.get("videos") is None:
+        data["videos"] = []
+    data["logs"] = []
+    return PostSchema.model_validate(data)
 
 
 class PublishPostOptions(BaseModel):
@@ -348,10 +368,10 @@ def get_posts(skip: int = 0, limit: int = 10000, search: str = None, db: Session
 @router.get("/{post_id}", response_model=PostSchema)
 def get_post(post_id: str, db: Session = Depends(get_db)):
     """Get a specific post by ID."""
-    post = db.query(Post).filter(Post.id == post_id).first()
-    if post is None:
+    row = _fetch_post_row(db, post_id)
+    if row is None:
         raise HTTPException(status_code=404, detail="Post not found")
-    return post
+    return _row_as_post_schema(db, row)
 
 @router.delete("/{post_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_post(post_id: str, db: Session = Depends(get_db)):

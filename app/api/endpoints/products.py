@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 from typing import List, Optional
 from sqlalchemy import or_
 
@@ -25,24 +26,55 @@ from app.integrations.avito.parse import parse_avito_item_ref
 router = APIRouter()
 
 
-def product_to_schema(db: Session, product: Product) -> ProductSchema:
+def product_to_schema(db: Session, product) -> ProductSchema:
     """Схема товара; max_share_url и ссылки на пост ленты VK подставляем с поста."""
-    data = ProductSchema.model_validate(product).model_dump()
-    needs_post = (
-        not data.get("max_share_url")
-        or not data.get("vk_post_id")
-        or not data.get("vk_post_link")
-    )
-    if needs_post and product.post_id:
-        post = db.query(Post).filter(Post.id == product.post_id).first()
-        if post:
-            if not data.get("max_share_url") and post.max_share_url:
-                data["max_share_url"] = post.max_share_url
-            if not data.get("vk_post_id") and post.vk_post_id:
-                data["vk_post_id"] = post.vk_post_id
-            if not data.get("vk_post_link") and post.vk_post_link:
-                data["vk_post_link"] = post.vk_post_link
+    if isinstance(product, dict):
+        data = dict(product)
+    else:
+        data = ProductSchema.model_validate(product).model_dump()
+        needs_post = (
+            not data.get("max_share_url")
+            or not data.get("vk_post_id")
+            or not data.get("vk_post_link")
+        )
+        post_id = getattr(product, "post_id", None)
+        if needs_post and post_id:
+            row = (
+                db.execute(
+                    text(
+                        "SELECT max_share_url, vk_post_id, vk_post_link "
+                        "FROM posts WHERE id = :id LIMIT 1"
+                    ),
+                    {"id": post_id},
+                )
+                .mappings()
+                .first()
+            )
+            if row:
+                if not data.get("max_share_url") and row.get("max_share_url"):
+                    data["max_share_url"] = row["max_share_url"]
+                if not data.get("vk_post_id") and row.get("vk_post_id"):
+                    data["vk_post_id"] = row["vk_post_id"]
+                if not data.get("vk_post_link") and row.get("vk_post_link"):
+                    data["vk_post_link"] = row["vk_post_link"]
     return ProductSchema(**data)
+
+
+def _fetch_product_row(db: Session, product_id: int) -> Optional[dict]:
+    row = (
+        db.execute(
+            text("SELECT * FROM products WHERE id = :id LIMIT 1"),
+            {"id": product_id},
+        )
+        .mappings()
+        .first()
+    )
+    return dict(row) if row else None
+
+
+def _row_as_product(row: dict):
+    from types import SimpleNamespace
+    return SimpleNamespace(**row)
 
 
 @router.get("/", response_model=ProductList)
@@ -55,27 +87,34 @@ def get_products(
     db: Session = Depends(get_db)
 ):
     """Get list of products with optional filtering."""
-    query = db.query(Product)
-    
-    # Фильтр по статусу
+    where = ["1=1"]
+    params: dict = {"skip": skip, "limit": limit}
     if status_filter:
-        query = query.filter(Product.status == status_filter)
-    
-    # Поиск по названию
+        where.append("status = :status_filter")
+        params["status_filter"] = status_filter
     if search:
-        query = query.filter(Product.name.ilike(f"%{search}%"))
-    
-    # Фильтр по подборке (новые товары)
+        where.append("name ILIKE :search")
+        params["search"] = f"%{search}%"
     if collection_name:
-        query = query.filter(Product.collection_name == collection_name)
-    
-    # Получаем общее количество
-    total = query.count()
-    
-    # Применяем пагинацию
-    products = query.order_by(Product.created_at.desc()).offset(skip).limit(limit).all()
-    
-    return ProductList(items=products, total=total)
+        where.append("collection_name = :collection_name")
+        params["collection_name"] = collection_name
+    where_sql = " AND ".join(where)
+    total = db.execute(
+        text(f"SELECT COUNT(*) FROM products WHERE {where_sql}"), params
+    ).scalar() or 0
+    rows = (
+        db.execute(
+            text(
+                f"SELECT * FROM products WHERE {where_sql} "
+                "ORDER BY created_at DESC OFFSET :skip LIMIT :limit"
+            ),
+            params,
+        )
+        .mappings()
+        .all()
+    )
+    items = [ProductSchema.model_validate(dict(r)) for r in rows]
+    return ProductList(items=items, total=total)
 
 
 @router.post("/sync-from-vk")
@@ -88,10 +127,12 @@ def sync_products_from_vk():
 @router.get("/{product_id}", response_model=ProductSchema)
 def get_product(product_id: int, db: Session = Depends(get_db)):
     """Get product by ID."""
-    product = db.query(Product).filter(Product.id == product_id).first()
-    if not product:
+    from app.db.product_queries import fetch_product_detail_row_by_id
+
+    row = fetch_product_detail_row_by_id(product_id)
+    if not row:
         raise HTTPException(status_code=404, detail="Product not found")
-    return product_to_schema(db, product)
+    return ProductSchema.model_validate(row)
 
 
 @router.get("/post/{post_id}", response_model=ProductSchema)
@@ -111,10 +152,12 @@ async def update_product_status(
 ):
     """Update product status (active, unavailable, deleted); ВК и Авито — по возможности."""
     import logging
+    from datetime import datetime, timezone
 
     logger = logging.getLogger(__name__)
-    product = db.query(Product).filter(Product.id == product_id).first()
-    if not product:
+
+    row = _fetch_product_row(db, product_id)
+    if not row:
         raise HTTPException(status_code=404, detail="Product not found")
 
     valid_statuses = ["active", "unavailable", "deleted"]
@@ -124,25 +167,37 @@ async def update_product_status(
             detail=f"Invalid status. Must be one of: {', '.join(valid_statuses)}",
         )
 
-    old_status = product.status
-    product.status = status_update.status
-
+    old_status = row.get("status")
+    now = datetime.now(timezone.utc)
+    archived_at = row.get("archived_at")
     if status_update.status == "unavailable" and old_status == "active":
-        from datetime import datetime, timezone
-
-        product.archived_at = datetime.now(timezone.utc)
+        archived_at = now
     elif status_update.status == "active" and old_status == "unavailable":
-        product.archived_at = None
-        if product.avito_item_id:
+        archived_at = None
+        if row.get("avito_item_id"):
             try:
                 from app.integrations.avito import archive_queue as avito_archive_queue
 
-                avito_archive_queue.cancel_pending_product(int(product.id))
+                avito_archive_queue.cancel_pending_product(int(product_id))
             except Exception:
                 pass
 
+    db.execute(
+        text(
+            "UPDATE products SET status = :status, archived_at = :archived_at, "
+            "updated_at = :updated_at WHERE id = :id"
+        ),
+        {
+            "status": status_update.status,
+            "archived_at": archived_at,
+            "updated_at": now,
+            "id": product_id,
+        },
+    )
+
     vk_sync = PricePlatformSync(status="skipped")
-    if status_update.sync_platforms and product.vk_product_id:
+    vk_product_id = row.get("vk_product_id")
+    if status_update.sync_platforms and vk_product_id:
         try:
             from app.utils.vk_client import get_market_vk_session, resolved_vk_group_id_int
 
@@ -152,18 +207,18 @@ async def update_product_status(
             if status_update.status == "deleted":
                 vk.market.delete(
                     owner_id=owner_id,
-                    item_id=product.vk_product_id,
+                    item_id=vk_product_id,
                 )
             elif status_update.status == "unavailable":
                 vk.market.edit(
                     owner_id=owner_id,
-                    item_id=product.vk_product_id,
+                    item_id=vk_product_id,
                     deleted=1,
                 )
             elif status_update.status == "active" and old_status in ["unavailable", "deleted"]:
                 vk.market.edit(
                     owner_id=owner_id,
-                    item_id=product.vk_product_id,
+                    item_id=vk_product_id,
                     deleted=0,
                 )
             vk_sync = PricePlatformSync(status="ok")
@@ -172,22 +227,25 @@ async def update_product_status(
             vk_sync = PricePlatformSync(status="error", detail=str(e)[:200])
 
     avito_sync = PricePlatformSync(status="skipped")
-    if status_update.sync_platforms and product.avito_item_id:
+    avito_item_id = row.get("avito_item_id")
+    post_id = row.get("post_id")
+    product_name = row.get("name") or ""
+    if status_update.sync_platforms and avito_item_id:
         if status_update.status in ("unavailable", "deleted"):
             from app.integrations.avito import archive_queue as avito_archive_queue
 
-            item_id = int(str(product.avito_item_id).strip())
-            if not product.post_id:
+            item_id = int(str(avito_item_id).strip())
+            if not post_id:
                 avito_sync = PricePlatformSync(
                     status="skipped",
                     detail="Нет поста для автозагрузки — снимите объявление вручную в ЛК Авито",
                 )
             else:
                 _created, detail = avito_archive_queue.enqueue(
-                    product_id=int(product.id),
+                    product_id=int(product_id),
                     avito_item_id=item_id,
-                    post_id=str(product.post_id),
-                    product_name=product.name,
+                    post_id=str(post_id),
+                    product_name=product_name,
                 )
                 avito_sync = PricePlatformSync(status="pending", detail=detail)
         else:
@@ -197,9 +255,8 @@ async def update_product_status(
             )
 
     db.commit()
-    db.refresh(product)
-
-    schema = product_to_schema(db, product)
+    updated_row = _fetch_product_row(db, product_id) or row
+    schema = product_to_schema(db, _row_as_product(updated_row))
     sync = PriceSyncReport(
         vk=vk_sync,
         avito=avito_sync,
@@ -286,8 +343,8 @@ async def update_product_price(
     import re
 
     logger = logging.getLogger(__name__)
-    product = db.query(Product).filter(Product.id == product_id).first()
-    if not product:
+    row = _fetch_product_row(db, product_id)
+    if not row:
         raise HTTPException(status_code=404, detail="Product not found")
 
     new_price = price_data.get("price")
@@ -306,12 +363,13 @@ async def update_product_price(
         raise HTTPException(status_code=400, detail="Invalid price format")
 
     vk_sync = PricePlatformSync(status="skipped")
-    if sync_platforms and product.vk_product_id:
+    vk_product_id = row.get("vk_product_id")
+    if sync_platforms and vk_product_id:
         try:
             from app.workers.vk.product_publisher import VKProductPublisher
 
             publisher = VKProductPublisher()
-            ok = await publisher.update_product_price(product.vk_product_id, price_value)
+            ok = await publisher.update_product_price(vk_product_id, price_value)
             vk_sync = PricePlatformSync(
                 status="ok" if ok else "error",
                 detail=None if ok else "Не удалось обновить цену в VK Market",
@@ -321,22 +379,26 @@ async def update_product_price(
             vk_sync = PricePlatformSync(status="error", detail=str(e)[:200])
 
     avito_sync = PricePlatformSync(status="skipped")
-    if sync_platforms and product.avito_item_id:
+    avito_item_id = row.get("avito_item_id")
+    if sync_platforms and avito_item_id:
         try:
             from app.integrations.avito import actions as avito_actions
 
-            item_id = int(str(product.avito_item_id).strip())
+            item_id = int(str(avito_item_id).strip())
             await avito_actions.update_item_price_rub(item_id, price_value)
             avito_sync = PricePlatformSync(status="ok")
         except Exception as e:
             logger.error("Error updating product price in Avito: %s", e)
             avito_sync = PricePlatformSync(status="error", detail=str(e)[:500])
 
-    product.price = new_price
+    db.execute(
+        text("UPDATE products SET price = :price, updated_at = NOW() WHERE id = :id"),
+        {"price": new_price, "id": product_id},
+    )
     db.commit()
-    db.refresh(product)
 
-    schema = product_to_schema(db, product)
+    row = _fetch_product_row(db, product_id)
+    schema = product_to_schema(db, _row_as_product(row))
     sync = PriceSyncReport(vk=vk_sync, avito=avito_sync, database=PricePlatformSync(status="ok"))
     return ProductPriceUpdateResponse(product=schema, price_sync=sync)
 
@@ -348,8 +410,8 @@ def update_product_availability(
     db: Session = Depends(get_db)
 ):
     """Update product availability_status (available, on_order)."""
-    product = db.query(Product).filter(Product.id == product_id).first()
-    if not product:
+    row = _fetch_product_row(db, product_id)
+    if not row:
         raise HTTPException(status_code=404, detail="Product not found")
     if data.availability_status is not None:
         if data.availability_status not in ("available", "on_order"):
@@ -357,10 +419,16 @@ def update_product_availability(
                 status_code=400,
                 detail="availability_status must be 'available' or 'on_order'"
             )
-        product.availability_status = data.availability_status
-    db.commit()
-    db.refresh(product)
-    return product_to_schema(db, product)
+        db.execute(
+            text(
+                "UPDATE products SET availability_status = :availability_status, "
+                "updated_at = NOW() WHERE id = :id"
+            ),
+            {"availability_status": data.availability_status, "id": product_id},
+        )
+        db.commit()
+    row = _fetch_product_row(db, product_id)
+    return product_to_schema(db, _row_as_product(row))
 
 
 @router.put("/{product_id}/avito_link", response_model=ProductSchema)

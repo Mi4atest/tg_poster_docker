@@ -17,17 +17,7 @@ def init_db():
     # Проверяем и применяем необходимые изменения схемы
     ensure_database_schema()
     
-    # Create session
-    db = SessionLocal()
-    
-    try:
-        # Check if tables exist
-        if db.query(Post).first() is None:
-            logger.info("Database initialized successfully")
-        else:
-            logger.info("Database already contains data")
-    finally:
-        db.close()
+    logger.info("Database schema ready")
 
 if __name__ == "__main__":
     logger.info("Creating initial data")

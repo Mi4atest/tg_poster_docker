@@ -8,7 +8,7 @@ import re
 import json
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone
-from typing import List, Optional, Dict, Tuple
+from typing import List, Optional, Dict, Tuple, Any
 
 from vk_api.exceptions import ApiError
 
@@ -22,7 +22,8 @@ from app.config.settings import (
     VK_UPLOAD_STRICT_MODE,
 )
 from app.db.database import SessionLocal
-from app.api.models.post import Post, PublicationLog
+from app.db.post_queries import fetch_post, fetch_product_row_by_post_id
+from app.api.models.post import PublicationLog
 from app.api.models.product import Product
 from app.utils.product_parser import parse_product_data
 from app.utils.vk_client import (
@@ -328,7 +329,7 @@ class VKProductPublisher:
         return None
 
     async def upload_product_photos(
-        self, photo_file_ids: List[str], post: Post
+        self, photo_file_ids: List[str], post: Any
     ) -> Tuple[List[Dict], List[str]]:
         """
         Загрузить фотографии товара на сервер ВК (первые 5).
@@ -462,7 +463,7 @@ class VKProductPublisher:
 
         return photo_data_list, failed_file_ids
 
-    async def upload_product_video(self, video_file_id: str, post: Post) -> Optional[int]:
+    async def upload_product_video(self, video_file_id: str, post: Any) -> Optional[int]:
         """
         Загрузить видео товара на сервер ВК.
 
@@ -678,15 +679,13 @@ class VKProductPublisher:
 
         db = SessionLocal()
         try:
-            # Получаем пост из базы
-            post = db.query(Post).filter(Post.id == post_id).first()
+            post = fetch_post(db, post_id)
             if not post:
                 logger.error(f"Post {post_id} not found")
                 return False
 
-            # Проверяем, не опубликован ли уже товар для этого поста
-            existing_product = db.query(Product).filter(Product.post_id == post_id).first()
-            if existing_product and existing_product.vk_product_id:
+            existing_product = fetch_product_row_by_post_id(db, post_id)
+            if existing_product and existing_product.get("vk_product_id"):
                 logger.info(f"Product already published for post {post_id}")
                 return True
 

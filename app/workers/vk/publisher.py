@@ -1,8 +1,10 @@
 import vk_api
 import logging
+import asyncio
 import aiohttp
 import requests
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 from datetime import datetime, timezone
 
 from app.config.settings import (
@@ -13,8 +15,8 @@ from app.config.settings import (
 )
 from app.utils.vk_client import get_community_vk_session, resolved_vk_group_id_int
 from app.db.database import SessionLocal
-from app.api.models.post import Post, PublicationLog
-from app.api.models.product import Product
+from app.db.post_queries import fetch_post, fetch_product_row_by_post_id, insert_publication_log
+from app.api.models.post import PublicationLog
 from app.utils.text_formatter import format_for_vk
 
 logger = logging.getLogger(__name__)
@@ -122,12 +124,68 @@ class VKPublisher:
             if bot:
                 await bot.session.close()
 
+    def _upload_photo_sync(self, temp_file: str):
+        """Синхронная загрузка фото на стену VK (вызывать через asyncio.to_thread)."""
+        try:
+            return self.upload.photo_wall(temp_file, group_id=self.group_id)
+        except Exception as e:
+            logger.error(f"Error using photo_wall: {str(e)}")
+            try:
+                albums = self.vk.photos.getAlbums(owner_id=-self.group_id)
+                album_id = None
+                for album in albums.get("items", []):
+                    if album.get("title") == "Wall Photos":
+                        album_id = album.get("id")
+                        break
+                if not album_id:
+                    album = self.vk.photos.createAlbum(
+                        title="Wall Photos",
+                        group_id=self.group_id,
+                        description="Photos for wall posts",
+                    )
+                    album_id = album.get("id")
+                return self.upload.photo(
+                    temp_file,
+                    album_id=album_id,
+                    group_id=self.group_id,
+                )
+            except Exception as e2:
+                logger.error(f"Error with fallback photo upload: {str(e2)}")
+                upload_server = self.vk.photos.getWallUploadServer(group_id=self.group_id)
+                with open(temp_file, "rb") as f:
+                    response = requests.post(
+                        upload_server["upload_url"], files={"photo": f}
+                    ).json()
+                return self.vk.photos.saveWallPhoto(
+                    group_id=self.group_id,
+                    photo=response["photo"],
+                    server=response["server"],
+                    hash=response["hash"],
+                )
+
+    def _upload_video_sync(self, temp_file: str, name: str, description: str):
+        return self.upload.video(
+            video_file=temp_file,
+            name=name,
+            description=description,
+            group_id=self.group_id,
+        )
+
+    def _wall_post_sync(self, text: str, attachments: str):
+        return self.vk.wall.post(
+            owner_id=-self.group_id,
+            from_group=1,
+            message=text,
+            attachments=attachments,
+        )
+
     async def publish_post(self, post_id, signature_enabled: bool = True):
         """Publish a post to VK."""
         db = SessionLocal()
         try:
-            # Get post from database
-            post = db.query(Post).filter(Post.id == post_id).first()
+
+            post = fetch_post(db, post_id)
+
 
             if not post:
                 logger.error(f"Post {post_id} not found")
@@ -137,8 +195,7 @@ class VKPublisher:
             if post.is_published_vk:
                 logger.info(f"Post {post_id} already published to VK, republishing")
 
-            # Get post text and format it
-            text = format_for_vk(post.text, signature_enabled=signature_enabled)
+            formatted_text = format_for_vk(post.text, signature_enabled=signature_enabled)
 
             # Download and upload photos
             photo_attachments = []
@@ -163,60 +220,10 @@ class VKPublisher:
                     with open(temp_file, "wb") as f:
                         f.write(photo_data)
 
-                    # Upload photo to VK wall
-                    try:
-                        # Try using photo_wall method
-                        upload_result = self.upload.photo_wall(
-                            temp_file,
-                            group_id=self.group_id,
-                        )
-                    except Exception as e:
-                        logger.error(f"Error using photo_wall: {str(e)}")
-                        # Fallback to regular photo upload
-                        try:
-                            # Create an album if needed
-                            albums = self.vk.photos.getAlbums(owner_id=-self.group_id)
-                            album_id = None
-
-                            # Look for a "Wall Photos" album
-                            for album in albums.get("items", []):
-                                if album.get("title") == "Wall Photos":
-                                    album_id = album.get("id")
-                                    break
-
-                            # If no album found, create one
-                            if not album_id:
-                                album = self.vk.photos.createAlbum(
-                                    title="Wall Photos",
-                                    group_id=self.group_id,
-                                    description="Photos for wall posts",
-                                )
-                                album_id = album.get("id")
-
-                            # Upload to the album
-                            upload_result = self.upload.photo(
-                                temp_file,
-                                album_id=album_id,
-                                group_id=self.group_id,
-                            )
-                        except Exception as e2:
-                            logger.error(f"Error with fallback photo upload: {str(e2)}")
-                            # Last resort - try uploading to wall directly
-                            upload_server = self.vk.photos.getWallUploadServer(group_id=self.group_id)
-
-                            # Upload photo to server
-                            with open(temp_file, 'rb') as f:
-                                response = requests.post(upload_server['upload_url'], files={'photo': f}).json()
-
-                            # Save photo to wall
-                            save_result = self.vk.photos.saveWallPhoto(
-                                group_id=self.group_id,
-                                photo=response["photo"],
-                                server=response["server"],
-                                hash=response["hash"],
-                            )
-
-                            upload_result = save_result
+                    # Upload photo to VK wall (в отдельном потоке — не блокировать бота)
+                    upload_result = await asyncio.to_thread(
+                        self._upload_photo_sync, temp_file
+                    )
 
                     # Format attachment string
                     for photo in upload_result:
@@ -247,11 +254,11 @@ class VKPublisher:
                         f.write(video_data)
 
                     # Upload video to VK
-                    upload_result = self.upload.video(
-                        video_file=temp_file,
-                        name=post.name,
-                        description=text[:200] + "..." if len(text) > 200 else text,
-                        group_id=self.group_id,
+                    upload_result = await asyncio.to_thread(
+                        self._upload_video_sync,
+                        temp_file,
+                        post.name,
+                        formatted_text[:200] + "..." if len(formatted_text) > 200 else formatted_text,
                     )
 
                     # Format attachment string
@@ -278,15 +285,11 @@ class VKPublisher:
                 if get_settings_service().is_vk_market_publish_allowed():
                     product_ok = await publish_product_to_vk(post_id)
                     if product_ok and VK_WALL_ATTACH_MARKET:
-                        # Товар создан в отдельной сессии и уже закоммичен —
-                        # читаем его свежим запросом, чтобы получить vk_product_id.
-                        db.expire_all()
-                        product = (
-                            db.query(Product).filter(Product.post_id == post_id).first()
-                        )
-                        if product and product.vk_product_id:
+                        product = fetch_product_row_by_post_id(db, post_id)
+                        vk_product_id = product.get("vk_product_id") if product else None
+                        if vk_product_id:
                             market_attachment = (
-                                f"market-{self.group_id}_{product.vk_product_id}"
+                                f"market-{self.group_id}_{vk_product_id}"
                             )
                             logger.info(
                                 f"Attaching market item to wall post {post_id}: {market_attachment}"
@@ -307,11 +310,8 @@ class VKPublisher:
             # Post to VK wall. Если market-вложение отклонено API — повторяем без него,
             # чтобы не потерять публикацию в ленте.
             try:
-                post_result = self.vk.wall.post(
-                    owner_id=-self.group_id,
-                    from_group=1,  # Post as group
-                    message=text,
-                    attachments=attachments
+                post_result = await asyncio.to_thread(
+                    self._wall_post_sync, formatted_text, attachments
                 )
             except Exception as e:
                 if market_attachment:
@@ -320,26 +320,36 @@ class VKPublisher:
                         f"({str(e)}); retrying without market attachment"
                     )
                     attachments = ",".join(media_attachments)
-                    post_result = self.vk.wall.post(
-                        owner_id=-self.group_id,
-                        from_group=1,
-                        message=text,
-                        attachments=attachments
+                    post_result = await asyncio.to_thread(
+                        self._wall_post_sync, formatted_text, attachments
                     )
                     market_attachment = None
                 else:
                     raise
 
-            # Сохраняем ID поста и ссылку
-            vk_post_id = post_result.get('post_id')
+            vk_post_id = post_result.get("post_id")
+            vk_post_id_str = None
+            vk_post_link = None
             if vk_post_id:
                 owner_id = -self.group_id
-                post.vk_post_id = f"{owner_id}_{vk_post_id}"
-                post.vk_post_link = f"https://vk.com/wall{owner_id}_{vk_post_id}"
+                vk_post_id_str = f"{owner_id}_{vk_post_id}"
+                vk_post_link = f"https://vk.com/wall{owner_id}_{vk_post_id}"
 
-            # Update post status in database
-            post.is_published_vk = True
-            post.published_vk_at = datetime.now(timezone.utc)
+            now = datetime.now(timezone.utc)
+            db.execute(
+                text(
+                    "UPDATE posts SET is_published_vk = true, published_vk_at = :now, "
+                    "vk_post_id = COALESCE(:vk_post_id, vk_post_id), "
+                    "vk_post_link = COALESCE(:vk_post_link, vk_post_link), "
+                    "updated_at = NOW() WHERE id = :id"
+                ),
+                {
+                    "id": post_id,
+                    "now": now,
+                    "vk_post_id": vk_post_id_str,
+                    "vk_post_link": vk_post_link,
+                },
+            )
 
             log_message = (
                 f"Published to VK (photos {len(photo_attachments)}/{total_photos}, "
@@ -350,13 +360,7 @@ class VKPublisher:
             if failed_video_ids:
                 log_message += f"; failed_video_ids={','.join(failed_video_ids)}"
 
-            log = PublicationLog(
-                post_id=post.id,
-                platform="vk",
-                status="success",
-                message=log_message,
-            )
-            db.add(log)
+            insert_publication_log(db, post_id, "vk", "success", log_message)
 
             db.commit()
 
@@ -369,14 +373,7 @@ class VKPublisher:
         except Exception as e:
             logger.error(f"Error publishing post {post_id} to VK: {str(e)}")
 
-            # Add error log
-            log = PublicationLog(
-                post_id=post_id,
-                platform="vk",
-                status="error",
-                message=str(e)
-            )
-            db.add(log)
+            insert_publication_log(db, post_id, "vk", "error", str(e))
             db.commit()
 
             return False

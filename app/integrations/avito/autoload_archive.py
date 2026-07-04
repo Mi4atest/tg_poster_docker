@@ -2,9 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import time
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -22,31 +20,6 @@ from app.integrations.avito.publish_autoload import _address, _contact_phone, _p
 from app.workers.avito.publisher import _keep_alive_avito_post_ids, _photos_list
 
 logger = logging.getLogger(__name__)
-
-_DEBUG_LOG_PATH = "/app/.cursor/debug-f37f41.log"
-
-
-def _agent_debug_log(location: str, message: str, data: dict, hypothesis_id: str) -> None:
-    # #region agent log
-    try:
-        with open(_DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(
-                json.dumps(
-                    {
-                        "sessionId": "f37f41",
-                        "location": location,
-                        "message": message,
-                        "data": data,
-                        "timestamp": int(time.time() * 1000),
-                        "hypothesisId": hypothesis_id,
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
-    except OSError:
-        pass
-    # #endregion
 
 
 def _post_payload(post) -> Dict[str, Any]:
@@ -225,19 +198,6 @@ async def archive_item_via_autoload(
         )
 
     ad_id = sanitize_ad_id(str(post.id))
-    # #region agent log
-    _agent_debug_log(
-        "autoload_archive.py:archive_item_via_autoload",
-        "feed built",
-        {
-            "item_id": item_id,
-            "strategy": strategy,
-            "ads_in_feed": xml.count("<Ad>"),
-            "keep_alive": len(keep),
-        },
-        "H3",
-    )
-    # #endregion
 
     save_feed(
         xml,
@@ -267,14 +227,6 @@ async def archive_item_via_autoload(
 
     report = await autoload_actions.fetch_autoload_item_report(ad_id)
     report_errs = _report_errors(report, ad_id)
-    # #region agent log
-    _agent_debug_log(
-        "autoload_archive.py:archive_item_via_autoload",
-        "autoload report",
-        {"item_id": item_id, "strategy": strategy, "report_errors": report_errs[:5]},
-        "H3",
-    )
-    # #endregion
 
     info = await fetch_item_info(item_id)
     status = str(info.get("status") or "")

@@ -216,37 +216,56 @@ class PriceSyncService:
                 self._queue.task_done()
 
     def _load_product_dict(self, product_id: int) -> Optional[dict]:
+        from sqlalchemy import text
         from app.db.database import SessionLocal
-        from app.api.models.product import Product
-        from app.api.models.post import Post
 
         db = SessionLocal()
         try:
-            product = db.query(Product).filter(Product.id == product_id).first()
-            if not product:
+            row = (
+                db.execute(
+                    text("SELECT * FROM products WHERE id = :id LIMIT 1"),
+                    {"id": product_id},
+                )
+                .mappings()
+                .first()
+            )
+            if not row:
                 return None
+            data = dict(row)
+            post_id = data.get("post_id")
             vk_post_id = None
             vk_post_link = None
-            if product.post_id:
-                post = db.query(Post).filter(Post.id == product.post_id).first()
-                if post:
-                    vk_post_id = post.vk_post_id
-                    vk_post_link = post.vk_post_link
+            if post_id:
+                post_row = (
+                    db.execute(
+                        text(
+                            "SELECT vk_post_id, vk_post_link FROM posts "
+                            "WHERE id = :id LIMIT 1"
+                        ),
+                        {"id": post_id},
+                    )
+                    .mappings()
+                    .first()
+                )
+                if post_row:
+                    vk_post_id = post_row.get("vk_post_id")
+                    vk_post_link = post_row.get("vk_post_link")
             return {
-                "id": product.id,
-                "name": product.name,
-                "price": product.price,
-                "telegram_link": product.telegram_link,
-                "max_link": product.max_link,
-                "instagram_link": product.instagram_link,
-                "instagram_media_id": product.instagram_media_id,
-                "post_id": product.post_id,
-                "vk_product_id": product.vk_product_id,
+                "id": data["id"],
+                "name": data.get("name"),
+                "price": data.get("price"),
+                "telegram_link": data.get("telegram_link"),
+                "max_link": data.get("max_link"),
+                "max_share_url": data.get("max_share_url"),
+                "instagram_link": data.get("instagram_link"),
+                "instagram_media_id": data.get("instagram_media_id"),
+                "post_id": post_id,
+                "vk_product_id": data.get("vk_product_id"),
                 "vk_post_id": vk_post_id,
                 "vk_post_link": vk_post_link,
-                "avito_item_id": product.avito_item_id,
-                "collection_name": product.collection_name,
-                "custom_button_id": product.custom_button_id,
+                "avito_item_id": data.get("avito_item_id"),
+                "collection_name": data.get("collection_name"),
+                "custom_button_id": data.get("custom_button_id"),
             }
         finally:
             db.close()
@@ -295,7 +314,10 @@ class PriceSyncService:
         else:
             pr.avito = None
 
-        if product_dict.get("telegram_link"):
+        # Новые товары из подборок ВК не имеют отдельных постов в ТГ — только список наличия.
+        if is_new_product_branch(product_dict):
+            pr.telegram = None
+        elif product_dict.get("telegram_link"):
             pr.telegram = await update_telegram_post_price(
                 product_dict["telegram_link"],
                 product_dict.get("price") or "",
@@ -394,19 +416,19 @@ class PriceSyncService:
         else:
             pr.avito = None
 
-        if job.mark_telegram_enabled and product_dict.get("telegram_link"):
+        if job.mark_telegram_enabled and not is_new_product_branch(product_dict) and product_dict.get("telegram_link"):
             pr.telegram = await mark_telegram_post_unavailable(product_dict["telegram_link"])
         else:
             pr.telegram = None
 
         max_link = resolve_product_max_link(product_dict)
-        if job.mark_telegram_enabled and max_link:
+        if job.mark_telegram_enabled and not is_new_product_branch(product_dict) and max_link:
             pr.max_ = await mark_max_post_unavailable(max_link)
         else:
             pr.max_ = None
 
         ig_media_id = resolve_product_instagram_media_id(product_dict)
-        if job.mark_telegram_enabled and ig_media_id:
+        if job.mark_telegram_enabled and not is_new_product_branch(product_dict) and ig_media_id:
             pr.instagram = await mark_instagram_post_unavailable(product_dict)
         else:
             pr.instagram = None

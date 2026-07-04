@@ -12,7 +12,9 @@ from sqlalchemy.orm import Session
 from instagrapi import Client
 
 from app.db.database import SessionLocal
-from app.api.models.post import Post, PublicationLog
+from app.db.post_queries import fetch_post, insert_publication_log
+from app.api.models.post import PublicationLog
+from sqlalchemy import text
 from app.config.settings import MEDIA_DIR
 from app.utils.text_formatter import format_for_instagram
 from app.workers.instagram.graph_publisher import InstagramGraphPublisher
@@ -278,7 +280,7 @@ class InstagramPublisher:
 
         try:
             # Получаем пост из базы данных
-            post = db.query(Post).filter(Post.id == post_id).first()
+            post = fetch_post(db, post_id)
 
             if not post:
                 logger.error(f"Пост с ID {post_id} не найден")
@@ -547,19 +549,21 @@ class InstagramPublisher:
                     except Exception as e:
                         logger.warning(f"Ошибка при имитации активности после публикации: {str(e)}")
 
-                # Обновляем статус публикации в базе данных
-                post.is_published_instagram = True
-                post.published_instagram_at = datetime.now(timezone.utc)
-
-                # Добавляем лог об успешной публикации
-                log = PublicationLog(
-                    post_id=post_id,
-                    platform="instagram",
-                    status="success",
-                    message="Пост успешно опубликован в Instagram с имитацией человеческого поведения"
+                now = datetime.now(timezone.utc)
+                db.execute(
+                    text(
+                        "UPDATE posts SET is_published_instagram = true, "
+                        "published_instagram_at = :now, updated_at = NOW() WHERE id = :id"
+                    ),
+                    {"id": post_id, "now": now},
                 )
-
-                db.add(log)
+                insert_publication_log(
+                    db,
+                    post_id,
+                    "instagram",
+                    "success",
+                    "Пост успешно опубликован в Instagram с имитацией человеческого поведения",
+                )
                 db.commit()
 
                 logger.info(f"Пост с ID {post_id} успешно опубликован в Instagram с имитацией человеческого поведения")

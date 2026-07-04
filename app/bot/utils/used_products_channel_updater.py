@@ -3,59 +3,27 @@
 Тот же список, что в кнопке «Список б/у товаров», плюс блок «Новинки» (24 ч).
 Редактируются только существующие сообщения по USED_PRODUCTS_LIST_MESSAGE_IDS, новые не создаются.
 """
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 
-from sqlalchemy.orm import joinedload
-from sqlalchemy import or_
-
 from app.db.database import SessionLocal
-from app.api.models.product import Product
-from app.api.models.post import Post
+from app.db.product_queries import fetch_used_products_for_list
 from app.services.settings_service import get_settings_service
 from app.bot.utils.product_list_formatter import format_full_products_list
 from app.utils.product_formatter import format_product_name_for_list
 
 logger = logging.getLogger(__name__)
 
-NEW_COLLECTION_VALUES = {"iPhone новые", "Airpods", "Apple Watch", "iPad"}
-USED_EXCLUDED_COLLECTION_VALUES = NEW_COLLECTION_VALUES | {"custom"}
 TELEGRAM_MESSAGE_MAX_LENGTH = 4080
 
 
 def _get_used_products_from_db() -> List[Dict[str, Any]]:
-    """
-    Возвращает список б/у товаров (active, не из коллекций новых) с полями для списка
-    и published_telegram_at из связанного поста.
-    """
+    """Возвращает список б/у товаров (raw SQL, без ORM lazy-load)."""
     db = SessionLocal()
     try:
-        rows = (
-            db.query(Product)
-            .options(joinedload(Product.post))
-            .filter(Product.status == "active")
-            .filter(
-                or_(
-                    Product.collection_name.is_(None),
-                    ~Product.collection_name.in_(USED_EXCLUDED_COLLECTION_VALUES),
-                )
-            )
-            .order_by(Product.id)
-            .all()
-        )
-        out = [
-            {
-                "id": p.id,
-                "name": p.name,
-                "price": p.price or "Цена не указана",
-                "telegram_link": p.telegram_link,
-                "vk_product_link": p.vk_product_link,
-                "published_telegram_at": p.post.published_telegram_at if p.post else None,
-            }
-            for p in rows
-        ]
-        return out
+        return fetch_used_products_for_list(db)
     finally:
         db.close()
 
@@ -152,7 +120,7 @@ async def update_used_products_list_in_channel(bot) -> bool:
         logger.debug("USED_PRODUCTS_LIST: USED_PRODUCTS_LIST_MESSAGE_IDS not set, skip")
         return False
 
-    products = _get_used_products_from_db()
+    products = await asyncio.to_thread(_get_used_products_from_db)
     full_text = _build_full_text(products)
     chunks = _split_text_into_chunks(full_text)
     if not chunks:

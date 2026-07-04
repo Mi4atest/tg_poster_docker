@@ -1,7 +1,6 @@
 """Высокоуровневые операции Авито: токен, user_id, цена, архив."""
 from __future__ import annotations
 
-import json
 import logging
 import time
 from typing import Any, Dict, Optional, Tuple
@@ -11,30 +10,6 @@ from app.services.settings_service import get_settings_service
 
 logger = logging.getLogger(__name__)
 
-_DEBUG_LOG_PATH = "/app/.cursor/debug-f37f41.log"
-
-
-def _agent_debug_log(location: str, message: str, data: dict, hypothesis_id: str) -> None:
-    # #region agent log
-    try:
-        with open(_DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(
-                json.dumps(
-                    {
-                        "sessionId": "f37f41",
-                        "location": location,
-                        "message": message,
-                        "data": data,
-                        "timestamp": int(time.time() * 1000),
-                        "hypothesisId": hypothesis_id,
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
-    except OSError:
-        pass
-    # #endregion
 
 class AvitoArchiveNotAvailableError(Exception):
     """Снятие с публикации недоступно ни через остатки (stock-management), ни через archive POST."""
@@ -146,28 +121,12 @@ async def archive_item(item_id: int, *, post=None, db=None) -> Dict[str, Any]:
 
     Если объявление уже ``old``/``removed`` — только ответ getItemInfo.
     """
-    # #region agent log
-    _agent_debug_log(
-        "actions.py:archive_item:entry",
-        "archive_item start",
-        {"item_id": item_id, "has_post": post is not None, "has_db": db is not None},
-        "H4",
-    )
-    # #endregion
     token = await get_access_token()
     user_id = await get_avito_user_id()
     info = await avito_http.fetch_item(token, user_id, item_id)
     if not isinstance(info, dict):
         info = {}
     status = info.get("status")
-    # #region agent log
-    _agent_debug_log(
-        "actions.py:archive_item:item_info",
-        "item status before archive",
-        {"item_id": item_id, "status": status},
-        "H5",
-    )
-    # #endregion
     if status in ("old", "removed"):
         return info
 
@@ -176,50 +135,18 @@ async def archive_item(item_id: int, *, post=None, db=None) -> Dict[str, Any]:
     try:
         stock_out = await avito_http.put_stock_management_stocks_zero(token, item_id)
         ok, why, stock_errors = _stock_edit_result_ok(stock_out, item_id)
-        # #region agent log
-        _agent_debug_log(
-            "actions.py:archive_item:stock",
-            "stock-management result",
-            {"item_id": item_id, "ok": ok, "why": why, "stock_errors": stock_errors},
-            "H1",
-        )
-        # #endregion
         if ok:
             return stock_out if isinstance(stock_out, dict) else {}
         stock_note = f"Управление остатками: {why}"
     except avito_http.AvitoApiError as se:
         stock_note = f"Управление остатками: HTTP {se.status}"
-        # #region agent log
-        _agent_debug_log(
-            "actions.py:archive_item:stock_http",
-            "stock-management HTTP error",
-            {"item_id": item_id, "status": se.status},
-            "H1",
-        )
-        # #endregion
 
     archive_http_status: Optional[int] = None
     try:
         out = await avito_http.post_item_archive(token, user_id, item_id)
-        # #region agent log
-        _agent_debug_log(
-            "actions.py:archive_item:archive_post",
-            "POST archive ok",
-            {"item_id": item_id},
-            "H2",
-        )
-        # #endregion
         return out if isinstance(out, dict) else {}
     except avito_http.AvitoApiError as e:
         archive_http_status = e.status
-        # #region agent log
-        _agent_debug_log(
-            "actions.py:archive_item:archive_post",
-            "POST archive failed",
-            {"item_id": item_id, "http_status": e.status},
-            "H2",
-        )
-        # #endregion
         if e.status == 403:
             raise avito_http.AvitoApiError(
                 "Avito: нет права на архивирование (HTTP 403). В кабинете приложения — «Запросить доступ» к API "
@@ -239,24 +166,8 @@ async def archive_item(item_id: int, *, post=None, db=None) -> Dict[str, Any]:
             from app.integrations.avito.autoload_archive import archive_item_via_autoload
 
             out = await archive_item_via_autoload(item_id, post, db=db)
-            # #region agent log
-            _agent_debug_log(
-                "actions.py:archive_item:autoload",
-                "autoload archive ok",
-                {"item_id": item_id, "status": out.get("status")},
-                "H3",
-            )
-            # #endregion
             return out
         except AvitoArchiveNotAvailableError as ae:
-            # #region agent log
-            _agent_debug_log(
-                "actions.py:archive_item:autoload",
-                "autoload archive failed",
-                {"item_id": item_id, "detail": str(ae)[:200]},
-                "H3",
-            )
-            # #endregion
             raise AvitoArchiveNotAvailableError(
                 f"{stock_note or 'API archive недоступен'}. {ae}"
             ) from ae

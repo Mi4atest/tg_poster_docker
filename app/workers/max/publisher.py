@@ -4,9 +4,12 @@ import asyncio
 
 import aiohttp
 
-from app.api.models.post import Post, PublicationLog
+from sqlalchemy import text
+
+from app.api.models.post import PublicationLog
 from app.config.settings import MAX_API_BASE_URL, MAX_BOT_TOKEN, TELEGRAM_BOT_TOKEN
 from app.db.database import SessionLocal
+from app.db.post_queries import fetch_post, insert_publication_log
 from app.services.settings_service import get_settings_service
 from app.integrations.max.client import MaxApiClient
 from app.utils.text_formatter import format_for_max, format_for_max_plain
@@ -29,12 +32,12 @@ class MaxPublisher:
             await client.get_me()
             await client.get_chat(max_channel_id)
 
-            post = db.query(Post).filter(Post.id == post_id).first()
+            post = fetch_post(db, post_id)
             if not post:
                 logger.error("Post %s not found", post_id)
                 return False
 
-            text = format_for_max(post.text or "", signature_enabled=signature_enabled)
+            formatted_text = format_for_max(post.text or "", signature_enabled=signature_enabled)
             plain_text = format_for_max_plain(post.text or "", signature_enabled=signature_enabled)
             parse_mode = "MarkdownV2"
             message_id = None
@@ -44,11 +47,11 @@ class MaxPublisher:
                 photos = post.photos or []
                 videos = post.videos or []
                 if photos:
-                    media.append({"type": "image", "media": photos[0], "caption": text, "parse_mode": parse_mode})
+                    media.append({"type": "image", "media": photos[0], "caption": formatted_text, "parse_mode": parse_mode})
                     media.extend({"type": "image", "media": item} for item in photos[1:])
                     media.extend({"type": "video", "media": item} for item in videos)
                 elif videos:
-                    media.append({"type": "video", "media": videos[0], "caption": text, "parse_mode": parse_mode})
+                    media.append({"type": "video", "media": videos[0], "caption": formatted_text, "parse_mode": parse_mode})
                     media.extend({"type": "video", "media": item} for item in videos[1:])
 
                 prepared_media: list[dict] = []
@@ -70,7 +73,7 @@ class MaxPublisher:
                         payload = upload_result
                     prepared_item = {"type": m_type, "payload": payload}
                     if idx == 0:
-                        prepared_item["caption"] = text
+                        prepared_item["caption"] = formatted_text
                         prepared_item["parse_mode"] = parse_mode
                     prepared_media.append(prepared_item)
 
@@ -97,7 +100,7 @@ class MaxPublisher:
                 try:
                     resp = await client.send_message(
                         max_channel_id,
-                        text,
+                        formatted_text,
                         parse_mode=parse_mode,
                         disable_web_page_preview=True,
                     )
@@ -110,10 +113,11 @@ class MaxPublisher:
                     )
                 message_id = self._extract_message_id(resp)
 
-            post.is_published_max = True
-            post.published_max_at = datetime.now(timezone.utc)
+            now = datetime.now(timezone.utc)
+            max_link = None
+            max_share_url = None
             if message_id:
-                post.max_link = f"max://channel/{max_channel_id}/{message_id}"
+                max_link = f"max://channel/{max_channel_id}/{message_id}"
                 payloads: list = [resp]
                 try:
                     info = await client.get_message(str(message_id))
@@ -127,43 +131,50 @@ class MaxPublisher:
                     )
                 share_url = resolve_max_channel_share_url(str(max_channel_id), *payloads)
                 if share_url:
-                    post.max_share_url = share_url
+                    max_share_url = share_url
                 try:
-                    from app.api.models.product import Product
-
-                    products_for_post = db.query(Product).filter(Product.post_id == post_id).all()
-                    for product in products_for_post:
-                        product.max_link = post.max_link
-                        if share_url:
-                            product.max_share_url = share_url
+                    db.execute(
+                        text(
+                            "UPDATE products SET max_link = COALESCE(:max_link, max_link), "
+                            "max_share_url = COALESCE(:max_share_url, max_share_url) "
+                            "WHERE post_id = :post_id"
+                        ),
+                        {
+                            "post_id": post_id,
+                            "max_link": max_link,
+                            "max_share_url": max_share_url,
+                        },
+                    )
                 except Exception as sync_err:
-                    logger.warning("Failed to sync max_link to products for post %s: %s", post_id, sync_err)
+                    logger.warning(
+                        "Failed to sync max_link to products for post %s: %s", post_id, sync_err
+                    )
                 if not share_url:
                     logger.info(
                         "Max publish: публичный url не найден (post_id=%s), в Telegram — fallback https://max.ru/c/...",
                         post_id,
                     )
 
-            db.add(
-                PublicationLog(
-                    post_id=post.id,
-                    platform="max",
-                    status="success",
-                    message="Published to Max",
-                )
+            db.execute(
+                text(
+                    "UPDATE posts SET is_published_max = true, published_max_at = :now, "
+                    "max_link = COALESCE(:max_link, max_link), "
+                    "max_share_url = COALESCE(:max_share_url, max_share_url), updated_at = NOW() "
+                    "WHERE id = :id"
+                ),
+                {
+                    "id": post_id,
+                    "now": now,
+                    "max_link": max_link,
+                    "max_share_url": max_share_url,
+                },
             )
+            insert_publication_log(db, post_id, "max", "success", "Published to Max")
             db.commit()
             return True
         except Exception as exc:
             logger.error("Error publishing post %s to Max: %s", post_id, exc)
-            db.add(
-                PublicationLog(
-                    post_id=post_id,
-                    platform="max",
-                    status="error",
-                    message=str(exc),
-                )
-            )
+            insert_publication_log(db, post_id, "max", "error", str(exc))
             db.commit()
             return False
         finally:

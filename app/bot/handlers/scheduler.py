@@ -27,6 +27,7 @@ from app.integrations.avito.archive_queue import (
     reconcile_pending_with_avito,
 )
 from app.integrations.avito.avito_feed_dispatcher import get_queue_summary
+from app.scheduler.queue_ui import queue_item_display_name
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +107,9 @@ async def show_queue_menu(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("queue_platform_"))
 async def show_platform_queue(callback: CallbackQuery):
     """Показать очередь для конкретной платформы."""
+    import time as _time
+
+    _t0 = _time.time()
     try:
         platform = callback.data.replace("queue_platform_", "")
         orchestrator = get_orchestrator(callback.bot)
@@ -142,7 +146,7 @@ async def show_platform_queue(callback: CallbackQuery):
         else:
             text += f"Всего постов: {len(queue_items)}\n\n"
             for i, item in enumerate(queue_items[:10], 1):
-                post_name = item.post.name if item.post else f"Пост {item.post_id[:8]}"
+                post_name = queue_item_display_name(item)
                 status_icon = "⏸" if item.status == "paused" else "⏳" if item.status == "pending" else "🔄"
                 text += f"{i}. {status_icon} {post_name}\n"
             
@@ -201,51 +205,43 @@ async def show_post_queue_actions(callback: CallbackQuery):
     try:
         queue_item_id = int(callback.data.replace("queue_post_", ""))
         orchestrator = get_orchestrator(callback.bot)
-        
-        from app.api.models.post import PublicationQueue
-        from app.db.database import SessionLocal
-        
-        db = SessionLocal()
-        try:
-            queue_item = db.query(PublicationQueue).filter(PublicationQueue.id == queue_item_id).first()
-            if not queue_item:
-                await callback.answer("❌ Запись не найдена", show_alert=True)
-                return
-            
-            post = queue_item.post
-            platform = queue_item.platform
-            
-            platform_names = {
-                "vk": "ВКонтакте",
-                "telegram": "Telegram",
-                "instagram": "Instagram",
-                "max": "Max",
-                "avito": "Авито",
-            }
-            platform_name = platform_names.get(platform, platform)
-            
-            status_names = {
-                "pending": "⏳ Ожидает",
-                "publishing": "🔄 Публикуется",
-                "paused": "⏸ На паузе",
-                "completed": "✅ Завершено",
-                "failed": "❌ Ошибка"
-            }
-            status_name = status_names.get(queue_item.status, queue_item.status)
-            
-            text = f"📋 Пост в очереди\n\n"
-            text += f"📝 {post.name if post else 'Пост'}\n"
-            text += f"📱 Платформа: {platform_name}\n"
-            text += f"📊 Статус: {status_name}\n"
-            
-            if queue_item.error_message:
-                text += f"\n❌ Ошибка: {queue_item.error_message}\n"
-            
-            keyboard = get_post_queue_actions_keyboard(queue_item_id, queue_item.post_id, platform)
-            await safe_edit_message(callback.message, text, reply_markup=keyboard)
-            await callback.answer()
-        finally:
-            db.close()
+
+        queue_item = orchestrator.queue_manager.fetch_queue_item(queue_item_id)
+        if not queue_item:
+            await callback.answer("❌ Запись не найдена", show_alert=True)
+            return
+
+        platform = queue_item.platform
+
+        platform_names = {
+            "vk": "ВКонтакте",
+            "telegram": "Telegram",
+            "instagram": "Instagram",
+            "max": "Max",
+            "avito": "Авито",
+        }
+        platform_name = platform_names.get(platform, platform)
+
+        status_names = {
+            "pending": "⏳ Ожидает",
+            "publishing": "🔄 Публикуется",
+            "paused": "⏸ На паузе",
+            "completed": "✅ Завершено",
+            "failed": "❌ Ошибка",
+        }
+        status_name = status_names.get(queue_item.status, queue_item.status)
+
+        text = f"📋 Пост в очереди\n\n"
+        text += f"📝 {queue_item_display_name(queue_item)}\n"
+        text += f"📱 Платформа: {platform_name}\n"
+        text += f"📊 Статус: {status_name}\n"
+
+        if queue_item.error_message:
+            text += f"\n❌ Ошибка: {queue_item.error_message}\n"
+
+        keyboard = get_post_queue_actions_keyboard(queue_item_id, queue_item.post_id, platform)
+        await safe_edit_message(callback.message, text, reply_markup=keyboard)
+        await callback.answer()
     except Exception as e:
         logger.error(f"Error showing post queue actions: {str(e)}")
         await callback.answer("❌ Ошибка", show_alert=True)
@@ -341,23 +337,15 @@ async def pause_post(callback: CallbackQuery):
     try:
         queue_item_id = int(callback.data.replace("queue_pause_post_", ""))
         orchestrator = get_orchestrator(callback.bot)
-        
-        from app.api.models.post import PublicationQueue
-        from app.db.database import SessionLocal
-        
-        db = SessionLocal()
-        try:
-            queue_item = db.query(PublicationQueue).filter(PublicationQueue.id == queue_item_id).first()
-            if not queue_item:
-                await callback.answer("❌ Запись не найдена", show_alert=True)
-                return
-            
-            orchestrator.pause_post(queue_item.post_id)
-            await callback.answer("⏸ Публикация поста приостановлена")
-            # Обновляем действия с постом
-            await show_post_queue_actions(callback)
-        finally:
-            db.close()
+
+        queue_item = orchestrator.queue_manager.fetch_queue_item(queue_item_id)
+        if not queue_item:
+            await callback.answer("❌ Запись не найдена", show_alert=True)
+            return
+
+        orchestrator.pause_post(queue_item.post_id)
+        await callback.answer("⏸ Публикация поста приостановлена")
+        await show_post_queue_actions(callback)
     except Exception as e:
         logger.error(f"Error pausing post: {str(e)}")
         await callback.answer("❌ Ошибка", show_alert=True)
@@ -369,23 +357,15 @@ async def resume_post(callback: CallbackQuery):
     try:
         queue_item_id = int(callback.data.replace("queue_resume_post_", ""))
         orchestrator = get_orchestrator(callback.bot)
-        
-        from app.api.models.post import PublicationQueue
-        from app.db.database import SessionLocal
-        
-        db = SessionLocal()
-        try:
-            queue_item = db.query(PublicationQueue).filter(PublicationQueue.id == queue_item_id).first()
-            if not queue_item:
-                await callback.answer("❌ Запись не найдена", show_alert=True)
-                return
-            
-            orchestrator.resume_post(queue_item.post_id)
-            await callback.answer("▶️ Публикация поста возобновлена")
-            # Обновляем действия с постом
-            await show_post_queue_actions(callback)
-        finally:
-            db.close()
+
+        queue_item = orchestrator.queue_manager.fetch_queue_item(queue_item_id)
+        if not queue_item:
+            await callback.answer("❌ Запись не найдена", show_alert=True)
+            return
+
+        orchestrator.resume_post(queue_item.post_id)
+        await callback.answer("▶️ Публикация поста возобновлена")
+        await show_post_queue_actions(callback)
     except Exception as e:
         logger.error(f"Error resuming post: {str(e)}")
         await callback.answer("❌ Ошибка", show_alert=True)
@@ -397,27 +377,18 @@ async def cancel_post(callback: CallbackQuery):
     try:
         queue_item_id = int(callback.data.replace("queue_cancel_post_", ""))
         orchestrator = get_orchestrator(callback.bot)
-        
-        from app.api.models.post import PublicationQueue
-        from app.db.database import SessionLocal
-        
-        db = SessionLocal()
-        try:
-            queue_item = db.query(PublicationQueue).filter(PublicationQueue.id == queue_item_id).first()
-            if not queue_item:
-                await callback.answer("❌ Запись не найдена", show_alert=True)
-                return
-            
-            post_id = queue_item.post_id
-            orchestrator.cancel_post(post_id)
-            await callback.answer("✅ Пост возвращён в черновики")
-            
-            # Возвращаемся к очереди платформы
-            platform = queue_item.platform
-            callback.data = f"queue_platform_{platform}"
-            await show_platform_queue(callback)
-        finally:
-            db.close()
+
+        queue_item = orchestrator.queue_manager.fetch_queue_item(queue_item_id)
+        if not queue_item:
+            await callback.answer("❌ Запись не найдена", show_alert=True)
+            return
+
+        orchestrator.cancel_post(queue_item.post_id)
+        await callback.answer("✅ Пост возвращён в черновики")
+
+        platform = queue_item.platform
+        callback.data = f"queue_platform_{platform}"
+        await show_platform_queue(callback)
     except Exception as e:
         logger.error(f"Error cancelling post: {str(e)}")
         await callback.answer("❌ Ошибка", show_alert=True)

@@ -191,18 +191,78 @@ async def get_all_products_api(
 
 
 async def get_product_api(product_id: int):
-    """Получить товар по ID из API."""
+    """Получить товар по ID (raw SQL в отдельном потоке, без HTTP к API)."""
+    import asyncio
+
+    from app.db.product_queries import fetch_product_detail_row_by_id, product_detail_row_to_api_dict
+
+    def _load():
+        row = fetch_product_detail_row_by_id(product_id)
+        if not row:
+            return None
+        return product_detail_row_to_api_dict(row)
+
     try:
-        async with aiohttp.ClientSession() as session:
-            url = f"http://{API_HOST}:{API_PORT}/api/products/{product_id}"
-            async with session.get(url) as response:
-                if response.status == 200:
-                    return await response.json()
-                else:
-                    logger.error(f"Failed to get product: {response.status}")
-                    return None
+        return await asyncio.to_thread(_load)
     except Exception as e:
-        logger.error(f"Error getting product: {str(e)}")
+        logger.error("Error getting product %s: %s", product_id, e)
+        return None
+
+
+def _fetch_post_by_telegram_link(telegram_link: str) -> Optional[dict]:
+    """Поля поста по ссылке ТГ (без ORM — иначе блокируется event loop)."""
+    if not telegram_link:
+        return None
+    try:
+        from sqlalchemy import text
+        from app.db.database import SessionLocal
+
+        db = SessionLocal()
+        try:
+            row = (
+                db.execute(
+                    text(
+                        "SELECT id, text, photos, videos FROM posts "
+                        "WHERE telegram_link = :link LIMIT 1"
+                    ),
+                    {"link": telegram_link},
+                )
+                .mappings()
+                .first()
+            )
+            return dict(row) if row else None
+        finally:
+            db.close()
+    except Exception:
+        logger.exception("Failed to fetch post by telegram_link")
+        return None
+
+
+def _fetch_post_column(post_id: str, column: str) -> Optional[str]:
+    """Одно поле поста через raw SQL (ORM-запросы к Post в asyncio зависают)."""
+    if not post_id:
+        return None
+    allowed = frozenset({"max_link", "instagram_link", "instagram_media_id"})
+    if column not in allowed:
+        return None
+    try:
+        from sqlalchemy import text
+        from app.db.database import SessionLocal
+
+        db = SessionLocal()
+        try:
+            row = db.execute(
+                text(f"SELECT {column} FROM posts WHERE id = :id LIMIT 1"),
+                {"id": post_id},
+            ).first()
+            if not row:
+                return None
+            val = (row[0] or "").strip()
+            return val or None
+        finally:
+            db.close()
+    except Exception:
+        logger.exception("Failed to fetch post.%s for post_id=%s", column, post_id)
         return None
 
 
@@ -213,23 +273,7 @@ def resolve_product_max_link(product: Optional[dict]) -> Optional[str]:
     direct_link = (product.get("max_link") or "").strip()
     if direct_link:
         return direct_link
-    post_id = product.get("post_id")
-    if not post_id:
-        return None
-    try:
-        from app.db.database import SessionLocal
-        from app.api.models.post import Post
-
-        db = SessionLocal()
-        try:
-            post = db.query(Post).filter(Post.id == post_id).first()
-            resolved = (post.max_link or "").strip() if post else ""
-            return resolved or None
-        finally:
-            db.close()
-    except Exception:
-        logger.exception("Failed to resolve product max_link from post_id=%s", post_id)
-        return None
+    return _fetch_post_column(product.get("post_id"), "max_link")
 
 
 def resolve_product_instagram_media_id(product: Optional[dict]) -> Optional[str]:
@@ -239,23 +283,7 @@ def resolve_product_instagram_media_id(product: Optional[dict]) -> Optional[str]
     direct_id = (product.get("instagram_media_id") or "").strip()
     if direct_id:
         return direct_id
-    post_id = product.get("post_id")
-    if not post_id:
-        return None
-    try:
-        from app.db.database import SessionLocal
-        from app.api.models.post import Post
-
-        db = SessionLocal()
-        try:
-            post = db.query(Post).filter(Post.id == post_id).first()
-            resolved = (post.instagram_media_id or "").strip() if post else ""
-            return resolved or None
-        finally:
-            db.close()
-    except Exception:
-        logger.exception("Failed to resolve product instagram_media_id from post_id=%s", post_id)
-        return None
+    return _fetch_post_column(product.get("post_id"), "instagram_media_id")
 
 
 def resolve_product_instagram_link(product: Optional[dict]) -> Optional[str]:
@@ -265,23 +293,7 @@ def resolve_product_instagram_link(product: Optional[dict]) -> Optional[str]:
     direct_link = (product.get("instagram_link") or "").strip()
     if direct_link:
         return direct_link
-    post_id = product.get("post_id")
-    if not post_id:
-        return None
-    try:
-        from app.db.database import SessionLocal
-        from app.api.models.post import Post
-
-        db = SessionLocal()
-        try:
-            post = db.query(Post).filter(Post.id == post_id).first()
-            resolved = (post.instagram_link or "").strip() if post else ""
-            return resolved or None
-        finally:
-            db.close()
-    except Exception:
-        logger.exception("Failed to resolve product instagram_link from post_id=%s", post_id)
-        return None
+    return _fetch_post_column(product.get("post_id"), "instagram_link")
 
 
 def format_product_platform_links_html(product: dict) -> str:
@@ -600,39 +612,46 @@ async def products_menu(callback: CallbackQuery):
 
 @router.callback_query(F.data == "sync_telegram_links")
 async def sync_telegram_links(callback: CallbackQuery):
-    """Синхронизировать ссылки на посты ТГ: из Post.telegram_link в Product.telegram_link для всех постов с ссылкой."""
+    """Синхронизировать ссылки ТГ в товары и обновить список/новинки в канале."""
+    import asyncio
+
+    from app.bot.utils.used_products_channel_updater import update_used_products_list_in_channel
+    from app.db.database import SessionLocal
+    from app.db.product_queries import sync_telegram_links_to_products
+
     await callback.answer("Проверяю посты…")
     try:
-        from app.db.database import SessionLocal
-        from app.api.models.post import Post
-        from app.api.models.product import Product
 
-        db = SessionLocal()
-        try:
-            posts_with_link = db.query(Post).filter(
-                Post.telegram_link.isnot(None),
-                Post.telegram_link != ""
-            ).all()
-            updated_products = 0
-            posts_processed = 0
-            for post in posts_with_link:
-                products = db.query(Product).filter(Product.post_id == post.id).all()
-                for prod in products:
-                    if prod.telegram_link != post.telegram_link:
-                        prod.telegram_link = post.telegram_link
-                        updated_products += 1
-                if products:
-                    posts_processed += 1
-            db.commit()
-            text = (
+        def _sync():
+            db = SessionLocal()
+            try:
+                return sync_telegram_links_to_products(db)
+            finally:
+                db.close()
+
+        posts_count, posts_processed, updated_products = await asyncio.to_thread(_sync)
+        await safe_edit_message(
+            callback.message,
+            (
                 "🔄 Обновление постов\n\n"
-                f"Проверено постов с ссылкой: {len(posts_with_link)}\n"
-                f"Постов с товарами: {posts_processed}\n"
-                f"Обновлено ссылок у товаров: {updated_products}\n\n"
-                "✅ Готово."
-            )
-        finally:
-            db.close()
+                f"Ссылки синхронизированы ({updated_products} обновлено).\n"
+                "Обновляю список и новинки в канале…"
+            ),
+            reply_markup=get_products_menu_keyboard(),
+        )
+        channel_ok = await update_used_products_list_in_channel(callback.bot)
+        channel_line = (
+            "✅ Список и новинки в канале обновлены."
+            if channel_ok
+            else "⚠️ Канал не обновлён (проверьте USED_PRODUCTS_LIST_MESSAGE_IDS в настройках)."
+        )
+        text = (
+            "🔄 Обновление постов\n\n"
+            f"Проверено постов с ссылкой: {posts_count}\n"
+            f"Постов с товарами: {posts_processed}\n"
+            f"Обновлено ссылок у товаров: {updated_products}\n\n"
+            f"{channel_line}"
+        )
     except Exception as e:
         logger.exception("sync_telegram_links failed")
         text = f"🔄 Обновление постов\n\n❌ Ошибка: {e}"
@@ -919,12 +938,17 @@ async def product_detail(callback: CallbackQuery, state: FSMContext):
     text += format_product_status_html(product)
     text += format_product_platform_links_html(product)
 
-    await safe_edit_message(
-        callback.message,
-        text,
-        reply_markup=get_product_detail_keyboard(product_id, status, back_data=back_data),
-        parse_mode="HTML"
-    )
+    try:
+        await safe_edit_message(
+            callback.message,
+            text,
+            reply_markup=get_product_detail_keyboard(product_id, status, back_data=back_data),
+            parse_mode="HTML"
+        )
+    except Exception:
+        logger.exception("product_detail edit failed for product_id=%s", product_id)
+        await callback.answer("Не удалось показать карточку товара", show_alert=True)
+        return
     await callback.answer()
 
 
@@ -2189,12 +2213,12 @@ async def update_telegram_post_price(telegram_link: str, old_price: str, new_pri
 
         db = SessionLocal()
         try:
-            post = db.query(Post).filter(Post.telegram_link == telegram_link).first()
+            post = _fetch_post_by_telegram_link(telegram_link)
             if not post:
                 logger.warning("Post with telegram_link %s not found in database", telegram_link)
                 return False
 
-            original_text = post.text or ""
+            original_text = post.get("text") or ""
 
             new_price_clean = re.sub(r"[^\d.,]", "", new_price).replace(",", ".").replace(" ", "")
             try:
@@ -2230,7 +2254,8 @@ async def update_telegram_post_price(telegram_link: str, old_price: str, new_pri
 
             bot = Bot(token=TELEGRAM_BOT_TOKEN)
             try:
-                if post.photos or post.videos:
+                has_media = bool(post.get("photos") or post.get("videos"))
+                if has_media:
                     logger.info("Editing caption for media message %s to update price", message_id)
                     ok = await edit_message_caption_safe(
                         bot,
@@ -2312,12 +2337,12 @@ async def remove_telegram_post_unavailable(telegram_link: str):
         
         db = SessionLocal()
         try:
-            post = db.query(Post).filter(Post.telegram_link == telegram_link).first()
+            post = _fetch_post_by_telegram_link(telegram_link)
             if not post:
                 logger.warning(f"Post with telegram_link {telegram_link} not found in database")
                 return
             
-            original_text = post.text or ""
+            original_text = post.get("text") or ""
             text_without_unavailable = original_text
             if text_without_unavailable.startswith("#неактуально"):
                 text_without_unavailable = text_without_unavailable.replace("#неактуально", "", 1).strip()
@@ -2375,7 +2400,8 @@ async def remove_telegram_post_unavailable(telegram_link: str):
             
             bot = Bot(token=TELEGRAM_BOT_TOKEN)
             try:
-                if post.photos or post.videos:
+                has_media = bool(post.get("photos") or post.get("videos"))
+                if has_media:
                     logger.info(f"Editing caption for media message {message_id} to remove #неактуально")
                     try:
                         await _edit_caption_retry()
@@ -2462,160 +2488,147 @@ async def mark_telegram_post_unavailable(telegram_link: str) -> bool:
         logger.info(f"Using chat_id: {chat_id}")
         
         # Получаем пост из БД
-        from app.db.database import SessionLocal
-        from app.api.models.post import Post
-        
-        db = SessionLocal()
+        post = _fetch_post_by_telegram_link(telegram_link)
+        if not post:
+            logger.warning(f"Post with telegram_link {telegram_link} not found in database")
+            return False
+
+        # Получаем исходный текст поста (без форматирования для Telegram)
+        original_text = post.get("text") or ""
+
+        if original_text.startswith("#неактуально") or original_text.startswith("\\#неактуально"):
+            logger.info(f"Message {message_id} already marked as unavailable")
+            return True
+
+        text_with_unavailable = f"#неактуально\n\n{original_text}"
+
+        from app.utils.text_formatter import format_for_telegram, format_for_telegram_plain
+        import asyncio
+        formatted_text = format_for_telegram(text_with_unavailable, signature_enabled=True)
+        plain_text = format_for_telegram_plain(text_with_unavailable, signature_enabled=True)
+        has_media = bool(post.get("photos") or post.get("videos"))
+        logger.info(f"New text length: {len(formatted_text)}, post has media: {has_media}")
+
+        def _parse_retry_seconds(err: Exception) -> int:
+            s = str(err)
+            m = re.search(r'[Rr]etry in (\d+) seconds', s) or re.search(r'retry after (\d+)', s)
+            return int(m.group(1)) if m else 0
+
+        async def _edit_caption_with_retry():
+            err = None
+            for attempt in range(2):
+                if attempt > 0 and err is not None:
+                    sec = _parse_retry_seconds(err)
+                    if sec > 0:
+                        logger.info(f"Flood control: waiting {sec}s before retry for message {message_id}")
+                        await asyncio.sleep(sec)
+                try:
+                    await bot.edit_message_caption(
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        caption=formatted_text,
+                        parse_mode=ParseMode.MARKDOWN_V2
+                    )
+                    return True
+                except Exception as e:
+                    err = e
+                    if attempt == 0 and _parse_retry_seconds(e) == 0:
+                        raise
+            raise err
+
+        async def _edit_text_with_retry():
+            err = None
+            for attempt in range(2):
+                if attempt > 0 and err is not None:
+                    sec = _parse_retry_seconds(err)
+                    if sec > 0:
+                        logger.info(f"Flood control: waiting {sec}s before retry for message {message_id}")
+                        await asyncio.sleep(sec)
+                try:
+                    await bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        text=formatted_text,
+                        parse_mode=ParseMode.MARKDOWN_V2
+                    )
+                    return True
+                except Exception as e:
+                    err = e
+                    if attempt == 0 and _parse_retry_seconds(e) == 0:
+                        raise
+            raise err
+
+        bot = Bot(token=TELEGRAM_BOT_TOKEN)
+        edit_ok = False
         try:
-            post = db.query(Post).filter(Post.telegram_link == telegram_link).first()
-            if not post:
-                logger.warning(f"Post with telegram_link {telegram_link} not found in database")
-                return False
-            
-            # Получаем исходный текст поста (без форматирования для Telegram)
-            original_text = post.text or ""
-            
-            # Если текст уже содержит #неактуально, не добавляем его снова
-            if original_text.startswith("#неактуально") or original_text.startswith("\\#неактуально"):
-                logger.info(f"Message {message_id} already marked as unavailable")
-                return True
-            
-            # Формируем новый текст с пометкой
-            text_with_unavailable = f"#неактуально\n\n{original_text}"
-            
-            # Применяем форматирование для Telegram (как при публикации)
-            from app.utils.text_formatter import format_for_telegram, format_for_telegram_plain
-            from aiogram.enums import ParseMode
-            import asyncio
-            formatted_text = format_for_telegram(text_with_unavailable, signature_enabled=True)
-            plain_text = format_for_telegram_plain(text_with_unavailable, signature_enabled=True)
-            logger.info(f"New text length: {len(formatted_text)}, post has media: {bool(post.photos or post.videos)}")
-            
-            def _parse_retry_seconds(err: Exception) -> int:
-                s = str(err)
-                m = re.search(r'[Rr]etry in (\d+) seconds', s) or re.search(r'retry after (\d+)', s)
-                return int(m.group(1)) if m else 0
-            
-            async def _edit_caption_with_retry():
-                err = None
-                for attempt in range(2):
-                    if attempt > 0 and err is not None:
-                        sec = _parse_retry_seconds(err)
-                        if sec > 0:
-                            logger.info(f"Flood control: waiting {sec}s before retry for message {message_id}")
-                            await asyncio.sleep(sec)
-                    try:
-                        await bot.edit_message_caption(
-                            chat_id=chat_id,
-                            message_id=message_id,
-                            caption=formatted_text,
-                            parse_mode=ParseMode.MARKDOWN_V2
-                        )
-                        return True
-                    except Exception as e:
-                        err = e
-                        if attempt == 0 and _parse_retry_seconds(e) == 0:
-                            raise
-                raise err
-            
-            async def _edit_text_with_retry():
-                err = None
-                for attempt in range(2):
-                    if attempt > 0 and err is not None:
-                        sec = _parse_retry_seconds(err)
-                        if sec > 0:
-                            logger.info(f"Flood control: waiting {sec}s before retry for message {message_id}")
-                            await asyncio.sleep(sec)
-                    try:
-                        await bot.edit_message_text(
-                            chat_id=chat_id,
-                            message_id=message_id,
-                            text=formatted_text,
-                            parse_mode=ParseMode.MARKDOWN_V2
-                        )
-                        return True
-                    except Exception as e:
-                        err = e
-                        if attempt == 0 and _parse_retry_seconds(e) == 0:
-                            raise
-                raise err
-            
-            bot = Bot(token=TELEGRAM_BOT_TOKEN)
-            edit_ok = False
-            try:
-                if post.photos or post.videos:
-                    # Сообщение с медиа - редактируем caption
-                    logger.info(f"Editing caption for media message {message_id}")
-                    try:
-                        await _edit_caption_with_retry()
-                        logger.info(f"Telegram post {message_id} caption marked as unavailable successfully")
-                        edit_ok = True
-                    except Exception as e:
-                        logger.error(f"Error editing Telegram message caption {message_id}: {str(e)}")
-                        # При Flood control ждём перед fallback; при повторном лимите — ждём ещё и пробуем снова
-                        sec = _parse_retry_seconds(e)
-                        if sec > 0:
-                            logger.info(f"Waiting {sec}s before fallback edit for message {message_id}")
-                            await asyncio.sleep(sec)
-                        e2: Optional[Exception] = None
-                        for fallback_attempt in range(2):
-                            if fallback_attempt > 0:
-                                sec2 = _parse_retry_seconds(e2) if e2 is not None else 0
-                                wait_sec = max(sec2, 6) + 2
-                                logger.info(f"Waiting {wait_sec}s before fallback retry for message {message_id}")
-                                await asyncio.sleep(wait_sec)
-                            try:
-                                await bot.edit_message_caption(
-                                    chat_id=chat_id,
-                                    message_id=message_id,
-                                    caption=plain_text
-                                )
-                                logger.info(f"Telegram post {message_id} caption marked as unavailable (without parse_mode)")
-                                edit_ok = True
+            if has_media:
+                logger.info(f"Editing caption for media message {message_id}")
+                try:
+                    await _edit_caption_with_retry()
+                    logger.info(f"Telegram post {message_id} caption marked as unavailable successfully")
+                    edit_ok = True
+                except Exception as e:
+                    logger.error(f"Error editing Telegram message caption {message_id}: {str(e)}")
+                    sec = _parse_retry_seconds(e)
+                    if sec > 0:
+                        logger.info(f"Waiting {sec}s before fallback edit for message {message_id}")
+                        await asyncio.sleep(sec)
+                    e2: Optional[Exception] = None
+                    for fallback_attempt in range(2):
+                        if fallback_attempt > 0:
+                            sec2 = _parse_retry_seconds(e2) if e2 is not None else 0
+                            wait_sec = max(sec2, 6) + 2
+                            logger.info(f"Waiting {wait_sec}s before fallback retry for message {message_id}")
+                            await asyncio.sleep(wait_sec)
+                        try:
+                            await bot.edit_message_caption(
+                                chat_id=chat_id,
+                                message_id=message_id,
+                                caption=plain_text
+                            )
+                            logger.info(f"Telegram post {message_id} caption marked as unavailable (without parse_mode)")
+                            edit_ok = True
+                            break
+                        except Exception as e2:
+                            logger.error(f"Error editing Telegram message caption {message_id} (without parse_mode): {str(e2)}")
+                            if fallback_attempt == 1 or _parse_retry_seconds(e2) == 0:
                                 break
-                            except Exception as e2:
-                                logger.error(f"Error editing Telegram message caption {message_id} (without parse_mode): {str(e2)}")
-                                if fallback_attempt == 1 or _parse_retry_seconds(e2) == 0:
-                                    break
-                else:
-                    # Текстовое сообщение - редактируем текст
-                    logger.info(f"Editing text for text message {message_id}")
-                    try:
-                        await _edit_text_with_retry()
-                        logger.info(f"Telegram post {message_id} marked as unavailable successfully")
-                        edit_ok = True
-                    except Exception as e:
-                        logger.error(f"Error editing Telegram message text {message_id}: {str(e)}")
-                        sec = _parse_retry_seconds(e)
-                        if sec > 0:
-                            logger.info(f"Waiting {sec}s before fallback edit for message {message_id}")
-                            await asyncio.sleep(sec)
-                        e2: Optional[Exception] = None
-                        for fallback_attempt in range(2):
-                            if fallback_attempt > 0 and e2 is not None:
-                                sec2 = _parse_retry_seconds(e2)
-                                wait_sec = max(sec2, 6) + 2
-                                logger.info(f"Waiting {wait_sec}s before fallback text retry for message {message_id}")
-                                await asyncio.sleep(wait_sec)
-                            try:
-                                await bot.edit_message_text(
-                                    chat_id=chat_id,
-                                    message_id=message_id,
-                                    text=plain_text
-                                )
-                                logger.info(f"Telegram post {message_id} marked as unavailable (without parse_mode)")
-                                edit_ok = True
+            else:
+                logger.info(f"Editing text for text message {message_id}")
+                try:
+                    await _edit_text_with_retry()
+                    logger.info(f"Telegram post {message_id} marked as unavailable successfully")
+                    edit_ok = True
+                except Exception as e:
+                    logger.error(f"Error editing Telegram message text {message_id}: {str(e)}")
+                    sec = _parse_retry_seconds(e)
+                    if sec > 0:
+                        logger.info(f"Waiting {sec}s before fallback edit for message {message_id}")
+                        await asyncio.sleep(sec)
+                    e2: Optional[Exception] = None
+                    for fallback_attempt in range(2):
+                        if fallback_attempt > 0 and e2 is not None:
+                            sec2 = _parse_retry_seconds(e2)
+                            wait_sec = max(sec2, 6) + 2
+                            logger.info(f"Waiting {wait_sec}s before fallback text retry for message {message_id}")
+                            await asyncio.sleep(wait_sec)
+                        try:
+                            await bot.edit_message_text(
+                                chat_id=chat_id,
+                                message_id=message_id,
+                                text=plain_text
+                            )
+                            logger.info(f"Telegram post {message_id} marked as unavailable (without parse_mode)")
+                            edit_ok = True
+                            break
+                        except Exception as e2:
+                            logger.error(f"Error editing Telegram message text {message_id} (without parse_mode): {str(e2)}")
+                            if fallback_attempt == 1 or _parse_retry_seconds(e2) == 0:
                                 break
-                            except Exception as e2:
-                                logger.error(f"Error editing Telegram message text {message_id} (without parse_mode): {str(e2)}")
-                                if fallback_attempt == 1 or _parse_retry_seconds(e2) == 0:
-                                    break
-            finally:
-                await bot.session.close()
-            return edit_ok
         finally:
-            db.close()
-    
+            await bot.session.close()
+        return edit_ok
+
     except Exception as e:
         logger.error(f"Error marking Telegram post as unavailable: {str(e)}", exc_info=True)
         return False

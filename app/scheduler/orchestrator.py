@@ -238,60 +238,48 @@ class PublicationOrchestrator:
             logger.info(f"Resumed platform: {platform}")
 
     def pause_post(self, post_id: str):
-        """Приостановить публикацию конкретного поста.
-        
-        Args:
-            post_id: ID поста
-        """
+        """Приостановить публикацию конкретного поста."""
         from app.api.models.post import PublicationQueue
-        
-        # Находим все записи очереди для этого поста
-        queue_items = self.queue_manager.db.query(PublicationQueue).filter(
-            PublicationQueue.post_id == post_id,
-            PublicationQueue.status.in_(["pending", "publishing"])
-        ).all()
-        
-        for item in queue_items:
-            self.queue_manager.pause_queue_item(item.id)
-        
-        logger.info(f"Paused post: {post_id}")
+
+        try:
+            queue_items = self.queue_manager.db.query(PublicationQueue).filter(
+                PublicationQueue.post_id == post_id,
+                PublicationQueue.status.in_(["pending", "publishing"]),
+            ).all()
+            for item in queue_items:
+                self.queue_manager.pause_queue_item(item.id)
+            logger.info(f"Paused post: {post_id}")
+        finally:
+            self.queue_manager._release_read_transaction()
 
     def resume_post(self, post_id: str):
-        """Возобновить публикацию конкретного поста.
-        
-        Args:
-            post_id: ID поста
-        """
-        # Находим все записи очереди для этого поста
+        """Возобновить публикацию конкретного поста."""
         from app.api.models.post import PublicationQueue
-        
-        queue_items = self.queue_manager.db.query(PublicationQueue).filter(
-            PublicationQueue.post_id == post_id,
-            PublicationQueue.status == "paused"
-        ).all()
-        
-        for item in queue_items:
-            self.queue_manager.resume_queue_item(item.id)
-        
-        logger.info(f"Resumed post: {post_id}")
+
+        try:
+            queue_items = self.queue_manager.db.query(PublicationQueue).filter(
+                PublicationQueue.post_id == post_id,
+                PublicationQueue.status == "paused",
+            ).all()
+            for item in queue_items:
+                self.queue_manager.resume_queue_item(item.id)
+            logger.info(f"Resumed post: {post_id}")
+        finally:
+            self.queue_manager._release_read_transaction()
 
     def cancel_post(self, post_id: str):
-        """Отменить публикацию поста (удалить из очереди).
-        
-        Args:
-            post_id: ID поста
-        """
+        """Отменить публикацию поста (удалить из очереди)."""
         from app.api.models.post import PublicationQueue
-        
-        # Находим все записи очереди для этого поста
-        queue_items = self.queue_manager.db.query(PublicationQueue).filter(
-            PublicationQueue.post_id == post_id
-        ).all()
-        
-        for item in queue_items:
-            self.queue_manager.remove_from_queue(item.id)
-        
-        logger.info(f"Cancelled post: {post_id}")
+
+        try:
+            queue_items = self.queue_manager.db.query(PublicationQueue).filter(
+                PublicationQueue.post_id == post_id,
+            ).all()
+            for item in queue_items:
+                self.queue_manager.remove_from_queue(item.id)
+            logger.info(f"Cancelled post: {post_id}")
+        finally:
+            self.queue_manager._release_read_transaction()
 
     def publish_now(self, post_id: str, platforms: Optional[list] = None) -> bool:
         """Опубликовать пост вне очереди (с высоким приоритетом).

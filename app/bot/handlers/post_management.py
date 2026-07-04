@@ -2902,6 +2902,12 @@ async def confirm_publish_all_pending(callback: CallbackQuery):
     pending_post_ids = user_data.get("pending_post_ids", [])
 
     if not pending_post_ids:
+        current_drafts = await get_pending_posts_api()
+        pending_post_ids = [
+            post.get("id") for post in current_drafts if post.get("id")
+        ]
+
+    if not pending_post_ids:
         await callback.answer("❌ Нет черновиков для публикации.", show_alert=True)
         return
 
@@ -2910,12 +2916,14 @@ async def confirm_publish_all_pending(callback: CallbackQuery):
 
     added_count = 0
     for post_id in pending_post_ids:
-        if orchestrator.add_post_to_queue(
+        ok = orchestrator.add_post_to_queue(
             post_id,
             platforms=["vk", "telegram", "instagram", "max", "avito"],
             priority=0,
-        ):
+        )
+        if ok:
             added_count += 1
+
 
     if callback.from_user.id in callback.bot.user_data:
         callback.bot.user_data[callback.from_user.id]["pending_post_ids"] = []

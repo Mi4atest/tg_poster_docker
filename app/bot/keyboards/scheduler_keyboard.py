@@ -1,5 +1,6 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
+from app.scheduler.queue_ui import queue_item_display_name
 from app.bot.utils.button_styles import ikb
 
 
@@ -95,7 +96,7 @@ def get_platform_queue_keyboard(platform: str, queue_items: list) -> InlineKeybo
     
     # Кнопки для каждого поста в очереди
     for item in queue_items[:10]:  # Показываем максимум 10 постов
-        post_name = item.post.name if item.post else f"Пост {item.post_id[:8]}"
+        post_name = queue_item_display_name(item)
         status_icon = "⏸" if item.status == "paused" else "⏳" if item.status == "pending" else "🔄"
         buttons.append([
             InlineKeyboardButton(

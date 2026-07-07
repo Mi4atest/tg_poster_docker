@@ -25,7 +25,7 @@ from app.bot.keyboards.product_keyboard import (
 )
 from app.utils.iphone_parser import group_products_by_model, get_model_display_name
 from app.bot.utils.product_list_formatter import format_full_products_list
-from app.config.settings import API_HOST, API_PORT, MAX_SHARE_FALLBACK_PREFIX
+from app.config.settings import MAX_SHARE_FALLBACK_PREFIX
 from app.utils.time_msk import format_status_date_msk
 from app.utils.price_change import (
     PriceChangeInfo,
@@ -142,26 +142,18 @@ async def safe_edit_message(message, text, reply_markup=None, parse_mode=None, d
 
 # API client functions
 async def get_products_api(status_filter: Optional[str] = None, search: Optional[str] = None, skip: int = 0, limit: int = 500):
-    """Получить товары из API."""
+    """Получить товары (прямой SQL в отдельном потоке, без HTTP к API)."""
+    from app.db.database import run_db
+    from app.services.product_ops_service import fetch_products_list
+
     try:
-        async with aiohttp.ClientSession() as session:
-            url = f"http://{API_HOST}:{API_PORT}/api/products/"
-            params = {"skip": skip, "limit": limit}
-            
-            if status_filter:
-                params["status_filter"] = status_filter
-            if search:
-                params["search"] = search
-            
-            async with session.get(url, params=params) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    items = data.get("items", [])
-                    total = data.get("total", 0)
-                    return items, total
-                else:
-                    logger.error(f"Failed to get products: {response.status}")
-                    return [], 0
+        return await run_db(
+            fetch_products_list,
+            status_filter=status_filter,
+            search=search,
+            skip=skip,
+            limit=limit,
+        )
     except Exception as e:
         logger.error(f"Error getting products: {str(e)}")
         return [], 0
@@ -377,17 +369,12 @@ def max_link_href_for_telegram_html(
 
 
 async def update_product_status_api(product_id: int, status: str, *, sync_platforms: bool = True):
-    """Обновить статус товара через API. Ответ: {product, status_sync} или None."""
+    """Обновить статус товара (в отдельном потоке). Ответ: {product, status_sync} или None."""
+    from app.db.database import run_db
+    from app.services.product_ops_service import set_product_status
+
     try:
-        async with aiohttp.ClientSession() as session:
-            url = f"http://{API_HOST}:{API_PORT}/api/products/{product_id}/status"
-            data = {"status": status, "sync_platforms": sync_platforms}
-            async with session.put(url, json=data) as response:
-                if response.status == 200:
-                    return await response.json()
-                error_text = await response.text()
-                logger.error("Failed to update product status: %s, %s", response.status, error_text)
-                return None
+        return await run_db(set_product_status, product_id, status, sync_platforms)
     except Exception as e:
         logger.error("Error updating product status: %s", e)
         return None
@@ -412,34 +399,27 @@ def _platform_sync_line_html(label: str, block: dict) -> str:
 
 
 async def delete_product_api(product_id: int):
-    """Удалить товар через API."""
+    """Удалить товар (в отдельном потоке): из VK Market и из БД."""
+    from app.db.database import run_db
+    from app.services.product_ops_service import delete_product
+
     try:
-        async with aiohttp.ClientSession() as session:
-            url = f"http://{API_HOST}:{API_PORT}/api/products/{product_id}"
-            async with session.delete(url) as response:
-                if response.status == 200:
-                    return True
-                else:
-                    error_text = await response.text()
-                    logger.error(f"Failed to delete product: {response.status}, {error_text}")
-                    return False
+        return await run_db(delete_product, product_id)
     except Exception as e:
         logger.error(f"Error deleting product: {str(e)}")
         return False
 
 
 async def update_product_price_api(product_id: int, price: str, *, sync_platforms: bool = True):
-    """Обновить цену товара через API. Ответ: {product, price_sync} или None при ошибке."""
+    """Сохранить цену товара в БД (в отдельном потоке). Ответ: {product, price_sync} или None.
+
+    Синхронизацию площадок делает PriceSyncService — сюда ходим только с sync_platforms=False.
+    """
+    from app.db.database import run_db
+    from app.services.product_ops_service import save_product_price
+
     try:
-        async with aiohttp.ClientSession() as session:
-            url = f"http://{API_HOST}:{API_PORT}/api/products/{product_id}/price"
-            data = {"price": price, "sync_platforms": sync_platforms}
-            async with session.put(url, json=data) as response:
-                if response.status == 200:
-                    return await response.json()
-                error_text = await response.text()
-                logger.error("Failed to update product price: %s - %s", response.status, error_text)
-                return None
+        return await run_db(save_product_price, product_id, price)
     except Exception as e:
         logger.error("Error updating product price: %s", e)
         return None
@@ -586,16 +566,12 @@ def format_status_unavailable_summary(
 
 
 async def update_product_avito_link_api(product_id: int, avito_link_or_id: str):
-    """Привязать объявление Авито к товару."""
+    """Привязать объявление Авито к товару (в отдельном потоке)."""
+    from app.db.database import run_db
+    from app.services.product_ops_service import set_product_avito_link
+
     try:
-        async with aiohttp.ClientSession() as session:
-            url = f"http://{API_HOST}:{API_PORT}/api/products/{product_id}/avito_link"
-            async with session.put(url, json={"avito_link_or_id": avito_link_or_id}) as response:
-                if response.status == 200:
-                    return await response.json()
-                error_text = await response.text()
-                logger.error("Failed to update avito link: %s - %s", response.status, error_text)
-                return None
+        return await run_db(set_product_avito_link, product_id, avito_link_or_id)
     except Exception as e:
         logger.error("Error updating avito link: %s", e)
         return None
@@ -1965,18 +1941,21 @@ async def process_product_unavailable(product_id: int, payment_method: Optional[
         return
 
     if payment_method:
-        from app.db.database import SessionLocal
-        from app.api.models.product import Product
+        import asyncio
         import math
 
-        db = SessionLocal()
-        try:
-            db_product = db.query(Product).filter(Product.id == product_id).first()
-            if db_product:
+        def _save_payment_method():
+            from app.db.database import SessionLocal
+            from app.api.models.product import Product
+
+            db = SessionLocal()
+            try:
+                db_product = db.query(Product).filter(Product.id == product_id).first()
+                if not db_product:
+                    return
                 db_product.payment_method = payment_method
                 price_str = product.get("price", "")
-                price_clean = re.sub(r"[^\d.,]", "", price_str)
-                price_clean = price_clean.replace(",", ".")
+                price_clean = re.sub(r"[^\d.,]", "", price_str).replace(",", ".")
                 try:
                     base_price = float(price_clean)
                     if payment_method == "card":
@@ -1993,8 +1972,10 @@ async def process_product_unavailable(product_id: int, payment_method: Optional[
                     db.commit()
                 except (ValueError, TypeError):
                     pass
-        finally:
-            db.close()
+            finally:
+                db.close()
+
+        await asyncio.to_thread(_save_payment_method)
 
     result = await update_product_status_api(product_id, "unavailable", sync_platforms=False)
     if not result:
@@ -2208,98 +2189,93 @@ async def update_telegram_post_price(telegram_link: str, old_price: str, new_pri
 
         chat_id = TELEGRAM_CHANNEL_ID
 
-        from app.db.database import SessionLocal
-        from app.api.models.post import Post
+        import asyncio
 
-        db = SessionLocal()
+        post = await asyncio.to_thread(_fetch_post_by_telegram_link, telegram_link)
+        if not post:
+            logger.warning("Post with telegram_link %s not found in database", telegram_link)
+            return False
+
+        original_text = post.get("text") or ""
+
+        new_price_clean = re.sub(r"[^\d.,]", "", new_price).replace(",", ".").replace(" ", "")
         try:
-            post = _fetch_post_by_telegram_link(telegram_link)
-            if not post:
-                logger.warning("Post with telegram_link %s not found in database", telegram_link)
-                return False
+            new_price_value = float(new_price_clean)
+            formatted_price_value = f"{int(new_price_value):,}".replace(",", " ")
+        except (ValueError, TypeError):
+            formatted_price_value = new_price_clean
 
-            original_text = post.get("text") or ""
+        price_patterns = [
+            (r"(Цена:?\s*)(\d+[\s\.,]?\d*)\s*(?:₽|руб|р\.?|RUB)", f"Цена: {formatted_price_value}₽"),
+            (r"(\d+[\s\.,]?\d*)\s*(?:₽|руб|р\.?|RUB)", f"{formatted_price_value}₽"),
+        ]
 
-            new_price_clean = re.sub(r"[^\d.,]", "", new_price).replace(",", ".").replace(" ", "")
-            try:
-                new_price_value = float(new_price_clean)
-                formatted_price_value = f"{int(new_price_value):,}".replace(",", " ")
-            except (ValueError, TypeError):
-                formatted_price_value = new_price_clean
+        updated_text = original_text
+        replaced = False
+        for pattern, replacement in price_patterns:
+            if re.search(pattern, original_text, re.IGNORECASE):
+                updated_text = re.sub(pattern, replacement, original_text, count=1, flags=re.IGNORECASE)
+                replaced = True
+                logger.info("Price replaced in original text using pattern: %s", pattern)
+                break
 
-            price_patterns = [
-                (r"(Цена:?\s*)(\d+[\s\.,]?\d*)\s*(?:₽|руб|р\.?|RUB)", f"Цена: {formatted_price_value}₽"),
-                (r"(\d+[\s\.,]?\d*)\s*(?:₽|руб|р\.?|RUB)", f"{formatted_price_value}₽"),
-            ]
+        if not replaced:
+            logger.warning("Could not find price pattern in text to replace")
+            return False
 
-            updated_text = original_text
-            replaced = False
-            for pattern, replacement in price_patterns:
-                if re.search(pattern, original_text, re.IGNORECASE):
-                    updated_text = re.sub(pattern, replacement, original_text, count=1, flags=re.IGNORECASE)
-                    replaced = True
-                    logger.info("Price replaced in original text using pattern: %s", pattern)
-                    break
+        formatted_text = format_for_telegram(updated_text, signature_enabled=True)
 
-            if not replaced:
-                logger.warning("Could not find price pattern in text to replace")
-                return False
+        from app.bot.utils.telegram_edit import (
+            edit_message_caption_safe,
+            edit_message_text_safe,
+        )
 
-            formatted_text = format_for_telegram(updated_text, signature_enabled=True)
-
-            from app.bot.utils.telegram_edit import (
-                edit_message_caption_safe,
-                edit_message_text_safe,
-            )
-
-            bot = Bot(token=TELEGRAM_BOT_TOKEN)
-            try:
-                has_media = bool(post.get("photos") or post.get("videos"))
-                if has_media:
-                    logger.info("Editing caption for media message %s to update price", message_id)
-                    ok = await edit_message_caption_safe(
-                        bot,
-                        chat_id=chat_id,
-                        message_id=message_id,
-                        caption=formatted_text,
-                        parse_mode=ParseMode.MARKDOWN_V2,
-                    )
-                    if ok:
-                        logger.info("Telegram post %s price updated successfully", message_id)
-                        return True
-                    ok = await edit_message_caption_safe(
-                        bot,
-                        chat_id=chat_id,
-                        message_id=message_id,
-                        caption=formatted_text,
-                    )
-                    if ok:
-                        logger.info("Telegram post %s price updated (without parse_mode)", message_id)
-                    return ok
-                logger.info("Editing text for text message %s to update price", message_id)
-                ok = await edit_message_text_safe(
+        bot = Bot(token=TELEGRAM_BOT_TOKEN)
+        try:
+            has_media = bool(post.get("photos") or post.get("videos"))
+            if has_media:
+                logger.info("Editing caption for media message %s to update price", message_id)
+                ok = await edit_message_caption_safe(
                     bot,
                     chat_id=chat_id,
                     message_id=message_id,
-                    text=formatted_text,
+                    caption=formatted_text,
                     parse_mode=ParseMode.MARKDOWN_V2,
                 )
                 if ok:
                     logger.info("Telegram post %s price updated successfully", message_id)
                     return True
-                ok = await edit_message_text_safe(
+                ok = await edit_message_caption_safe(
                     bot,
                     chat_id=chat_id,
                     message_id=message_id,
-                    text=formatted_text,
+                    caption=formatted_text,
                 )
                 if ok:
                     logger.info("Telegram post %s price updated (without parse_mode)", message_id)
                 return ok
-            finally:
-                await bot.session.close()
+            logger.info("Editing text for text message %s to update price", message_id)
+            ok = await edit_message_text_safe(
+                bot,
+                chat_id=chat_id,
+                message_id=message_id,
+                text=formatted_text,
+                parse_mode=ParseMode.MARKDOWN_V2,
+            )
+            if ok:
+                logger.info("Telegram post %s price updated successfully", message_id)
+                return True
+            ok = await edit_message_text_safe(
+                bot,
+                chat_id=chat_id,
+                message_id=message_id,
+                text=formatted_text,
+            )
+            if ok:
+                logger.info("Telegram post %s price updated (without parse_mode)", message_id)
+            return ok
         finally:
-            db.close()
+            await bot.session.close()
 
     except Exception as e:
         logger.error("Error updating Telegram post price: %s", e, exc_info=True)
@@ -2327,17 +2303,13 @@ async def remove_telegram_post_unavailable(telegram_link: str):
         logger.info(f"Removing #неактуально from Telegram message {message_id}")
         chat_id = TELEGRAM_CHANNEL_ID
         
-        from app.db.database import SessionLocal
-        from app.api.models.post import Post
-        
         def _parse_retry_seconds(err: Exception) -> int:
             s = str(err)
             m = re.search(r'[Rr]etry in (\d+) seconds', s) or re.search(r'retry after (\d+)', s)
             return int(m.group(1)) if m else 0
-        
-        db = SessionLocal()
-        try:
-            post = _fetch_post_by_telegram_link(telegram_link)
+
+        if True:
+            post = await asyncio.to_thread(_fetch_post_by_telegram_link, telegram_link)
             if not post:
                 logger.warning(f"Post with telegram_link {telegram_link} not found in database")
                 return
@@ -2459,9 +2431,7 @@ async def remove_telegram_post_unavailable(telegram_link: str):
                                     break
             finally:
                 await bot.session.close()
-        finally:
-            db.close()
-    
+
     except Exception as e:
         logger.error(f"Error removing #неактуально from Telegram post: {str(e)}", exc_info=True)
 
@@ -2487,8 +2457,10 @@ async def mark_telegram_post_unavailable(telegram_link: str) -> bool:
         chat_id = TELEGRAM_CHANNEL_ID
         logger.info(f"Using chat_id: {chat_id}")
         
-        # Получаем пост из БД
-        post = _fetch_post_by_telegram_link(telegram_link)
+        # Получаем пост из БД (в отдельном потоке, чтобы не блокировать event loop)
+        import asyncio as _asyncio
+
+        post = await _asyncio.to_thread(_fetch_post_by_telegram_link, telegram_link)
         if not post:
             logger.warning(f"Post with telegram_link {telegram_link} not found in database")
             return False
@@ -2634,6 +2606,32 @@ async def mark_telegram_post_unavailable(telegram_link: str) -> bool:
         return False
 
 
+def _fetch_post_by_max_link(max_link: str) -> Optional[dict]:
+    """Поля поста по max_link (raw SQL, для вызова через to_thread)."""
+    if not max_link:
+        return None
+    try:
+        from sqlalchemy import text
+        from app.db.database import SessionLocal
+
+        with SessionLocal() as db:
+            row = (
+                db.execute(
+                    text(
+                        "SELECT id, text, photos, videos FROM posts "
+                        "WHERE max_link = :link LIMIT 1"
+                    ),
+                    {"link": max_link},
+                )
+                .mappings()
+                .first()
+            )
+            return dict(row) if row else None
+    except Exception:
+        logger.exception("Failed to fetch post by max_link")
+        return None
+
+
 def _extract_max_message_id(max_link: str) -> Optional[str]:
     match = re.search(r"/([^/]+)$", max_link or "")
     if not match:
@@ -2643,10 +2641,10 @@ def _extract_max_message_id(max_link: str) -> Optional[str]:
 
 async def update_max_post_price(max_link: str, old_price: str, new_price: str) -> bool:
     try:
-        from app.api.models.post import Post
+        import asyncio
+
         from app.services.settings_service import get_settings_service
         MAX_CHANNEL_ID = get_settings_service().get_max_channel_id()
-        from app.db.database import SessionLocal
         from app.integrations.max.client import create_max_api_client
         from app.utils.text_formatter import format_for_max, format_for_max_plain
 
@@ -2655,72 +2653,68 @@ async def update_max_post_price(max_link: str, old_price: str, new_price: str) -
             logger.error("Could not extract max message_id from link: %s", max_link)
             return False
 
-        db = SessionLocal()
+        post = await asyncio.to_thread(_fetch_post_by_max_link, max_link)
+        if not post:
+            logger.warning("Post with max_link %s not found in DB", max_link)
+            return False
+
+        original_text = post.get("text") or ""
+        new_price_clean = re.sub(r"[^\d.,]", "", new_price).replace(",", ".").replace(" ", "")
         try:
-            post = db.query(Post).filter(Post.max_link == max_link).first()
-            if not post:
-                logger.warning("Post with max_link %s not found in DB", max_link)
-                return False
+            new_price_value = float(new_price_clean)
+            formatted_price_value = f"{int(new_price_value):,}".replace(",", " ")
+        except (ValueError, TypeError):
+            formatted_price_value = new_price_clean
 
-            original_text = post.text or ""
-            new_price_clean = re.sub(r"[^\d.,]", "", new_price).replace(",", ".").replace(" ", "")
+        price_patterns = [
+            (r"(Цена:?\s*)(\d+[\s\.,]?\d*)\s*(?:₽|руб|р\.?|RUB)", f"Цена: {formatted_price_value}₽"),
+            (r"(\d+[\s\.,]?\d*)\s*(?:₽|руб|р\.?|RUB)", f"{formatted_price_value}₽"),
+        ]
+        updated_text = original_text
+        replaced = False
+        for pattern, replacement in price_patterns:
+            if re.search(pattern, original_text, re.IGNORECASE):
+                updated_text = re.sub(pattern, replacement, original_text, count=1, flags=re.IGNORECASE)
+                replaced = True
+                break
+        if not replaced:
+            logger.warning("Could not find price pattern in Max post text")
+            return False
+
+        client = create_max_api_client()
+        formatted_text = format_for_max(updated_text, signature_enabled=True)
+        plain_text = format_for_max_plain(updated_text, signature_enabled=True)
+        if post.get("photos") or post.get("videos"):
             try:
-                new_price_value = float(new_price_clean)
-                formatted_price_value = f"{int(new_price_value):,}".replace(",", " ")
-            except (ValueError, TypeError):
-                formatted_price_value = new_price_clean
-
-            price_patterns = [
-                (r"(Цена:?\s*)(\d+[\s\.,]?\d*)\s*(?:₽|руб|р\.?|RUB)", f"Цена: {formatted_price_value}₽"),
-                (r"(\d+[\s\.,]?\d*)\s*(?:₽|руб|р\.?|RUB)", f"{formatted_price_value}₽"),
-            ]
-            updated_text = original_text
-            replaced = False
-            for pattern, replacement in price_patterns:
-                if re.search(pattern, original_text, re.IGNORECASE):
-                    updated_text = re.sub(pattern, replacement, original_text, count=1, flags=re.IGNORECASE)
-                    replaced = True
-                    break
-            if not replaced:
-                logger.warning("Could not find price pattern in Max post text")
-                return False
-
-            client = create_max_api_client()
-            formatted_text = format_for_max(updated_text, signature_enabled=True)
-            plain_text = format_for_max_plain(updated_text, signature_enabled=True)
-            if post.photos or post.videos:
-                try:
-                    await client.edit_message_caption(
-                        chat_id=MAX_CHANNEL_ID,
-                        message_id=message_id,
-                        caption=formatted_text,
-                        parse_mode="MarkdownV2",
-                    )
-                    return True
-                except Exception:
-                    await client.edit_message_caption(
-                        chat_id=MAX_CHANNEL_ID,
-                        message_id=message_id,
-                        caption=plain_text,
-                    )
-                    return True
-            try:
-                await client.edit_message_text(
+                await client.edit_message_caption(
                     chat_id=MAX_CHANNEL_ID,
                     message_id=message_id,
-                    text=formatted_text,
+                    caption=formatted_text,
                     parse_mode="MarkdownV2",
                 )
                 return True
             except Exception:
-                await client.edit_message_text(
+                await client.edit_message_caption(
                     chat_id=MAX_CHANNEL_ID,
                     message_id=message_id,
-                    text=plain_text,
+                    caption=plain_text,
                 )
                 return True
-        finally:
-            db.close()
+        try:
+            await client.edit_message_text(
+                chat_id=MAX_CHANNEL_ID,
+                message_id=message_id,
+                text=formatted_text,
+                parse_mode="MarkdownV2",
+            )
+            return True
+        except Exception:
+            await client.edit_message_text(
+                chat_id=MAX_CHANNEL_ID,
+                message_id=message_id,
+                text=plain_text,
+            )
+            return True
     except Exception as exc:
         logger.error("Error updating Max post price: %s", exc, exc_info=True)
         return False
@@ -2728,10 +2722,10 @@ async def update_max_post_price(max_link: str, old_price: str, new_price: str) -
 
 async def remove_max_post_unavailable(max_link: str):
     try:
-        from app.api.models.post import Post
+        import asyncio
+
         from app.services.settings_service import get_settings_service
         MAX_CHANNEL_ID = get_settings_service().get_max_channel_id()
-        from app.db.database import SessionLocal
         from app.integrations.max.client import create_max_api_client
         from app.utils.text_formatter import format_for_max, format_for_max_plain
 
@@ -2740,43 +2734,39 @@ async def remove_max_post_unavailable(max_link: str):
             logger.error("Could not extract max message_id from link: %s", max_link)
             return
 
-        db = SessionLocal()
-        try:
-            post = db.query(Post).filter(Post.max_link == max_link).first()
-            if not post:
-                return
-            original_text = post.text or ""
-            text_without_unavailable = original_text
-            if text_without_unavailable.startswith("#неактуально"):
-                text_without_unavailable = text_without_unavailable.replace("#неактуально", "", 1).strip()
-            elif text_without_unavailable.startswith("\\#неактуально"):
-                text_without_unavailable = text_without_unavailable.replace("\\#неактуально", "", 1).strip()
+        post = await asyncio.to_thread(_fetch_post_by_max_link, max_link)
+        if not post:
+            return
+        original_text = post.get("text") or ""
+        text_without_unavailable = original_text
+        if text_without_unavailable.startswith("#неактуально"):
+            text_without_unavailable = text_without_unavailable.replace("#неактуально", "", 1).strip()
+        elif text_without_unavailable.startswith("\\#неактуально"):
+            text_without_unavailable = text_without_unavailable.replace("\\#неактуально", "", 1).strip()
 
-            client = create_max_api_client()
-            formatted_text = format_for_max(text_without_unavailable, signature_enabled=True)
-            plain_text = format_for_max_plain(text_without_unavailable, signature_enabled=True)
-            if post.photos or post.videos:
-                try:
-                    await client.edit_message_caption(MAX_CHANNEL_ID, message_id, formatted_text, parse_mode="MarkdownV2")
-                except Exception:
-                    await client.edit_message_caption(MAX_CHANNEL_ID, message_id, plain_text)
-            else:
-                try:
-                    await client.edit_message_text(MAX_CHANNEL_ID, message_id, formatted_text, parse_mode="MarkdownV2")
-                except Exception:
-                    await client.edit_message_text(MAX_CHANNEL_ID, message_id, plain_text)
-        finally:
-            db.close()
+        client = create_max_api_client()
+        formatted_text = format_for_max(text_without_unavailable, signature_enabled=True)
+        plain_text = format_for_max_plain(text_without_unavailable, signature_enabled=True)
+        if post.get("photos") or post.get("videos"):
+            try:
+                await client.edit_message_caption(MAX_CHANNEL_ID, message_id, formatted_text, parse_mode="MarkdownV2")
+            except Exception:
+                await client.edit_message_caption(MAX_CHANNEL_ID, message_id, plain_text)
+        else:
+            try:
+                await client.edit_message_text(MAX_CHANNEL_ID, message_id, formatted_text, parse_mode="MarkdownV2")
+            except Exception:
+                await client.edit_message_text(MAX_CHANNEL_ID, message_id, plain_text)
     except Exception as exc:
         logger.error("Error removing #неактуально in Max post: %s", exc, exc_info=True)
 
 
 async def mark_max_post_unavailable(max_link: str) -> bool:
     try:
-        from app.api.models.post import Post
+        import asyncio
+
         from app.services.settings_service import get_settings_service
         MAX_CHANNEL_ID = get_settings_service().get_max_channel_id()
-        from app.db.database import SessionLocal
         from app.integrations.max.client import create_max_api_client
         from app.utils.text_formatter import format_for_max, format_for_max_plain
 
@@ -2785,32 +2775,28 @@ async def mark_max_post_unavailable(max_link: str) -> bool:
             logger.error("Could not extract max message_id from link: %s", max_link)
             return False
 
-        db = SessionLocal()
-        try:
-            post = db.query(Post).filter(Post.max_link == max_link).first()
-            if not post:
-                return False
-            original_text = post.text or ""
-            if original_text.startswith("#неактуально") or original_text.startswith("\\#неактуально"):
-                return True
-            text_with_unavailable = f"#неактуально\n\n{original_text}"
-
-            client = create_max_api_client()
-            formatted_text = format_for_max(text_with_unavailable, signature_enabled=True)
-            plain_text = format_for_max_plain(text_with_unavailable, signature_enabled=True)
-            if post.photos or post.videos:
-                try:
-                    await client.edit_message_caption(MAX_CHANNEL_ID, message_id, formatted_text, parse_mode="MarkdownV2")
-                except Exception:
-                    await client.edit_message_caption(MAX_CHANNEL_ID, message_id, plain_text)
-            else:
-                try:
-                    await client.edit_message_text(MAX_CHANNEL_ID, message_id, formatted_text, parse_mode="MarkdownV2")
-                except Exception:
-                    await client.edit_message_text(MAX_CHANNEL_ID, message_id, plain_text)
+        post = await asyncio.to_thread(_fetch_post_by_max_link, max_link)
+        if not post:
+            return False
+        original_text = post.get("text") or ""
+        if original_text.startswith("#неактуально") or original_text.startswith("\\#неактуально"):
             return True
-        finally:
-            db.close()
+        text_with_unavailable = f"#неактуально\n\n{original_text}"
+
+        client = create_max_api_client()
+        formatted_text = format_for_max(text_with_unavailable, signature_enabled=True)
+        plain_text = format_for_max_plain(text_with_unavailable, signature_enabled=True)
+        if post.get("photos") or post.get("videos"):
+            try:
+                await client.edit_message_caption(MAX_CHANNEL_ID, message_id, formatted_text, parse_mode="MarkdownV2")
+            except Exception:
+                await client.edit_message_caption(MAX_CHANNEL_ID, message_id, plain_text)
+        else:
+            try:
+                await client.edit_message_text(MAX_CHANNEL_ID, message_id, formatted_text, parse_mode="MarkdownV2")
+            except Exception:
+                await client.edit_message_text(MAX_CHANNEL_ID, message_id, plain_text)
+        return True
     except Exception as exc:
         logger.error("Error marking Max post unavailable: %s", exc, exc_info=True)
         return False
@@ -3043,26 +3029,23 @@ def get_iphone_model_year(model_name: str) -> int:
 
 async def get_today_sold_products() -> list:
     """Получить товары, проданные сегодня (перемещенные в архив сегодня)."""
-    from datetime import datetime, timezone, date
-    from app.db.database import SessionLocal
-    from app.api.models.product import Product
-    
-    db = SessionLocal()
-    try:
-        today = date.today()
-        
-        # Получаем товары, архивированные сегодня
-        products = db.query(Product).filter(
-            Product.status == "unavailable",
-            Product.archived_at.isnot(None)
-        ).all()
-        
-        # Фильтруем по дате архивации (сегодня)
-        today_products = []
-        for product in products:
-            if product.archived_at:
-                archived_date = product.archived_at.date()
-                if archived_date == today:
+    import asyncio
+    from datetime import date
+
+    def _load():
+        from app.db.database import SessionLocal
+        from app.api.models.product import Product
+
+        db = SessionLocal()
+        try:
+            today = date.today()
+            products = db.query(Product).filter(
+                Product.status == "unavailable",
+                Product.archived_at.isnot(None)
+            ).all()
+            today_products = []
+            for product in products:
+                if product.archived_at and product.archived_at.date() == today:
                     today_products.append({
                         'id': product.id,
                         'name': product.name,
@@ -3071,10 +3054,11 @@ async def get_today_sold_products() -> list:
                         'final_price': product.final_price,
                         'archived_at': product.archived_at.isoformat() if product.archived_at else None
                     })
-        
-        return today_products
-    finally:
-        db.close()
+            return today_products
+        finally:
+            db.close()
+
+    return await asyncio.to_thread(_load)
 
 
 @router.callback_query(F.data == "evening_report_start")

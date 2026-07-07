@@ -222,4 +222,10 @@ def sync_new_products_from_vk() -> Dict[str, int]:
             result[collection_name] = count_synced
     finally:
         db.close()
+    try:
+        from app.services.menu_constructor_service import invalidate_new_products_cache
+
+        invalidate_new_products_cache()
+    except Exception:
+        pass
     return result

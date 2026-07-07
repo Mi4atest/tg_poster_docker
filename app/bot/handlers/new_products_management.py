@@ -8,7 +8,6 @@ from aiogram.types import CallbackQuery, Message, LinkPreviewOptions
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.enums import ChatAction
-import aiohttp
 import logging
 import re
 from html import escape
@@ -41,8 +40,7 @@ from app.utils.iphone_parser import (
     parse_iphone_color_key,
     get_short_model_key_for_new,
 )
-from app.config.settings import API_HOST, API_PORT
-from app.db.database import SessionLocal
+from app.db.database import SessionLocal, run_db
 from app.api.models.product import Product
 from app.services import menu_constructor_service as mcs
 from app.utils.product_label import availability_line_for_product, button_label_for_product
@@ -107,17 +105,17 @@ async def safe_edit_message(message, text, reply_markup=None, parse_mode=None, d
         return await message.reply(text, **kwargs)
 
 
+def _fetch_products_sync(limit: int = 5000):
+    """Все товары прямым SQL (для вызова внутри run_db)."""
+    from app.services.product_ops_service import fetch_products_list
+
+    return fetch_products_list(limit=limit)
+
+
 async def get_products_api(limit: int = 5000):
-    """Получить все товары из API (без фильтра по коллекции)."""
+    """Получить все товары (прямой SQL в отдельном потоке, без HTTP к API)."""
     try:
-        async with aiohttp.ClientSession() as session:
-            url = f"http://{API_HOST}:{API_PORT}/api/products/"
-            params = {"skip": 0, "limit": limit}
-            async with session.get(url, params=params) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    return data.get("items", []), data.get("total", 0)
-                return [], 0
+        return await run_db(_fetch_products_sync, limit)
     except Exception as e:
         logger.error("Error getting products: %s", e)
         return [], 0
@@ -723,19 +721,23 @@ def _build_root_new_products_keyboard(db) -> "InlineKeyboardMarkup":
 async def new_products_menu(callback: CallbackQuery):
     """Главное меню категорий новых товаров."""
     try:
-        text = "🆕 Список новых товаров\n\n"
-        all_available = _fetch_available_products_for_menu()
-        available_new = _filter_new_products(all_available)
-        custom_available = [
-            p for p in all_available if (p.get("collection_name") or "").strip() == "custom"
-        ]
-        if all_available:
-            text += "🟢 В наличии:\n\n"
-            text += _format_available_lines(all_available)
-            text += "\n\n"
-        text += "Выберите категорию:"
-        with SessionLocal() as db:
-            kb = _build_root_new_products_keyboard(db)
+        await callback.answer()
+    except Exception:
+        pass
+    try:
+        def _build():
+            text = "🆕 Список новых товаров\n\n"
+            all_available = _fetch_available_products_for_menu()
+            if all_available:
+                text += "🟢 В наличии:\n\n"
+                text += _format_available_lines(all_available)
+                text += "\n\n"
+            text += "Выберите категорию:"
+            with SessionLocal() as db:
+                kb = _build_root_new_products_keyboard(db)
+            return text, kb
+
+        text, kb = await run_db(_build)
     except Exception as e:
         await callback.answer("Ошибка открытия меню", show_alert=True)
         return
@@ -780,7 +782,42 @@ async def new_products_menu(callback: CallbackQuery):
     except Exception as e:
         await callback.answer("Ошибка отображения меню", show_alert=True)
         return
-    await callback.answer()
+
+
+async def _show_new_product_card(
+    callback: CallbackQuery,
+    state: FSMContext,
+    product_id: int,
+    back_data: str,
+) -> bool:
+    """Открыть карточку нового товара; вернуть успех."""
+    await state.update_data(new_products_back=back_data)
+    product = await get_product_api(product_id)
+    if not product:
+        return False
+    price_display = _normalize_price_display(product.get("price"))
+    text = f"📦 <b>{product.get('name', 'Без названия')}</b>\n\n"
+    text += f"💵 Цена: {price_display}\n"
+    text += f"📁 Подборка: {product.get('collection_name', '—')}\n"
+    av = product.get("availability_status")
+    text += f"Наличие: {'🟢 В наличии' if av == 'available' else '🔴 На заказ' if av == 'on_order' else '—'}\n"
+    if product.get("vk_product_link"):
+        text += f"\n🔗 <a href=\"{product['vk_product_link']}\">Ссылка на товар в ВК</a>"
+    if product.get("avito_url"):
+        text += f"\n🛒 <a href=\"{product['avito_url']}\">Ссылка на Авито</a>"
+    await safe_edit_message(
+        callback.message,
+        text,
+        reply_markup=get_new_product_detail_keyboard(
+            product_id,
+            status=product.get("status", "active"),
+            availability_status=av,
+            back_data=back_data,
+        ),
+        parse_mode="HTML",
+        disable_link_preview=True,
+    )
+    return True
 
 
 @router.callback_query(F.data.startswith("new_custom_"))
@@ -793,97 +830,86 @@ async def new_custom_branch(callback: CallbackQuery, state: FSMContext):
     except ValueError:
         await callback.answer("Ошибка", show_alert=True)
         return
-    with SessionLocal() as db:
-        btn = mcs.get_new_menu_button(db, bid)
-        if not btn:
-            await callback.answer("Кнопка не найдена", show_alert=True)
-            return
-        path = mcs.custom_node_path(bid)
-        nodes = mcs.get_merged_menu_nodes(db, path, editor=False)
-        prods = mcs.list_products_for_custom_leaf(db, bid)
-        prods = _sort_products_by_price(prods)
-        if not nodes and len(prods) == 1:
-            p = prods[0]
+
+    def _build():
+        with SessionLocal() as db:
+            btn = mcs.get_new_menu_button(db, bid)
+            if not btn:
+                return None
+            path = mcs.custom_node_path(bid)
+            nodes = mcs.get_merged_menu_nodes(db, path, editor=False)
+            prods = mcs.list_products_for_custom_leaf(db, bid)
+            prods = _sort_products_by_price(prods)
             back_cb = mcs.back_callback_for_custom_parent(btn.parent_path)
-            await state.update_data(new_products_back=back_cb)
-            product = await get_product_api(p["id"])
-            if product:
-                price_display = _normalize_price_display(product.get("price"))
-                text = f"📦 <b>{product.get('name', 'Без названия')}</b>\n\n"
-                text += f"💵 Цена: {price_display}\n"
-                text += f"📁 Подборка: {product.get('collection_name', '—')}\n"
-                av = product.get("availability_status")
-                text += f"Наличие: {'🟢 В наличии' if av == 'available' else '🔴 На заказ' if av == 'on_order' else '—'}\n"
-                if product.get("vk_product_link"):
-                    text += f"\n🔗 <a href=\"{product['vk_product_link']}\">Ссылка на товар в ВК</a>"
-                if product.get("avito_url"):
-                    text += f"\n🛒 <a href=\"{product['avito_url']}\">Ссылка на Авито</a>"
-                await safe_edit_message(
-                    callback.message,
-                    text,
-                    reply_markup=get_new_product_detail_keyboard(
-                        p["id"],
-                        status=product.get("status", "active"),
-                        availability_status=av,
-                        back_data=back_cb,
-                    ),
-                    parse_mode="HTML",
-                    disable_link_preview=True,
-                )
-                await callback.answer()
-                return
-        title = f"🆕 <b>{escape(btn.label)}</b>\n\n"
-        lines = []
-        for p in prods:
-            price = _normalize_price_display(p.get("price"))
-            vk = p.get("vk_product_link", "")
-            nm = _compact_label_for_product(p)
-            nm_safe = escape(nm)
-            if vk:
-                lines.append(f"{nm_safe} — {price} <a href=\"{vk}\">ВК</a>")
-            else:
-                lines.append(f"{nm_safe} — {price}")
-        if lines:
-            title += "\n".join(lines) + "\n\n"
-        available_custom = _available_only(prods)
-        if available_custom:
-            title += "🟢 В наличии:\n\n"
-            title += _format_available_lines(available_custom) + "\n\n"
-        if nodes:
-            title += "Подменю:"
-        elif not prods:
-            title += "Пока пусто. Добавьте подкнопки или товары в Настройках → Меню новые."
-        b_rows = []
-        for n in nodes:
-            if n.kind == "custom" and n.custom_id is not None:
+            if not nodes and len(prods) == 1:
+                return {"kind": "card", "product_id": prods[0]["id"], "back": back_cb}
+            title = f"🆕 <b>{escape(btn.label)}</b>\n\n"
+            lines = []
+            for p in prods:
+                price = _normalize_price_display(p.get("price"))
+                vk = p.get("vk_product_link", "")
+                nm_safe = escape(_compact_label_for_product(p))
+                if vk:
+                    lines.append(f"{nm_safe} — {price} <a href=\"{vk}\">ВК</a>")
+                else:
+                    lines.append(f"{nm_safe} — {price}")
+            if lines:
+                title += "\n".join(lines) + "\n\n"
+            available_custom = _available_only(prods)
+            if available_custom:
+                title += "🟢 В наличии:\n\n"
+                title += _format_available_lines(available_custom) + "\n\n"
+            if nodes:
+                title += "Подменю:"
+            elif not prods:
+                title += "Пока пусто. Добавьте подкнопки или товары в Настройках → Меню новые."
+            b_rows = []
+            for n in nodes:
+                if n.kind == "custom" and n.custom_id is not None:
+                    b_rows.append(
+                        [
+                            InlineKeyboardButton(
+                                text=f"{n.label} ({n.count})",
+                                callback_data=f"new_custom_{n.custom_id}",
+                            )
+                        ]
+                    )
+            for p in prods:
+                lbl = _compact_label_for_product(p)
+                if len(lbl) > 40:
+                    lbl = lbl[:37] + "..."
                 b_rows.append(
-                    [
-                        InlineKeyboardButton(
-                            text=f"{n.label} ({n.count})",
-                            callback_data=f"new_custom_{n.custom_id}",
-                        )
-                    ]
+                    [InlineKeyboardButton(text=lbl, callback_data=f"new_product_{p['id']}")]
                 )
-        for p in prods:
-            lbl = _compact_label_for_product(p)
-            if len(lbl) > 40:
-                lbl = lbl[:37] + "..."
+            b_rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=back_cb)])
             b_rows.append(
-                [InlineKeyboardButton(text=lbl, callback_data=f"new_product_{p['id']}")]
+                [InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")]
             )
-        back_cb = mcs.back_callback_for_custom_parent(btn.parent_path)
-        b_rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=back_cb)])
-        b_rows.append(
-            [InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")]
-        )
-        await state.update_data(new_products_back=f"new_custom_{bid}")
-        await safe_edit_message(
-            callback.message,
-            title,
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=b_rows),
-            parse_mode="HTML",
-            disable_link_preview=True,
-        )
+            return {
+                "kind": "screen",
+                "title": title,
+                "kb": InlineKeyboardMarkup(inline_keyboard=b_rows),
+            }
+
+    data = await run_db(_build)
+    if data is None:
+        await callback.answer("Кнопка не найдена", show_alert=True)
+        return
+    if data["kind"] == "card":
+        if await _show_new_product_card(callback, state, data["product_id"], data["back"]):
+            await callback.answer()
+            return
+        # Карточка не открылась — падаем в общий экран нельзя, просто сообщаем
+        await callback.answer("Товар не найден", show_alert=True)
+        return
+    await state.update_data(new_products_back=f"new_custom_{bid}")
+    await safe_edit_message(
+        callback.message,
+        data["title"],
+        reply_markup=data["kb"],
+        parse_mode="HTML",
+        disable_link_preview=True,
+    )
     await callback.answer()
 
 
@@ -1165,97 +1191,51 @@ async def new_products_category(callback: CallbackQuery, state: FSMContext):
     cat = callback.data.replace("new_cat_", "").replace("_", " ")
     
     if cat.lower() == "iphone":
+        # Сразу гасим "часики": дальше только сборка экрана в фоне, alert-ошибок нет
+        try:
+            await callback.answer()
+        except Exception:
+            pass
         await state.update_data(new_products_back="new_cat_iPhone")
-        items, _ = await get_products_api(limit=5000)
-        iphone_new = _filter_new_products(items, "iPhone новые")
-        with SessionLocal() as db:
-            iphone_custom = mcs.list_custom_products_for_path(db, "root>cat>iPhone")
-        
-        # Фильтруем товары со статусом "В наличии"
-        available_products = [p for p in (iphone_new + iphone_custom) if p.get("availability_status") == "available"]
-        
-        v_counts = _iphone_version_counts(iphone_new)
-        with SessionLocal() as db:
-            all_items = mcs.load_new_products_dicts(db)
-            for v in ["12", "13", "14", "15", "16", "17"]:
-                pth = f"root>cat>iPhone>ver>{v}"
-                v_counts[v] = mcs.total_count_for_path(db, pth, all_items)
-        text = "🆕 iPhone (новые)\n\n"
-        
-        # Добавляем список товаров "В наличии" если они есть
-        if available_products:
-            text += "🟢 В наличии:\n\n"
-            # Сортируем товары перед отображением
-            sorted_available = _sort_iphone_products(available_products)
-            available_list = _format_new_iphone_products_text(sorted_available)
-            text += available_list
-            text += "\n\n"
-        
-        text += "Выберите версию:"
-        
-        # Разбиваем длинный текст на несколько сообщений, если превышает лимит Telegram
-        max_len = 4090
-        with SessionLocal() as db:
-            extras = mcs.get_custom_extra_entries(db, "root>cat>iPhone")
-            keyboard = _merge_custom_into_markup(
-                get_new_iphone_versions_keyboard(
-                    v_counts,
-                    back_data="new_products_menu",
-                    label_resolver=mcs.effective_hardcoded_label,
-                ),
-                db,
-                "root>cat>iPhone",
-            )
 
-        if len(text) > max_len:
-            # Разбиваем текст на части
-            parts = []
-            rest = text
-            while rest:
-                if len(rest) <= max_len:
-                    parts.append(rest)
-                    break
-                chunk = rest[:max_len]
-                last_nl = chunk.rfind("\n")
-                if last_nl > 100:
-                    parts.append(rest[: last_nl + 1])
-                    rest = rest[last_nl + 1 :]
-                else:
-                    parts.append(chunk)
-                    rest = rest[max_len:]
-            
-            # Первое сообщение редактируем без клавиатуры
-            await safe_edit_message(
-                callback.message,
-                parts[0],
-                reply_markup=None,
-                parse_mode="HTML",
-                disable_link_preview=True,
-            )
-            
-            # Отправляем продолжения без клавиатуры
-            chat_id = callback.message.chat.id
-            send_opts = {"parse_mode": "HTML", "link_preview_options": LinkPreviewOptions(is_disabled=True)}
-            for extra in parts[1:-1]:
-                await callback.bot.send_message(chat_id=chat_id, text=extra, **send_opts)
-            
-            # Последнее сообщение отправляем с клавиатурой версий
-            await callback.bot.send_message(
-                chat_id=chat_id,
-                text=parts[-1],
-                reply_markup=keyboard,
-                **send_opts
-            )
-        else:
-            # Если текст помещается в одно сообщение, отправляем как обычно
-            await safe_edit_message(
-                callback.message,
-                text,
-                reply_markup=keyboard,
-                parse_mode="HTML",
-                disable_link_preview=True,
-            )
-        await callback.answer()
+        def _build_iphone():
+            items, _ = _fetch_products_sync(limit=5000)
+            iphone_new = _filter_new_products(items, "iPhone новые")
+            with SessionLocal() as db:
+                iphone_custom = mcs.list_custom_products_for_path(db, "root>cat>iPhone")
+
+            available_products = [
+                p
+                for p in (iphone_new + iphone_custom)
+                if p.get("availability_status") == "available"
+            ]
+
+            v_counts = _iphone_version_counts(iphone_new)
+            with SessionLocal() as db:
+                all_items = mcs.load_new_products_dicts(db)
+                for v in ["12", "13", "14", "15", "16", "17"]:
+                    pth = f"root>cat>iPhone>ver>{v}"
+                    v_counts[v] = mcs.total_count_for_path(db, pth, all_items)
+                keyboard = _merge_custom_into_markup(
+                    get_new_iphone_versions_keyboard(
+                        v_counts,
+                        back_data="new_products_menu",
+                        label_resolver=mcs.effective_hardcoded_label,
+                    ),
+                    db,
+                    "root>cat>iPhone",
+                )
+
+            text = "🆕 iPhone (новые)\n\n"
+            if available_products:
+                text += "🟢 В наличии:\n\n"
+                text += _format_new_iphone_products_text(_sort_iphone_products(available_products))
+                text += "\n\n"
+            text += "Выберите версию:"
+            return text, keyboard
+
+        text, keyboard = await run_db(_build_iphone)
+        await _send_html_nav_message(callback, text, keyboard)
         return
     
     collection_map = {
@@ -1268,99 +1248,102 @@ async def new_products_category(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Категория не найдена")
         return
 
-    with SessionLocal() as db:
-        all_items = mcs.load_new_products_dicts(db)
-        category_products_all = mcs.collect_products_for_path(db, cat_path, all_items)
-        cat_total = mcs.total_count_for_path(db, cat_path, all_items)
-
-    if cat_total <= 0:
-        text = f"🆕 Категория «{cat}»\n\nТовары не найдены."
+    def _build_category():
         with SessionLocal() as db:
-            kb = _build_root_new_products_keyboard(db)
+            all_items = mcs.load_new_products_dicts(db)
+            category_products_all = mcs.collect_products_for_path(db, cat_path, all_items)
+            cat_total = mcs.total_count_for_path(db, cat_path, all_items)
+
+        if cat_total <= 0:
+            with SessionLocal() as db:
+                kb = _build_root_new_products_keyboard(db)
+            return "empty", f"🆕 Категория «{cat}»\n\nТовары не найдены.", kb
+
+        if cat.lower() == "airpods":
+            from app.bot.keyboards.new_products_keyboard import get_airpods_models_keyboard
+
+            with SessionLocal() as db:
+                model_counts: Dict[str, int] = {}
+                for model in mcs.AIRPODS_ORDER:
+                    mk = mcs.AIRPODS_KEY[model]
+                    pth = f"{cat_path}>md>{mk}"
+                    tc = mcs.total_count_for_path(db, pth, all_items)
+                    if tc > 0:
+                        model_counts[model] = tc
+                kb = _merge_custom_into_markup(
+                    get_airpods_models_keyboard(
+                        model_counts,
+                        back_data="new_products_menu",
+                        label_resolver=mcs.effective_hardcoded_label,
+                    ),
+                    db,
+                    cat_path,
+                )
+            text = _nav_text_with_products("AirPods", category_products_all, "Выберите модель:")
+            return "nav", text, kb
+
+        if cat.lower() == "apple watch":
+            from app.bot.keyboards.new_products_keyboard import get_apple_watch_categories_keyboard
+
+            with SessionLocal() as db:
+                category_counts: Dict[str, int] = {}
+                for wc in mcs.WATCH_CATS:
+                    ck = mcs.WATCH_KEY[wc]
+                    pth = f"{cat_path}>wc>{ck}"
+                    tc = mcs.total_count_for_path(db, pth, all_items)
+                    if tc > 0:
+                        category_counts[wc] = tc
+                kb = _merge_custom_into_markup(
+                    get_apple_watch_categories_keyboard(
+                        category_counts,
+                        back_data="new_products_menu",
+                        label_resolver=mcs.effective_hardcoded_label,
+                    ),
+                    db,
+                    cat_path,
+                )
+            text = _nav_text_with_products(
+                f"Apple Watch ({cat_total})", category_products_all, "Выберите категорию:"
+            )
+            return "nav", text, kb
+
+        if cat.lower() == "ipad":
+            from app.bot.keyboards.new_products_keyboard import get_ipad_models_keyboard
+
+            with SessionLocal() as db:
+                model_counts: Dict[str, int] = {}
+                for model in mcs.IPAD_ORDER:
+                    mk = mcs.IPAD_KEY[model]
+                    pth = f"{cat_path}>md>{mk}"
+                    tc = mcs.total_count_for_path(db, pth, all_items)
+                    if tc > 0:
+                        model_counts[model] = tc
+                kb = _merge_custom_into_markup(
+                    get_ipad_models_keyboard(
+                        model_counts,
+                        back_data="new_products_menu",
+                        label_resolver=mcs.effective_hardcoded_label,
+                    ),
+                    db,
+                    cat_path,
+                )
+            text = _nav_text_with_products(
+                f"iPad ({cat_total})", category_products_all, "Выберите модель:"
+            )
+            return "nav", text, kb
+
+        return None
+
+    result = await run_db(_build_category)
+    if result is None:
+        await callback.answer("Категория не найдена")
+        return
+    kind, text, kb = result
+    if kind == "empty":
         await safe_edit_message(callback.message, text, reply_markup=kb)
-        await callback.answer()
-        return
-
-    # Airpods - текстовый список + клавиатура моделей
-    if cat.lower() == "airpods":
-        from app.bot.keyboards.new_products_keyboard import get_airpods_models_keyboard
-        with SessionLocal() as db:
-            model_counts: Dict[str, int] = {}
-            for model in mcs.AIRPODS_ORDER:
-                mk = mcs.AIRPODS_KEY[model]
-                pth = f"{cat_path}>md>{mk}"
-                tc = mcs.total_count_for_path(db, pth, all_items)
-                if tc > 0:
-                    model_counts[model] = tc
-            kb = _merge_custom_into_markup(
-                get_airpods_models_keyboard(
-                    model_counts,
-                    back_data="new_products_menu",
-                    label_resolver=mcs.effective_hardcoded_label,
-                ),
-                db,
-                cat_path,
-            )
-        text = _nav_text_with_products("AirPods", category_products_all, "Выберите модель:")
+    else:
         await _send_html_nav_message(callback, text, kb)
-        await callback.answer()
-        return
-
-    # Apple Watch - текстовый список + клавиатура категорий
-    if cat.lower() == "apple watch":
-        from app.bot.keyboards.new_products_keyboard import get_apple_watch_categories_keyboard
-        with SessionLocal() as db:
-            category_counts: Dict[str, int] = {}
-            for wc in mcs.WATCH_CATS:
-                ck = mcs.WATCH_KEY[wc]
-                pth = f"{cat_path}>wc>{ck}"
-                tc = mcs.total_count_for_path(db, pth, all_items)
-                if tc > 0:
-                    category_counts[wc] = tc
-            kb = _merge_custom_into_markup(
-                get_apple_watch_categories_keyboard(
-                    category_counts,
-                    back_data="new_products_menu",
-                    label_resolver=mcs.effective_hardcoded_label,
-                ),
-                db,
-                cat_path,
-            )
-        text = _nav_text_with_products(
-            f"Apple Watch ({cat_total})", category_products_all, "Выберите категорию:"
-        )
-        await _send_html_nav_message(callback, text, kb)
-        await callback.answer()
-        return
-
-    # iPad - текстовый список + клавиатура моделей
-    if cat.lower() == "ipad":
-        from app.bot.keyboards.new_products_keyboard import get_ipad_models_keyboard
-        with SessionLocal() as db:
-            model_counts: Dict[str, int] = {}
-            for model in mcs.IPAD_ORDER:
-                mk = mcs.IPAD_KEY[model]
-                pth = f"{cat_path}>md>{mk}"
-                tc = mcs.total_count_for_path(db, pth, all_items)
-                if tc > 0:
-                    model_counts[model] = tc
-            kb = _merge_custom_into_markup(
-                get_ipad_models_keyboard(
-                    model_counts,
-                    back_data="new_products_menu",
-                    label_resolver=mcs.effective_hardcoded_label,
-                ),
-                db,
-                cat_path,
-            )
-        text = _nav_text_with_products(
-            f"iPad ({cat_total})", category_products_all, "Выберите модель:"
-        )
-        await _send_html_nav_message(callback, text, kb)
-        await callback.answer()
-        return
-
-    await callback.answer("Категория не найдена")
+    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("new_iphone_ver_"))
@@ -1368,82 +1351,82 @@ async def new_iphone_versions(callback: CallbackQuery, state: FSMContext):
     """Версия iPhone -> модели."""
     version = callback.data.replace("new_iphone_ver_", "")
     await state.update_data(new_products_back=f"new_iphone_ver_{version}")
-    items, _ = await get_products_api(limit=5000)
-    iphone_new = _filter_new_products(items, "iPhone новые")
 
-    parent_path = f"root>cat>iPhone>ver>{version}"
-    m_counts: Dict[str, int] = {}
-    with SessionLocal() as db:
-        all_items = mcs.load_new_products_dicts(db)
-        for display in IPHONE_VERSION_MODEL_ORDER.get(version, []):
-            mk = display.replace(" ", "_").lower()
-            pth = f"{parent_path}>md>{mk}"
-            tc = mcs.total_count_for_path(db, pth, all_items)
-            if tc > 0:
-                m_counts[display] = tc
-        version_products = mcs.collect_products_for_path(db, parent_path, all_items)
+    def _build():
+        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-    text = _iphone_nav_text_with_products(f"iPhone {version}", version_products, "Выберите модель:")
+        items, _ = _fetch_products_sync(limit=5000)
+        iphone_new = _filter_new_products(items, "iPhone новые")
 
-    # Flat fallback только для 12/14, когда нет ни одного стандартного слота модели.
-    if not m_counts and version in ("12", "14"):
-        version_products = []
-        for p in iphone_new:
-            name = p.get("name", "")
-            model = parse_iphone_model(name)
-            ver = get_iphone_version_from_model(model) if model else None
-            if ver == version:
-                version_products.append(p)
-            elif (name or "").lower().count(f"iphone {version}") > 0:
-                version_products.append(p)
+        parent_path = f"root>cat>iPhone>ver>{version}"
+        m_counts: Dict[str, int] = {}
         with SessionLocal() as db:
-            version_products.extend(mcs.list_custom_products_for_path(db, parent_path))
-        if version_products:
-            version_products = _sort_iphone_products(version_products)
-            text = f"🆕 iPhone {version} ({len(version_products)}):\n\n"
-            text += _format_new_iphone_products_text(version_products)
-            from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-            buttons = []
-            for p in version_products:
-                lbl = _short_line_iphone_by_product(p).split(" - ")[0]
-                if len(lbl) > 40:
-                    lbl = lbl[:37] + "..."
-                buttons.append([
-                    InlineKeyboardButton(text=lbl, callback_data=f"new_product_{p['id']}")
-                ])
-            with SessionLocal() as db:
-                extras = mcs.get_custom_extra_entries(db, parent_path)
-                from aiogram.types import InlineKeyboardButton as IKB
+            all_items = mcs.load_new_products_dicts(db)
+            for display in IPHONE_VERSION_MODEL_ORDER.get(version, []):
+                mk = display.replace(" ", "_").lower()
+                pth = f"{parent_path}>md>{mk}"
+                tc = mcs.total_count_for_path(db, pth, all_items)
+                if tc > 0:
+                    m_counts[display] = tc
+            version_products = mcs.collect_products_for_path(db, parent_path, all_items)
 
-                for e in extras:
-                    buttons.append([IKB(text=e["text"], callback_data=e["callback"])])
-            buttons.append([
-                InlineKeyboardButton(text="⬅️ Назад", callback_data="new_cat_iPhone")
-            ])
-            buttons.append([
-                InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")
-            ])
-            await safe_edit_message(
-                callback.message,
-                text,
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
-                parse_mode="HTML",
-                disable_link_preview=True,
-            )
-            await callback.answer()
-            return
-
-    with SessionLocal() as db:
-        kb = _merge_custom_into_markup(
-            get_new_iphone_models_keyboard(
-                m_counts,
-                version,
-                back_data="new_cat_iPhone",
-                label_resolver=mcs.effective_hardcoded_label,
-            ),
-            db,
-            parent_path,
+        text = _iphone_nav_text_with_products(
+            f"iPhone {version}", version_products, "Выберите модель:"
         )
+
+        # Flat fallback только для 12/14, когда нет ни одного стандартного слота модели.
+        if not m_counts and version in ("12", "14"):
+            version_products = []
+            for p in iphone_new:
+                name = p.get("name", "")
+                model = parse_iphone_model(name)
+                ver = get_iphone_version_from_model(model) if model else None
+                if ver == version:
+                    version_products.append(p)
+                elif (name or "").lower().count(f"iphone {version}") > 0:
+                    version_products.append(p)
+            with SessionLocal() as db:
+                version_products.extend(mcs.list_custom_products_for_path(db, parent_path))
+            if version_products:
+                version_products = _sort_iphone_products(version_products)
+                text = f"🆕 iPhone {version} ({len(version_products)}):\n\n"
+                text += _format_new_iphone_products_text(version_products)
+                buttons = []
+                for p in version_products:
+                    lbl = _short_line_iphone_by_product(p).split(" - ")[0]
+                    if len(lbl) > 40:
+                        lbl = lbl[:37] + "..."
+                    buttons.append([
+                        InlineKeyboardButton(text=lbl, callback_data=f"new_product_{p['id']}")
+                    ])
+                with SessionLocal() as db:
+                    extras = mcs.get_custom_extra_entries(db, parent_path)
+                    for e in extras:
+                        buttons.append(
+                            [InlineKeyboardButton(text=e["text"], callback_data=e["callback"])]
+                        )
+                buttons.append([
+                    InlineKeyboardButton(text="⬅️ Назад", callback_data="new_cat_iPhone")
+                ])
+                buttons.append([
+                    InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")
+                ])
+                return text, InlineKeyboardMarkup(inline_keyboard=buttons)
+
+        with SessionLocal() as db:
+            kb = _merge_custom_into_markup(
+                get_new_iphone_models_keyboard(
+                    m_counts,
+                    version,
+                    back_data="new_cat_iPhone",
+                    label_resolver=mcs.effective_hardcoded_label,
+                ),
+                db,
+                parent_path,
+            )
+        return text, kb
+
+    text, kb = await run_db(_build)
     await _send_html_nav_message(callback, text, kb)
     await callback.answer()
 
@@ -1471,88 +1454,76 @@ async def new_airpods_model(callback: CallbackQuery, state: FSMContext):
         return
     
     ap_path = f"root>cat>Airpods>md>{model_key}"
-    with SessionLocal() as db:
-        all_items = mcs.load_new_products_dicts(db)
-        model_products = mcs.collect_products_for_path(db, ap_path, all_items)
-    model_products = _sort_products_by_price(model_products)
 
-    if not model_products:
+    def _build():
+        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+        with SessionLocal() as db:
+            all_items = mcs.load_new_products_dicts(db)
+            model_products = mcs.collect_products_for_path(db, ap_path, all_items)
+        model_products = _sort_products_by_price(model_products)
+
+        if not model_products:
+            return None
+        if len(model_products) == 1:
+            return {"kind": "card", "product_id": model_products[0]["id"]}
+
+        # Несколько товаров: список с ценой сверху, кнопки без цены
+        text = f"🆕 {model_name}\n\n"
+        lines = []
+        buttons = []
+        custom_map = _custom_label_map_for_products(model_products)
+        for p in model_products:
+            price = _normalize_price_display(p.get("price"))
+            vk_link = p.get("vk_product_link", "")
+            label = _compact_label_for_product(p, custom_map)
+            if vk_link:
+                lines.append(f"{label} - {price} <a href=\"{vk_link}\">ВК</a>")
+            else:
+                lines.append(f"{label} - {price}")
+            buttons.append([
+                InlineKeyboardButton(text=label, callback_data=f"new_product_{p['id']}")
+            ])
+        text += "\n".join(lines) if lines else "Товары не найдены"
+        text += "\n\nВыберите позицию:"
+        has_custom_in_list = any(bool(p.get("custom_button_id")) for p in model_products)
+        with SessionLocal() as db:
+            extras = mcs.get_custom_extra_entries(db, ap_path)
+            if not has_custom_in_list:
+                for e in extras:
+                    buttons.append(
+                        [InlineKeyboardButton(text=e["text"], callback_data=e["callback"])]
+                    )
+        buttons.append([
+            InlineKeyboardButton(text="⬅️ Назад", callback_data="new_cat_Airpods")
+        ])
+        buttons.append([
+            InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")
+        ])
+        return {
+            "kind": "screen",
+            "text": text,
+            "kb": InlineKeyboardMarkup(inline_keyboard=buttons),
+        }
+
+    data = await run_db(_build)
+    if data is None:
         await callback.answer("Товары не найдены", show_alert=True)
         return
-
-    # Если один товар — сразу открываем карточку редактирования
-    if len(model_products) == 1:
-        p = model_products[0]
-        await state.update_data(new_products_back="new_cat_Airpods")
-        product = await get_product_api(p["id"])
-        if not product:
+    if data["kind"] == "card":
+        # Один товар — сразу открываем карточку редактирования
+        if not await _show_new_product_card(
+            callback, state, data["product_id"], "new_cat_Airpods"
+        ):
             await callback.answer("Товар не найден", show_alert=True)
             return
-        price_display = _normalize_price_display(product.get("price"))
-        text = f"📦 <b>{product.get('name', 'Без названия')}</b>\n\n"
-        text += f"💵 Цена: {price_display}\n"
-        text += f"📁 Подборка: {product.get('collection_name', '—')}\n"
-        av = product.get("availability_status")
-        text += f"Наличие: {'🟢 В наличии' if av == 'available' else '🔴 На заказ' if av == 'on_order' else '—'}\n"
-        if product.get("vk_product_link"):
-            text += f"\n🔗 <a href=\"{product['vk_product_link']}\">Ссылка на товар в ВК</a>"
-        if product.get("avito_url"):
-            text += f"\n🛒 <a href=\"{product['avito_url']}\">Ссылка на Авито</a>"
-        await safe_edit_message(
-            callback.message,
-            text,
-                reply_markup=get_new_product_detail_keyboard(
-                    p["id"],
-                    status=product.get("status", "active"),
-                    availability_status=av,
-                    back_data="new_cat_Airpods",
-                ),
-            parse_mode="HTML",
-            disable_link_preview=True,
-        )
         await callback.answer()
         return
-    
-    # Несколько товаров: список с ценой сверху, кнопки без цены
-    text = f"🆕 {model_name}\n\n"
-    lines = []
-    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-    buttons = []
-    custom_map = _custom_label_map_for_products(model_products)
-    for p in model_products:
-        price = _normalize_price_display(p.get("price"))
-        vk_link = p.get("vk_product_link", "")
-        label = _compact_label_for_product(p, custom_map)
-        if vk_link:
-            lines.append(f"{label} - {price} <a href=\"{vk_link}\">ВК</a>")
-        else:
-            lines.append(f"{label} - {price}")
-        buttons.append([
-            InlineKeyboardButton(text=label, callback_data=f"new_product_{p['id']}")
-        ])
-    text += "\n".join(lines) if lines else "Товары не найдены"
-    text += "\n\nВыберите позицию:"
     await state.update_data(new_products_back=f"new_airpods_{model_key}")
-    has_custom_in_list = any(bool(p.get("custom_button_id")) for p in model_products)
-    with SessionLocal() as db:
-        extras = mcs.get_custom_extra_entries(db, ap_path)
-        from aiogram.types import InlineKeyboardButton as IKB
-
-        if not has_custom_in_list:
-            for e in extras:
-                buttons.append([IKB(text=e["text"], callback_data=e["callback"])])
-    buttons.append([
-        InlineKeyboardButton(text="⬅️ Назад", callback_data="new_cat_Airpods")
-    ])
-    buttons.append([
-        InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")
-    ])
-    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
-    
     await safe_edit_message(
         callback.message,
-        text,
-        reply_markup=keyboard,
+        data["text"],
+        reply_markup=data["kb"],
         parse_mode="HTML",
         disable_link_preview=True,
     )
@@ -1573,50 +1544,56 @@ async def new_apple_watch_category(callback: CallbackQuery, state: FSMContext):
     await state.update_data(new_products_back=f"new_watch_cat_{cat_key}")
     
     wc_path = f"root>cat>Apple Watch>wc>{cat_key}"
-    with SessionLocal() as db:
-        all_items = mcs.load_new_products_dicts(db)
-        category_products = mcs.collect_products_for_path(db, wc_path, all_items)
-    category_products = _sort_products_by_price(category_products)
 
-    if not category_products:
+    def _build():
+        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+        with SessionLocal() as db:
+            all_items = mcs.load_new_products_dicts(db)
+            category_products = mcs.collect_products_for_path(db, wc_path, all_items)
+        category_products = _sort_products_by_price(category_products)
+
+        if not category_products:
+            return None
+
+        # Текст сверху: список с ценами и ссылкой ВК
+        lines = []
+        buttons = []
+        custom_label_map = _custom_label_map_for_products(category_products)
+        for p in category_products:
+            label = _compact_label_for_product(p, custom_label_map)
+            price = _normalize_price_display(p.get("price"))
+            vk_link = p.get("vk_product_link", "")
+            if vk_link:
+                lines.append(f"{label} - {price} <a href=\"{vk_link}\">ВК</a>")
+            else:
+                lines.append(f"{label} - {price}")
+            buttons.append([
+                InlineKeyboardButton(text=label, callback_data=f"new_product_{p['id']}")
+            ])
+
+        text = f"🆕 Apple Watch {category} ({len(category_products)})\n\n"
+        text += "\n".join(lines) if lines else "Товары не найдены"
+        text += "\n\nВыберите позицию:"
+        with SessionLocal() as db:
+            extras = mcs.get_custom_extra_entries(db, wc_path)
+            for e in extras:
+                buttons.append(
+                    [InlineKeyboardButton(text=e["text"], callback_data=e["callback"])]
+                )
+        buttons.append([
+            InlineKeyboardButton(text="⬅️ Назад", callback_data="new_cat_Apple_Watch")
+        ])
+        buttons.append([
+            InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")
+        ])
+        return text, InlineKeyboardMarkup(inline_keyboard=buttons)
+
+    result = await run_db(_build)
+    if result is None:
         await callback.answer("Товары не найдены", show_alert=True)
         return
-
-    # Текст сверху: список с ценами и ссылкой ВК
-    lines = []
-    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-    buttons = []
-    custom_label_map = _custom_label_map_for_products(category_products)
-    for p in category_products:
-        label = _compact_label_for_product(p, custom_label_map)
-        price = _normalize_price_display(p.get("price"))
-        vk_link = p.get("vk_product_link", "")
-        if vk_link:
-            lines.append(f"{label} - {price} <a href=\"{vk_link}\">ВК</a>")
-        else:
-            lines.append(f"{label} - {price}")
-        buttons.append([
-            InlineKeyboardButton(text=label, callback_data=f"new_product_{p['id']}")
-        ])
-    
-    text = f"🆕 Apple Watch {category} ({len(category_products)})\n\n"
-    text += "\n".join(lines) if lines else "Товары не найдены"
-    text += "\n\nВыберите позицию:"
-    wc_path = f"root>cat>Apple Watch>wc>{cat_key}"
-    with SessionLocal() as db:
-        extras = mcs.get_custom_extra_entries(db, wc_path)
-        from aiogram.types import InlineKeyboardButton as IKB
-
-        for e in extras:
-            buttons.append([IKB(text=e["text"], callback_data=e["callback"])])
-    buttons.append([
-        InlineKeyboardButton(text="⬅️ Назад", callback_data="new_cat_Apple_Watch")
-    ])
-    buttons.append([
-        InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")
-    ])
-    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
-    
+    text, keyboard = result
     await safe_edit_message(
         callback.message,
         text,
@@ -1683,51 +1660,58 @@ async def new_ipad_model(callback: CallbackQuery, state: FSMContext):
     await state.update_data(new_products_back=f"new_ipad_{model_key}")
     
     ipad_path = f"root>cat>iPad>md>{model_key}"
-    with SessionLocal() as db:
-        all_items = mcs.load_new_products_dicts(db)
-        model_products = mcs.collect_products_for_path(db, ipad_path, all_items)
-    model_products = _sort_products_by_price(model_products)
 
-    if not model_products:
+    def _build():
+        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+        with SessionLocal() as db:
+            all_items = mcs.load_new_products_dicts(db)
+            model_products = mcs.collect_products_for_path(db, ipad_path, all_items)
+        model_products = _sort_products_by_price(model_products)
+
+        if not model_products:
+            return None
+
+        # Текст сверху: модель - цена ВК; кнопки: "iPad 11 🌸", "iPad 11 🔵" и т.д.
+        lines = []
+        buttons = []
+        custom_label_map = _custom_label_map_for_products(model_products)
+        for p in model_products:
+            label = _compact_label_for_product(p, custom_label_map)
+            price = _normalize_price_display(p.get("price"))
+            vk_link = p.get("vk_product_link", "")
+            if vk_link:
+                lines.append(f"{label} - {price} <a href=\"{vk_link}\">ВК</a>")
+            else:
+                lines.append(f"{label} - {price}")
+            buttons.append([
+                InlineKeyboardButton(text=label, callback_data=f"new_product_{p['id']}")
+            ])
+
+        text = f"🆕 {model_name} ({len(model_products)}):\n\n"
+        text += "\n".join(lines) if lines else "Товары не найдены"
+        text += "\n\nВыберите позицию:"
+        has_custom_in_list = any(bool(p.get("custom_button_id")) for p in model_products)
+        with SessionLocal() as db:
+            extras = mcs.get_custom_extra_entries(db, ipad_path)
+            if not has_custom_in_list:
+                for e in extras:
+                    buttons.append(
+                        [InlineKeyboardButton(text=e["text"], callback_data=e["callback"])]
+                    )
+        buttons.append([
+            InlineKeyboardButton(text="⬅️ Назад", callback_data="new_cat_iPad")
+        ])
+        buttons.append([
+            InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")
+        ])
+        return text, InlineKeyboardMarkup(inline_keyboard=buttons)
+
+    result = await run_db(_build)
+    if result is None:
         await callback.answer("Товары не найдены", show_alert=True)
         return
-
-    # Текст сверху: модель - цена ВК; кнопки: "iPad 11 🌸", "iPad 11 🔵" и т.д.
-    lines = []
-    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-    buttons = []
-    custom_label_map = _custom_label_map_for_products(model_products)
-    for p in model_products:
-        label = _compact_label_for_product(p, custom_label_map)
-        price = _normalize_price_display(p.get("price"))
-        vk_link = p.get("vk_product_link", "")
-        if vk_link:
-            lines.append(f"{label} - {price} <a href=\"{vk_link}\">ВК</a>")
-        else:
-            lines.append(f"{label} - {price}")
-        buttons.append([
-            InlineKeyboardButton(text=label, callback_data=f"new_product_{p['id']}")
-        ])
-    
-    text = f"🆕 {model_name} ({len(model_products)}):\n\n"
-    text += "\n".join(lines) if lines else "Товары не найдены"
-    text += "\n\nВыберите позицию:"
-    has_custom_in_list = any(bool(p.get("custom_button_id")) for p in model_products)
-    with SessionLocal() as db:
-        extras = mcs.get_custom_extra_entries(db, ipad_path)
-        from aiogram.types import InlineKeyboardButton as IKB
-
-        if not has_custom_in_list:
-            for e in extras:
-                buttons.append([IKB(text=e["text"], callback_data=e["callback"])])
-    buttons.append([
-        InlineKeyboardButton(text="⬅️ Назад", callback_data="new_cat_iPad")
-    ])
-    buttons.append([
-        InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")
-    ])
-    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
-    
+    text, keyboard = result
     await safe_edit_message(
         callback.message,
         text,
@@ -1780,37 +1764,42 @@ async def new_iphone_models(callback: CallbackQuery, state: FSMContext):
     version = parts[0] if parts else ""
     model_key = "_".join(parts[1:]) if len(parts) > 1 else ""
     await state.update_data(new_products_back=f"new_iphone_mod_{version}_{model_key}")
-    items, _ = await get_products_api(limit=5000)
-    iphone_new = _filter_new_products(items, "iPhone новые")
-    var_counts = _iphone_memory_counts(iphone_new, version, model_key)
-    parent_path = f"root>cat>iPhone>ver>{version}>md>{model_key}"
-    with SessionLocal() as db:
-        all_items = mcs.load_new_products_dicts(db)
-        for mem in ["64", "128", "256", "512", "1Tb"]:
-            mem_key = mem.lower()
-            pth = f"{parent_path}>mem>{mem_key}"
-            tc = mcs.total_count_for_path(db, pth, all_items)
-            if tc > 0:
-                var_counts[mem] = tc
-            else:
-                var_counts.pop(mem, None)
-        model_products = mcs.collect_products_for_path(db, parent_path, all_items)
-    model_display = _iphone_model_display_label(version, model_key)
-    text = _iphone_nav_text_with_products(
-        f"iPhone {model_display}", model_products, "Выберите объём памяти:"
-    )
-    with SessionLocal() as db:
-        kb = _merge_custom_into_markup(
-            get_new_iphone_variants_keyboard(
-                var_counts,
-                version,
-                model_key,
-                back_data=f"new_iphone_ver_{version}",
-                label_resolver=mcs.effective_hardcoded_label,
-            ),
-            db,
-            parent_path,
+
+    def _build():
+        items, _ = _fetch_products_sync(limit=5000)
+        iphone_new = _filter_new_products(items, "iPhone новые")
+        var_counts = _iphone_memory_counts(iphone_new, version, model_key)
+        parent_path = f"root>cat>iPhone>ver>{version}>md>{model_key}"
+        with SessionLocal() as db:
+            all_items = mcs.load_new_products_dicts(db)
+            for mem in ["64", "128", "256", "512", "1Tb"]:
+                mem_key = mem.lower()
+                pth = f"{parent_path}>mem>{mem_key}"
+                tc = mcs.total_count_for_path(db, pth, all_items)
+                if tc > 0:
+                    var_counts[mem] = tc
+                else:
+                    var_counts.pop(mem, None)
+            model_products = mcs.collect_products_for_path(db, parent_path, all_items)
+        model_display = _iphone_model_display_label(version, model_key)
+        text = _iphone_nav_text_with_products(
+            f"iPhone {model_display}", model_products, "Выберите объём памяти:"
         )
+        with SessionLocal() as db:
+            kb = _merge_custom_into_markup(
+                get_new_iphone_variants_keyboard(
+                    var_counts,
+                    version,
+                    model_key,
+                    back_data=f"new_iphone_ver_{version}",
+                    label_resolver=mcs.effective_hardcoded_label,
+                ),
+                db,
+                parent_path,
+            )
+        return text, kb
+
+    text, kb = await run_db(_build)
     await _send_html_nav_message(callback, text, kb)
     await callback.answer()
 
@@ -1822,89 +1811,83 @@ async def new_iphone_variants(callback: CallbackQuery, state: FSMContext):
     if not version or not memory_key:
         await callback.answer("Ошибка навигации", show_alert=True)
         return
-    items, _ = await get_products_api(limit=5000)
-    iphone_new = _filter_new_products(items, "iPhone новые")
-    mem_path = f"root>cat>iPhone>ver>{version}>md>{model_key}>mem>{memory_key}"
-    with SessionLocal() as db:
-        all_items = mcs.load_new_products_dicts(db)
-        mem_products = mcs.collect_products_for_path(db, mem_path, all_items)
-    mem_products = _sort_iphone_products(mem_products)
-    mem_display = "1Tb" if memory_key == "1tb" else f"{memory_key}Gb"
-
-    # iPhone 12–16: после выбора памяти сразу список товаров (без шага esim/1+1/2sim)
-    if version in ("12", "13", "14", "15", "16"):
-        await state.update_data(
-            new_products_back=format_new_iphone_var_nav(version, model_key, memory_key)
-        )
-        text = f"🆕 iPhone {version} {model_key.replace('_', ' ')} {mem_display}\n\n"
-        if mem_products:
-            text += _format_new_iphone_products_text(mem_products, version, model_key, memory_key, None)
-        else:
-            text += "Товары не найдены"
-        text += "\n\nВыберите позицию:"
-        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-        buttons = []
-        for p in mem_products:
-            lbl = button_label_for_product(p)
-            buttons.append([
-                InlineKeyboardButton(text=lbl, callback_data=f"new_product_{p['id']}")
-            ])
-        has_custom_in_mem_products = any(bool(p.get("custom_button_id")) for p in mem_products)
-        with SessionLocal() as db:
-            extras = mcs.get_custom_extra_entries(db, mem_path)
-            from aiogram.types import InlineKeyboardButton as IKB
-
-            # Если custom-товар уже есть в списке кнопок, не дублируем его через extras.
-            if not has_custom_in_mem_products:
-                for e in extras:
-                    buttons.append([IKB(text=e["text"], callback_data=e["callback"])])
-        buttons.append([
-            InlineKeyboardButton(text="⬅️ Назад", callback_data=f"new_iphone_mod_{version}_{model_key}")
-        ])
-        buttons.append([
-            InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")
-        ])
-        await safe_edit_message(
-            callback.message,
-            text,
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
-            parse_mode="HTML",
-            disable_link_preview=True,
-        )
-        await callback.answer()
-        return
-
-    # iPhone 17: показываем выбор типа сим-карты
     await state.update_data(
         new_products_back=format_new_iphone_var_nav(version, model_key, memory_key)
     )
-    stor_counts = _iphone_storage_counts(iphone_new, version, model_key, memory_key)
-    with SessionLocal() as db:
-        all_items = mcs.load_new_products_dicts(db)
-        for stor in list(stor_counts.keys()):
-            stor_key = stor.replace("+", "p")
-            pth = f"root>cat>iPhone>ver>{version}>md>{model_key}>mem>{memory_key}>stor>{stor_key}"
-            stor_counts[stor] = mcs.total_count_for_path(db, pth, all_items)
-    # Формируем заголовок с правильным названием модели
-    model_display = _iphone_model_display_label(version, model_key)
-    text = _iphone_nav_text_with_products(
-        f"iPhone {model_display} {mem_display}",
-        mem_products,
-        "Выберите тип сим-карты:",
-    )
-    with SessionLocal() as db:
-        kb = _merge_custom_into_markup(
-            get_new_iphone_storage_keyboard(
-                stor_counts,
-                version,
-                model_key,
-                memory_key,
-                back_data=f"new_iphone_mod_{version}_{model_key}",
-                label_resolver=mcs.effective_hardcoded_label,
-            ),
-            db,
-            mem_path,
+
+    def _build():
+        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+        items, _ = _fetch_products_sync(limit=5000)
+        iphone_new = _filter_new_products(items, "iPhone новые")
+        mem_path = f"root>cat>iPhone>ver>{version}>md>{model_key}>mem>{memory_key}"
+        with SessionLocal() as db:
+            all_items = mcs.load_new_products_dicts(db)
+            mem_products = mcs.collect_products_for_path(db, mem_path, all_items)
+        mem_products = _sort_iphone_products(mem_products)
+        mem_display = "1Tb" if memory_key == "1tb" else f"{memory_key}Gb"
+
+        # iPhone 12–16: после выбора памяти сразу список товаров (без шага esim/1+1/2sim)
+        if version in ("12", "13", "14", "15", "16"):
+            text = f"🆕 iPhone {version} {model_key.replace('_', ' ')} {mem_display}\n\n"
+            if mem_products:
+                text += _format_new_iphone_products_text(mem_products, version, model_key, memory_key, None)
+            else:
+                text += "Товары не найдены"
+            text += "\n\nВыберите позицию:"
+            buttons = []
+            for p in mem_products:
+                lbl = button_label_for_product(p)
+                buttons.append([
+                    InlineKeyboardButton(text=lbl, callback_data=f"new_product_{p['id']}")
+                ])
+            has_custom_in_mem_products = any(bool(p.get("custom_button_id")) for p in mem_products)
+            with SessionLocal() as db:
+                extras = mcs.get_custom_extra_entries(db, mem_path)
+                # Если custom-товар уже есть в списке кнопок, не дублируем его через extras.
+                if not has_custom_in_mem_products:
+                    for e in extras:
+                        buttons.append(
+                            [InlineKeyboardButton(text=e["text"], callback_data=e["callback"])]
+                        )
+            buttons.append([
+                InlineKeyboardButton(text="⬅️ Назад", callback_data=f"new_iphone_mod_{version}_{model_key}")
+            ])
+            buttons.append([
+                InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")
+            ])
+            return text, InlineKeyboardMarkup(inline_keyboard=buttons)
+
+        # iPhone 17: показываем выбор типа сим-карты
+        stor_counts = _iphone_storage_counts(iphone_new, version, model_key, memory_key)
+        with SessionLocal() as db:
+            all_items = mcs.load_new_products_dicts(db)
+            for stor in list(stor_counts.keys()):
+                stor_key = stor.replace("+", "p")
+                pth = f"root>cat>iPhone>ver>{version}>md>{model_key}>mem>{memory_key}>stor>{stor_key}"
+                stor_counts[stor] = mcs.total_count_for_path(db, pth, all_items)
+        model_display = _iphone_model_display_label(version, model_key)
+        text = _iphone_nav_text_with_products(
+            f"iPhone {model_display} {mem_display}",
+            mem_products,
+            "Выберите тип сим-карты:",
         )
+        with SessionLocal() as db:
+            kb = _merge_custom_into_markup(
+                get_new_iphone_storage_keyboard(
+                    stor_counts,
+                    version,
+                    model_key,
+                    memory_key,
+                    back_data=f"new_iphone_mod_{version}_{model_key}",
+                    label_resolver=mcs.effective_hardcoded_label,
+                ),
+                db,
+                mem_path,
+            )
+        return text, kb
+
+    text, kb = await run_db(_build)
     await _send_html_nav_message(callback, text, kb)
     await callback.answer()
 
@@ -1922,37 +1905,42 @@ async def new_iphone_storage(callback: CallbackQuery, state: FSMContext):
     model_key = "_".join(parts[1:-2]) if len(parts) > 3 else parts[1]
     memory_key = parts[-2] if len(parts) >= 2 else ""
     storage_key = parts[-1] if parts else ""
-    items, _ = await get_products_api(limit=5000)
-    iphone_new = _filter_new_products(items, "iPhone новые")
-    plist = _iphone_products_for_storage(iphone_new, version, model_key, memory_key, storage_key)
-    stor_path = f"root>cat>iPhone>ver>{version}>md>{model_key}>mem>{memory_key}>stor>{storage_key}"
-    with SessionLocal() as db:
-        plist.extend(mcs.list_products_at_hardcoded_leaf(db, stor_path))
-    plist = _sort_iphone_products(plist)
-    text = "🆕 Товары:\n\n"
-    if plist:
-        text += _format_new_iphone_products_text(plist, version, model_key, memory_key, storage_key)
-    else:
-        text += "Товары не найдены"
-    text += "\n\nВыберите позицию:"
-    
-    back_data = format_new_iphone_var_nav(version, model_key, memory_key)
-    short_labels = {p["id"]: button_label_for_product(p) for p in plist}
 
-    has_custom_in_plist = any(bool(p.get("custom_button_id")) for p in plist)
-    with SessionLocal() as db:
-        base_kb = get_new_iphone_products_keyboard(
-            plist,
-            version, model_key, memory_key, storage_key,
-            back_data=back_data,
-            prefix="new_product",
-            short_labels=short_labels,
-        )
-        # Если custom-товар уже добавлен в список позиций, не дублируем его extra-кнопкой.
-        if has_custom_in_plist:
-            kb = base_kb
+    def _build():
+        items, _ = _fetch_products_sync(limit=5000)
+        iphone_new = _filter_new_products(items, "iPhone новые")
+        plist = _iphone_products_for_storage(iphone_new, version, model_key, memory_key, storage_key)
+        stor_path = f"root>cat>iPhone>ver>{version}>md>{model_key}>mem>{memory_key}>stor>{storage_key}"
+        with SessionLocal() as db:
+            plist.extend(mcs.list_products_at_hardcoded_leaf(db, stor_path))
+        plist = _sort_iphone_products(plist)
+        text = "🆕 Товары:\n\n"
+        if plist:
+            text += _format_new_iphone_products_text(plist, version, model_key, memory_key, storage_key)
         else:
-            kb = _merge_custom_into_markup(base_kb, db, stor_path)
+            text += "Товары не найдены"
+        text += "\n\nВыберите позицию:"
+
+        back_data = format_new_iphone_var_nav(version, model_key, memory_key)
+        short_labels = {p["id"]: button_label_for_product(p) for p in plist}
+
+        has_custom_in_plist = any(bool(p.get("custom_button_id")) for p in plist)
+        with SessionLocal() as db:
+            base_kb = get_new_iphone_products_keyboard(
+                plist,
+                version, model_key, memory_key, storage_key,
+                back_data=back_data,
+                prefix="new_product",
+                short_labels=short_labels,
+            )
+            # Если custom-товар уже добавлен в список позиций, не дублируем его extra-кнопкой.
+            if has_custom_in_plist:
+                kb = base_kb
+            else:
+                kb = _merge_custom_into_markup(base_kb, db, stor_path)
+        return text, kb
+
+    text, kb = await run_db(_build)
     await safe_edit_message(
         callback.message,
         text,
@@ -1979,36 +1967,15 @@ async def new_product_detail(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Ошибка", show_alert=True)
         return
     product_id = int(tail)
+    try:
+        await callback.answer()
+    except Exception:
+        pass
     data = await state.get_data()
     back_data = data.get("new_products_back", "new_products_menu")
-    await state.update_data(new_products_back=back_data)
-    product = await get_product_api(product_id)
-    if not product:
+    if not await _show_new_product_card(callback, state, product_id, back_data):
         await callback.answer("Товар не найден", show_alert=True)
         return
-    price_display = _normalize_price_display(product.get("price"))
-    text = f"📦 <b>{product.get('name', 'Без названия')}</b>\n\n"
-    text += f"💵 Цена: {price_display}\n"
-    text += f"📁 Подборка: {product.get('collection_name', '—')}\n"
-    av = product.get("availability_status")
-    text += f"Наличие: {'🟢 В наличии' if av == 'available' else '🔴 На заказ' if av == 'on_order' else '—'}\n"
-    if product.get("vk_product_link"):
-        text += f"\n🔗 <a href=\"{product['vk_product_link']}\">Ссылка на товар в ВК</a>"
-    if product.get("avito_url"):
-        text += f"\n🛒 <a href=\"{product['avito_url']}\">Ссылка на Авито</a>"
-    await safe_edit_message(
-        callback.message,
-        text,
-        reply_markup=get_new_product_detail_keyboard(
-            product_id,
-            status=product.get("status", "active"),
-            availability_status=av,
-            back_data=back_data,
-        ),
-        parse_mode="HTML",
-        disable_link_preview=True,
-    )
-    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("new_product_sell_"))
@@ -2445,12 +2412,12 @@ async def new_product_toggle_availability(callback: CallbackQuery, state: FSMCon
     cur = product.get("availability_status")
     next_val = "on_order" if cur == "available" else "available"
     try:
-        async with aiohttp.ClientSession() as session:
-            url = f"http://{API_HOST}:{API_PORT}/api/products/{product_id}/availability"
-            async with session.put(url, json={"availability_status": next_val}) as resp:
-                if resp.status != 200:
-                    await callback.answer("Ошибка обновления наличия", show_alert=True)
-                    return
+        from app.services.product_ops_service import set_product_availability
+
+        updated = await run_db(set_product_availability, product_id, next_val)
+        if not updated:
+            await callback.answer("Ошибка обновления наличия", show_alert=True)
+            return
     except Exception as e:
         logger.error("Error updating availability: %s", e)
         await callback.answer("Ошибка обновления наличия", show_alert=True)

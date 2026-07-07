@@ -218,12 +218,15 @@ class PriceSyncService:
     def _load_product_dict(self, product_id: int) -> Optional[dict]:
         from sqlalchemy import text
         from app.db.database import SessionLocal
+        from app.db.product_queries import _PRODUCT_SYNC_COLUMNS
 
         db = SessionLocal()
         try:
             row = (
                 db.execute(
-                    text("SELECT * FROM products WHERE id = :id LIMIT 1"),
+                    text(
+                        f"SELECT {_PRODUCT_SYNC_COLUMNS} FROM products WHERE id = :id LIMIT 1"
+                    ),
                     {"id": product_id},
                 )
                 .mappings()

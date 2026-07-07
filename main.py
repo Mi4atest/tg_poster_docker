@@ -21,7 +21,6 @@ async def start_api():
         "app.api.main:app",
         host="0.0.0.0",
         port=8002,
-        reload=True,
     )
     server = uvicorn.Server(config)
     await server.serve()

@@ -152,18 +152,20 @@ async def get_or_create_availability_message(bot) -> Optional[int]:
     не создаются при обновлениях; создаются только если сообщений ещё не было
     или список вырос и не хватает сообщений.
     """
+    import asyncio
+
     AVAILABILITY_MESSAGE_IDS = get_settings_service().get_availability_message_ids()
     chat_id = get_settings_service().get_telegram_channel_id()
     if not chat_id:
         logger.warning("TELEGRAM_CHANNEL_ID not set")
         return None
-    products = _get_new_products_from_db()
+    products = await asyncio.to_thread(_get_new_products_from_db)
     full_text = format_availability_list(products)
     max_chunk_len = TELEGRAM_CAPTION_MAX_LENGTH if AVAILABILITY_USE_CAPTION else TELEGRAM_MESSAGE_MAX_LENGTH
     chunks = _split_text_into_chunks(full_text, max_len=max_chunk_len)
     if not chunks:
         chunks = [""]
-    message_ids = _get_stored_message_ids()
+    message_ids = await asyncio.to_thread(_get_stored_message_ids)
 
     # Без сохранённых ID не отправляем новые сообщения — только редактируем существующие
     if not message_ids:
@@ -235,8 +237,9 @@ async def get_or_create_availability_message(bot) -> Optional[int]:
                 logger.warning("Could not clear availability message %s: %s", message_ids[j], e)
         except Exception as e:
             logger.warning("Could not clear availability message %s: %s", message_ids[j], e)
-    if need_save or len(message_ids) != len(_get_stored_message_ids()):
-        _set_stored_message_ids(message_ids)
+    stored_ids = await asyncio.to_thread(_get_stored_message_ids)
+    if need_save or len(message_ids) != len(stored_ids):
+        await asyncio.to_thread(_set_stored_message_ids, message_ids)
 
     return message_ids[0] if message_ids else None
 

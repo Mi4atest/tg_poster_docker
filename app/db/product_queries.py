@@ -9,6 +9,32 @@ from sqlalchemy.orm import Session
 
 USED_EXCLUDED_COLLECTIONS = ("iPhone новые", "Airpods", "Apple Watch", "iPad", "custom")
 
+# Широкие строки (>~26 колонок за раз) рвут app→PG в Docker — грузим частями.
+_PRODUCT_DETAIL_COLUMNS_1 = """
+    id, post_id, vk_product_id, vk_product_link, telegram_link,
+    name, price, payment_method, final_price, category_id, category_name,
+    collection_id, collection_name, status
+""".strip()
+
+_PRODUCT_DETAIL_COLUMNS_2 = """
+    created_at, updated_at, archived_at, availability_status,
+    channel_message_id, availability_message_ids,
+    max_link, custom_button_id, max_share_url,
+    avito_item_id, avito_url, instagram_link, instagram_media_id
+""".strip()
+
+_PRODUCT_SYNC_COLUMNS = """
+    id, name, price, telegram_link, max_link, max_share_url,
+    instagram_link, instagram_media_id, post_id, vk_product_id,
+    avito_item_id, collection_name, custom_button_id
+""".strip()
+
+_PRODUCT_LIST_COLUMNS = """
+    id, name, price, status, collection_name, category_name,
+    vk_product_link, telegram_link, created_at, archived_at,
+    availability_status, payment_method, final_price, post_id, vk_product_id
+""".strip()
+
 
 def sync_telegram_links_to_products(db: Session) -> tuple[int, int, int]:
     """
@@ -75,51 +101,77 @@ def fetch_used_products_for_list(db: Session) -> list[dict[str, Any]]:
     ]
 
 
-_PRODUCT_DETAIL_SELECT = """
-SELECT
-    p.id, p.post_id, p.vk_product_id, p.vk_product_link, p.telegram_link,
-    p.name, p.price, p.payment_method, p.final_price, p.category_id, p.category_name,
-    p.collection_id, p.collection_name, p.status, p.created_at, p.updated_at, p.archived_at,
-    p.availability_status, p.channel_message_id, p.availability_message_ids,
-    p.max_link, p.custom_button_id,
-    COALESCE(p.max_share_url, po.max_share_url) AS max_share_url,
-    p.avito_item_id, p.avito_url, p.instagram_link, p.instagram_media_id, p.display_label,
-    po.vk_post_id AS vk_post_id,
-    po.vk_post_link AS vk_post_link
-FROM products p
-LEFT JOIN posts po ON po.id = p.post_id
-WHERE p.id = :id
+_POST_DETAIL_SELECT = """
+SELECT max_share_url, vk_post_id, vk_post_link
+FROM posts
+WHERE id = :id
 LIMIT 1
 """
 
 
-def fetch_product_detail_row(db: Session, product_id: int) -> Optional[dict[str, Any]]:
-    """Товар + поля поста для карточки (один JOIN, без ORM)."""
-    row = (
-        db.execute(text(_PRODUCT_DETAIL_SELECT), {"id": product_id})
-        .mappings()
-        .first()
-    )
-    return _normalize_product_detail_row(row)
-
-
-def fetch_product_detail_row_by_id(product_id: int) -> Optional[dict[str, Any]]:
-    """Товар для карточки через engine.connect (не Session — стабильнее при exhausted pool)."""
-    from app.db.database import engine
-
-    with engine.connect() as conn:
-        row = (
-            conn.execute(text(_PRODUCT_DETAIL_SELECT), {"id": product_id})
+def _enrich_product_detail_row(conn, row) -> Optional[dict[str, Any]]:
+    """Дополняет строку товара полями поста (два коротких запроса вместо тяжёлого JOIN)."""
+    if not row:
+        return None
+    data = dict(row)
+    post_id = data.get("post_id")
+    if post_id:
+        post_row = (
+            conn.execute(text(_POST_DETAIL_SELECT), {"id": post_id})
             .mappings()
             .first()
         )
-    return _normalize_product_detail_row(row)
+        if post_row:
+            if not data.get("max_share_url") and post_row.get("max_share_url"):
+                data["max_share_url"] = post_row["max_share_url"]
+            data["vk_post_id"] = post_row.get("vk_post_id")
+            data["vk_post_link"] = post_row.get("vk_post_link")
+    data.setdefault("vk_post_id", None)
+    data.setdefault("vk_post_link", None)
+    return data
 
 
-def _normalize_product_detail_row(row) -> Optional[dict[str, Any]]:
-    if not row:
+def _fetch_product_row_core(conn, product_id: int) -> Optional[dict[str, Any]]:
+    row1 = (
+        conn.execute(
+            text(f"SELECT {_PRODUCT_DETAIL_COLUMNS_1} FROM products WHERE id = :id LIMIT 1"),
+            {"id": product_id},
+        )
+        .mappings()
+        .first()
+    )
+    if not row1:
         return None
-    return dict(row)
+    row2 = (
+        conn.execute(
+            text(f"SELECT {_PRODUCT_DETAIL_COLUMNS_2} FROM products WHERE id = :id LIMIT 1"),
+            {"id": product_id},
+        )
+        .mappings()
+        .first()
+    )
+    data = {**dict(row1), **dict(row2 or {})}
+    dl = conn.execute(
+        text("SELECT display_label FROM products WHERE id = :id LIMIT 1"),
+        {"id": product_id},
+    ).scalar()
+    data["display_label"] = dl
+    return data
+
+
+def fetch_product_detail_row(db: Session, product_id: int) -> Optional[dict[str, Any]]:
+    """Товар + поля поста для карточки (без ORM, без SELECT *)."""
+    row = _fetch_product_row_core(db.connection(), product_id)
+    return _enrich_product_detail_row(db.connection(), row)
+
+
+def fetch_product_detail_row_by_id(product_id: int) -> Optional[dict[str, Any]]:
+    """Товар для карточки через engine.connect (лёгкие запросы, без SELECT *)."""
+    from app.db.database import engine
+
+    with engine.connect() as conn:
+        row = _fetch_product_row_core(conn, product_id)
+        return _enrich_product_detail_row(conn, row)
 
 
 def product_detail_row_to_api_dict(row: dict[str, Any]) -> dict[str, Any]:

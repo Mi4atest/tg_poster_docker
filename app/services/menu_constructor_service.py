@@ -8,6 +8,7 @@ import base64
 from html import escape
 import logging
 import re
+import time
 import zlib
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -260,7 +261,21 @@ def _product_to_dict(p: Product) -> Dict[str, Any]:
     }
 
 
-def load_new_products_dicts(db: Session) -> List[Dict[str, Any]]:
+# Кэш товаров для меню/счётчиков: экономит повторные полные выборки при навигации.
+# Сбрасывается по TTL и явно при изменении товаров (invalidate_new_products_cache).
+_NEW_PRODUCTS_CACHE_TTL = 30.0
+_new_products_cache: Dict[str, Any] = {"ts": 0.0, "items": None}
+
+
+def invalidate_new_products_cache() -> None:
+    _new_products_cache["items"] = None
+
+
+def load_new_products_dicts(db: Session, use_cache: bool = True) -> List[Dict[str, Any]]:
+    if use_cache:
+        cached = _new_products_cache.get("items")
+        if cached is not None and time.monotonic() - _new_products_cache["ts"] < _NEW_PRODUCTS_CACHE_TTL:
+            return list(cached)
     rows = (
         db.query(Product)
         .filter(
@@ -271,7 +286,10 @@ def load_new_products_dicts(db: Session) -> List[Dict[str, Any]]:
         )
         .all()
     )
-    return [_product_to_dict(p) for p in rows]
+    items = [_product_to_dict(p) for p in rows]
+    _new_products_cache["items"] = items
+    _new_products_cache["ts"] = time.monotonic()
+    return list(items)
 
 
 def _filter_classical(items: List[dict], collection_value: Optional[str] = None) -> List[dict]:
@@ -1029,6 +1047,7 @@ def delete_custom_button_cascade(db: Session, button_id: int) -> Tuple[int, int]
             synchronize_session=False
         )
     db.commit()
+    invalidate_new_products_cache()
     logger.info("menu_constructor: delete buttons %s, detach products %s", n_btn, n_prod)
     return n_btn, n_prod
 
@@ -1175,6 +1194,7 @@ def attach_custom_product(
     db.add(product)
     db.commit()
     db.refresh(product)
+    invalidate_new_products_cache()
     logger.info("menu_constructor: product %s user=%s button=%s", product.id, user_id, target_button_id)
     return product
 
@@ -1194,6 +1214,7 @@ def delete_custom_product(db: Session, product_id: int) -> bool:
             if left == 0:
                 db.delete(btn)
     db.commit()
+    invalidate_new_products_cache()
     logger.info("menu_constructor: deleted product %s", product_id)
     return True
 

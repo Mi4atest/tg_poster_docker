@@ -45,6 +45,18 @@ def _format_product_line(product: Dict[str, Any]) -> str:
     return " ".join(line_parts)
 
 
+def _msk_now() -> datetime:
+    return datetime.now(timezone.utc) + timedelta(hours=3)
+
+
+def _build_header(total: int, updated_at: Optional[datetime] = None) -> str:
+    dt = updated_at or _msk_now()
+    return (
+        f"<b>📦 Каталог б/у ({total})</b>\n"
+        f"Обновлено {dt.strftime('%d.%m.%y')} в {dt.strftime('%H:%M')}\n"
+    )
+
+
 def _published_at_to_utc_naive(dt: Optional[datetime]) -> Optional[datetime]:
     """Приводит дату публикации к naive UTC для сравнения (БД может вернуть aware в локальной TZ)."""
     if dt is None:
@@ -75,7 +87,7 @@ def _build_today_block(products: List[Dict[str, Any]]) -> str:
 def _build_full_text(products: List[Dict[str, Any]]) -> str:
     """Собирает полный текст: заголовок + блок новинок + разделитель + полный список."""
     total = len(products)
-    header = f"📦 Список товаров ({total}):\n\n"
+    header = _build_header(total)
     today_block = _build_today_block(products)
     separator = "━━━━━━━━━━━━━━\n"
     full_list = format_full_products_list(products)

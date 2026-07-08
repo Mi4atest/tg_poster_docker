@@ -161,17 +161,34 @@ def ensure_avito_feed_operations_table() -> bool:
 def ensure_avito_item_id_bigint() -> bool:
     """ID объявлений Авито > 2^31 — нужен BIGINT вместо INTEGER."""
     try:
-        inspector = inspect(engine)
-        if "avito_feed_operations" not in inspector.get_table_names():
-            return False
-        cols = {c["name"]: c for c in inspector.get_columns("avito_feed_operations")}
-        col = cols.get("avito_item_id")
-        if not col:
-            return False
-        col_type = str(col.get("type", "")).upper()
-        if "BIGINT" in col_type:
-            return False
         with engine.connect() as conn:
+            exists = conn.execute(
+                text(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM information_schema.tables
+                        WHERE table_name = 'avito_feed_operations'
+                    )
+                    """
+                )
+            ).scalar()
+            if not exists:
+                return False
+            col_type = conn.execute(
+                text(
+                    """
+                    SELECT data_type
+                    FROM information_schema.columns
+                    WHERE table_name = 'avito_feed_operations'
+                      AND column_name = 'avito_item_id'
+                    """
+                )
+            ).scalar()
+            if not col_type:
+                return False
+            if str(col_type).lower() == "bigint":
+                return False
             conn.execute(
                 text(
                     "ALTER TABLE avito_feed_operations "
@@ -278,19 +295,19 @@ def ensure_new_menu_constructor_columns() -> bool:
 def ensure_database_schema():
     """Обеспечивает актуальность схемы базы данных."""
     logger.info("Проверка схемы базы данных...")
-    
-    # Проверяем и добавляем колонку telegram_link
+
     check_and_add_column_if_missing()
     check_and_add_max_columns_if_missing()
     check_and_add_instagram_link_columns_if_missing()
     ensure_post_vk_and_queue_columns_if_missing()
+
     ensure_avito_feed_operations_table()
     ensure_avito_item_id_bigint()
+
     ensure_new_menu_constructor_columns()
-    
-    # Инициализируем alembic_version, если нужно
+
     init_alembic_version_table()
-    
+
     logger.info("Проверка схемы базы данных завершена")
 
 if __name__ == "__main__":

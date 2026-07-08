@@ -162,7 +162,6 @@ class PublicationOrchestrator:
                 ]
             except Exception:
                 pass
-
         if not platforms:
             return False
 
@@ -177,7 +176,6 @@ class PublicationOrchestrator:
             bumped = self.queue_manager.bump_queue_priority_for_platforms(
                 post_id, platforms, priority
             )
-
         if "avito" in platforms and (queue_items or bumped > 0):
             try:
                 from app.integrations.avito.autoload_coordinator import get_coordinator

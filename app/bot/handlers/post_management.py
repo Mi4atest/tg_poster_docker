@@ -9,6 +9,7 @@ from datetime import datetime
 import asyncio
 from typing import List, Optional, Tuple, Any
 import json
+import os
 
 from app.bot.keyboards.main_keyboard import (
     post_actions_kb_for_user,
@@ -43,7 +44,10 @@ from app.config.settings import (
     API_HOST,
     API_PORT,
     TELEGRAM_CONTACT_USER_ID,
+    MEDIA_DIR,
+    DATABASE_URL,
 )
+import psycopg2
 import logging
 from app.services.settings_service import get_settings_service
 from app.bot.utils.button_styles import ikb
@@ -365,26 +369,39 @@ async def resolve_avito_item_id_for_post(post: dict) -> Optional[str]:
 
 async def delete_post_api(post_id):
     """Delete a post via API."""
+    def _delete_post_via_psycopg_sync(target_post_id: str) -> bool:
+        conn = None
+        try:
+            conn = psycopg2.connect(DATABASE_URL)
+            conn.autocommit = False
+            with conn.cursor() as cur:
+                cur.execute("SELECT storage_path FROM posts WHERE id = %s LIMIT 1", (target_post_id,))
+                row = cur.fetchone()
+                if not row:
+                    conn.rollback()
+                    return False
+                storage_path = row[0]
+                cur.execute("DELETE FROM products WHERE post_id = %s", (target_post_id,))
+                cur.execute("DELETE FROM posts WHERE id = %s", (target_post_id,))
+            conn.commit()
+            post_dir = MEDIA_DIR / storage_path
+            if os.path.exists(post_dir):
+                import shutil
+                shutil.rmtree(post_dir)
+            return True
+        except Exception:
+            if conn is not None:
+                conn.rollback()
+            raise
+        finally:
+            if conn is not None:
+                conn.close()
+
     try:
-        async with aiohttp.ClientSession() as session:
-            url = f"http://{API_HOST}:{API_PORT}/api/posts/{post_id}"
-            print(f"Deleting post via {url}")
-
-            try:
-                async with session.delete(url) as response:
-                    print(f"API response status: {response.status}")
-
-                    if response.status == 204:
-                        return True
-                    else:
-                        error_text = await response.text()
-                        print(f"API Error: {response.status} - {error_text}")
-                        return False
-            except Exception as e:
-                print(f"Error during API request: {str(e)}")
-                return False
+        success = await asyncio.to_thread(_delete_post_via_psycopg_sync, post_id)
+        return success
     except Exception as e:
-        print(f"Error in delete_post_api: {str(e)}")
+        print(f"Error in delete_post_api: {type(e).__name__}: {str(e)}")
         return False
 
 def _publish_api_error_detail(status: int, error_text: str) -> str:
@@ -2177,6 +2194,8 @@ async def delete_post(callback: CallbackQuery):
         await callback.answer("❌ Пост не выбран.", show_alert=True)
         return
 
+    await callback.answer()
+
     # Delete post
     await callback.message.edit_text(f"{callback.message.text.split('⚠️')[0]}\n\n⏳ Удаляю пост...")
 
@@ -2200,8 +2219,6 @@ async def delete_post(callback: CallbackQuery):
             f"{callback.message.text.split('⏳')[0]}\n\n❌ Ошибка: {str(e)}",
             reply_markup=_post_actions_kb(callback.bot, callback.from_user.id)
         )
-
-    await callback.answer()
 
 @router.callback_query(F.data == "republish_vk")
 async def republish_to_vk(callback: CallbackQuery):

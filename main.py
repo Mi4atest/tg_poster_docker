@@ -1,7 +1,6 @@
 import asyncio
 import uvicorn
 import logging
-import os
 from pathlib import Path
 
 # Configure logging

@@ -13,6 +13,7 @@ import socket
 from datetime import datetime
 from pathlib import Path
 from typing import Tuple
+from urllib.parse import urlparse
 
 import aiohttp
 
@@ -24,6 +25,7 @@ logger = logging.getLogger(__name__)
 BACKUP_DIR = BASE_DIR / "backups"
 # Telegram ограничивает размер документа бота ~50 МБ
 TELEGRAM_MAX_DOCUMENT_BYTES = 50 * 1024 * 1024
+PG_DUMP_TIMEOUT_SECONDS = 180
 
 
 async def _send_document(token: str, chat_id: str, path: Path, project: str) -> bool:
@@ -58,16 +60,30 @@ async def _send_document(token: str, chat_id: str, path: Path, project: str) -> 
 
 async def _pg_dump(sql_path: Path) -> Tuple[bool, str]:
     """Дамп БД через pg_dump (postgresql-client должен быть установлен в образе)."""
+    parsed = urlparse(DATABASE_URL)
+    db_name = (parsed.path or "/tg_poster").lstrip("/") or "tg_poster"
+    db_user = parsed.username or "postgres"
     with open(sql_path, "wb") as out:
         proc = await asyncio.create_subprocess_exec(
+            "docker",
+            "exec",
+            "tg_poster_db",
             "pg_dump",
-            "--dbname", DATABASE_URL,
+            "-U",
+            db_user,
+            "-d",
+            db_name,
             "--no-owner",
             "--no-privileges",
             stdout=out,
             stderr=asyncio.subprocess.PIPE,
         )
-        _, stderr = await proc.communicate()
+        try:
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=PG_DUMP_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.communicate()
+            return False, f"timeout after {PG_DUMP_TIMEOUT_SECONDS}s"
     if proc.returncode != 0:
         return False, (stderr or b"").decode("utf-8", "replace")[:300]
     if not sql_path.exists() or sql_path.stat().st_size < 1000:

@@ -387,6 +387,7 @@ def delete_post(post_id: str, db: Session = Depends(get_db)):
     post = db.query(Post).filter(Post.id == post_id).first()
     if post is None:
         raise HTTPException(status_code=404, detail="Post not found")
+    storage_path = post.storage_path
 
     from app.api.models.product import Product
 
@@ -395,7 +396,7 @@ def delete_post(post_id: str, db: Session = Depends(get_db)):
     db.commit()
 
     # Delete post files
-    post_dir = MEDIA_DIR / post.storage_path
+    post_dir = MEDIA_DIR / storage_path
     if os.path.exists(post_dir):
         import shutil
         shutil.rmtree(post_dir)

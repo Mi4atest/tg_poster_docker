@@ -292,6 +292,25 @@ def ensure_new_menu_constructor_columns() -> bool:
         return False
 
 
+def ensure_posts_created_at_index() -> bool:
+    """Index for archive date filters and sorting."""
+    try:
+        inspector = inspect(engine)
+        if "posts" not in inspector.get_table_names():
+            return False
+        indexes = {idx["name"] for idx in inspector.get_indexes("posts")}
+        if "ix_posts_created_at" in indexes:
+            return False
+        with engine.connect() as conn:
+            conn.execute(text("CREATE INDEX ix_posts_created_at ON posts (created_at)"))
+            conn.commit()
+        logger.info("Индекс ix_posts_created_at создан")
+        return True
+    except Exception as e:
+        logger.error("Ошибка ensure_posts_created_at_index: %s", e)
+        return False
+
+
 def ensure_database_schema():
     """Обеспечивает актуальность схемы базы данных."""
     logger.info("Проверка схемы базы данных...")
@@ -305,6 +324,7 @@ def ensure_database_schema():
     ensure_avito_item_id_bigint()
 
     ensure_new_menu_constructor_columns()
+    ensure_posts_created_at_index()
 
     init_alembic_version_table()
 

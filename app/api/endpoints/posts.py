@@ -116,80 +116,18 @@ def create_post(post_data: PostCreate, db: Session = Depends(get_db)):
 
 @router.get("/archive/summary")
 def get_archive_summary(db: Session = Depends(get_db)):
-    """Lightweight aggregate for archive tree: counts per (year, month, day) in UTC.
+    """Lightweight aggregate for archive tree: counts per (year, month, day) in UTC."""
+    from app.services.archive_service import query_archive_summary
 
-    Returns only counts grouped by date components — no post text, photos, videos or logs.
-    Used by the bot to render the year/month/day navigation without loading all posts.
-    """
-    from sqlalchemy import extract, func
-
-    rows = (
-        db.query(
-            extract("year", Post.created_at).label("y"),
-            extract("month", Post.created_at).label("m"),
-            extract("day", Post.created_at).label("d"),
-            func.count(Post.id).label("cnt"),
-        )
-        .group_by("y", "m", "d")
-        .all()
-    )
-    return {
-        "buckets": [
-            {"year": int(r.y), "month": int(r.m), "day": int(r.d), "count": int(r.cnt)}
-            for r in rows
-        ]
-    }
+    return {"buckets": query_archive_summary(db)}
 
 
 @router.get("/archive/day")
 def get_archive_day(year: int, month: int, day: int, db: Session = Depends(get_db)):
-    """Lightweight list of posts for a specific UTC day (no logs, no full text).
+    """Lightweight list of posts for a specific UTC day (no logs, no full text)."""
+    from app.services.archive_service import query_archive_day
 
-    Returns minimal fields needed to render the day-level archive screen and the
-    'today' section of the root archive view: id, name, created_at, photos, videos.
-    """
-    from sqlalchemy import extract
-
-    rows = (
-        db.query(
-            Post.id,
-            Post.name,
-            Post.created_at,
-            Post.photos,
-            Post.videos,
-            Post.published_vk_at,
-            Post.published_telegram_at,
-            Post.published_instagram_at,
-            Post.published_max_at,
-        )
-        .filter(
-            extract("year", Post.created_at) == year,
-            extract("month", Post.created_at) == month,
-            extract("day", Post.created_at) == day,
-        )
-        .order_by(Post.created_at.desc())
-        .all()
-    )
-
-    def _iso(v):
-        return v.isoformat() if v else None
-
-    return {
-        "posts": [
-            {
-                "id": r.id,
-                "name": r.name,
-                "created_at": _iso(r.created_at),
-                "photos": r.photos or [],
-                "videos": r.videos or [],
-                "published_vk_at": _iso(r.published_vk_at),
-                "published_telegram_at": _iso(r.published_telegram_at),
-                "published_instagram_at": _iso(r.published_instagram_at),
-                "published_max_at": _iso(r.published_max_at),
-            }
-            for r in rows
-        ]
-    }
+    return {"posts": query_archive_day(db, year, month, day)}
 
 
 def _pending_posts_filter(query):

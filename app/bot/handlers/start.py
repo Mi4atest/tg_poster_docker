@@ -14,7 +14,6 @@ from app.services.settings_service import get_settings_service
 
 router = Router()
 
-
 @router.message(Command("start"))
 async def cmd_start(message: Message):
     """Handle the /start command."""
@@ -99,6 +98,8 @@ async def pending_posts_callback(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "archive_posts")
 async def archive_posts_callback(callback: CallbackQuery):
     """Handle the 'Archive' button."""
+    # Сразу отвечаем на callback, чтобы Telegram не истёк таймаут query.
+    await callback.answer()
     try:
         await callback.message.edit_text(
             "📁 Загружаю архив постов...\n\n"
@@ -106,12 +107,10 @@ async def archive_posts_callback(callback: CallbackQuery):
         )
         from app.bot.handlers.post_management import show_archived_posts
         await show_archived_posts(callback.message, user_id=callback.from_user.id)
-        await callback.answer()
     except Exception as e:
         await callback.message.edit_text(
             f"❌ Ошибка при загрузке архива: {str(e)}"
         )
-        await callback.answer()
 
 @router.callback_query(F.data == "back_to_main")
 async def back_to_main_callback(callback: CallbackQuery, state: FSMContext):

@@ -248,33 +248,24 @@ async def get_posts_api(is_archived=False, search_query=None):
         return []
 
 async def get_archive_summary_api():
-    """Fetch lightweight archive summary (counts grouped by year/month/day)."""
+    """Fetch lightweight archive summary directly from DB (no HTTP loopback)."""
+    from app.db.database import run_db
+    from app.services.archive_service import fetch_archive_summary
+
     try:
-        async with aiohttp.ClientSession() as session:
-            url = f"http://{API_HOST}:{API_PORT}/api/posts/archive/summary"
-            async with session.get(url) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    return data.get("buckets", []) if isinstance(data, dict) else []
-                print(f"Archive summary API error: {response.status}")
-                return []
+        return await run_db(fetch_archive_summary)
     except Exception as e:
         print(f"Error in get_archive_summary_api: {e}")
         return []
 
 
 async def get_archive_day_api(year: int, month: int, day: int):
-    """Fetch lightweight list of posts for a specific UTC day."""
+    """Fetch lightweight list of posts for a specific UTC day via run_db."""
+    from app.db.database import run_db
+    from app.services.archive_service import fetch_archive_day
+
     try:
-        async with aiohttp.ClientSession() as session:
-            url = f"http://{API_HOST}:{API_PORT}/api/posts/archive/day"
-            params = {"year": year, "month": month, "day": day}
-            async with session.get(url, params=params) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    return data.get("posts", []) if isinstance(data, dict) else []
-                print(f"Archive day API error: {response.status}")
-                return []
+        return await run_db(fetch_archive_day, year, month, day)
     except Exception as e:
         print(f"Error in get_archive_day_api: {e}")
         return []
@@ -2446,23 +2437,24 @@ async def back_to_posts(callback: CallbackQuery):
 @router.callback_query(F.data == "archive_root")
 async def archive_root(callback: CallbackQuery):
     """Show the root archive view."""
+    await callback.answer()
     await callback.message.edit_text("⏳ Загружаю архив постов...")
     await show_archived_posts(callback.message, user_id=callback.from_user.id)
-    await callback.answer()
 
 
 @router.callback_query(lambda c: c.data and c.data.startswith("archive_year_"))
 async def archive_year(callback: CallbackQuery):
     """Show archive for a specific year."""
+    await callback.answer()
     year = int(callback.data.replace("archive_year_", ""))
     await callback.message.edit_text(f"⏳ Загружаю архив постов за {year} год...")
     await show_archived_posts(callback.message, year=year, user_id=callback.from_user.id)
-    await callback.answer()
 
 
 @router.callback_query(lambda c: c.data and c.data.startswith("archive_month_"))
 async def archive_month(callback: CallbackQuery):
     """Show archive for a specific month."""
+    await callback.answer()
     parts = callback.data.replace("archive_month_", "").split("_")
     year = int(parts[0])
     month = int(parts[1])
@@ -2471,12 +2463,12 @@ async def archive_month(callback: CallbackQuery):
     await show_archived_posts(
         callback.message, year=year, month=month, user_id=callback.from_user.id
     )
-    await callback.answer()
 
 
 @router.callback_query(lambda c: c.data and c.data.startswith("archive_day_"))
 async def archive_day(callback: CallbackQuery):
     """Show archive for a specific day."""
+    await callback.answer()
     parts = callback.data.replace("archive_day_", "").split("_")
     year = int(parts[0])
     month = int(parts[1])
@@ -2488,12 +2480,12 @@ async def archive_day(callback: CallbackQuery):
     await show_archived_posts(
         callback.message, year=year, month=month, day=day, user_id=callback.from_user.id
     )
-    await callback.answer()
 
 
 @router.callback_query(F.data == "back_to_archive")
 async def back_to_archive(callback: CallbackQuery):
     """Return to the archive screen stored in user_data."""
+    await callback.answer()
     user_id = callback.from_user.id
     user_data = (
         callback.bot.user_data.get(user_id, {})
@@ -2517,7 +2509,6 @@ async def back_to_archive(callback: CallbackQuery):
     await show_archived_posts(
         callback.message, year=year, month=month, day=day, user_id=user_id
     )
-    await callback.answer()
 
 
 @router.callback_query(F.data == "search_posts")

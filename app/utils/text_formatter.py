@@ -1,6 +1,8 @@
 import re
 from typing import Optional
 from app.utils.signatures import get_telegram_signature, get_vk_signature, get_instagram_signature
+from app.services.settings_service import get_settings_service
+from app.utils.telegram_post_markup import is_valid_catalog_button_url
 
 def format_post_text(text: str) -> str:
     """
@@ -129,6 +131,20 @@ def format_for_telegram(text: str, signature_enabled: bool = True) -> str:
     # Уменьшаем длину разделителя для Telegram
     formatted_text = re.sub(r'—{30}', '—' * 19, formatted_text)
     
+    # Добавляем условный блок каталога б/у как часть тела поста (MarkdownV2 quote).
+    # При выключенном переключателе или невалидном URL поведение/формат поста не меняем.
+    try:
+        cfg = get_settings_service().get_all().get("signatures", {})
+        catalog_enabled = bool(cfg.get("telegram_used_catalog_button_enabled", True))
+        catalog_url = str(cfg.get("telegram_used_catalog_url") or "").strip()
+        if catalog_enabled and is_valid_catalog_button_url(catalog_url):
+            formatted_text += (
+                "\n> *🔄 Не подошла эта модель?*\n"
+                f"> Удобный выбор товаров в [нашем каталоге]({catalog_url})!\n"
+            )
+    except Exception:
+        pass
+
     # Добавляем подпись для Telegram
     formatted_text += get_telegram_signature(enabled=signature_enabled)
     
@@ -139,6 +155,8 @@ def format_for_telegram(text: str, signature_enabled: bool = True) -> str:
     
     # Возвращаем форматирование для жирного и курсива
     formatted_text = formatted_text.replace('\\*', '*').replace('\\_', '_')
+    # Возвращаем quote-маркеры только для специально добавленных строк каталога
+    formatted_text = re.sub(r'(?m)^\\> ', '> ', formatted_text)
     
     # Восстанавливаем форматирование для ссылок
     formatted_text = re.sub(r'\\\[(.*?)\\\]\\\((.*?)\\\)', r'[\1](\2)', formatted_text)
@@ -197,6 +215,19 @@ def format_for_vk(text: str, signature_enabled: bool = True) -> str:
     # Заменяем маркеры Markdown на HTML-теги для ВКонтакте
     formatted_text = formatted_text.replace('*', '')  # ВК не поддерживает жирный шрифт в API
     formatted_text = formatted_text.replace('_', '')  # ВК не поддерживает курсив в API
+
+    # Добавляем блок каталога б/у для VK (единый переключатель + отдельная VK-ссылка).
+    try:
+        cfg = get_settings_service().get_all().get("signatures", {})
+        catalog_enabled = bool(cfg.get("telegram_used_catalog_button_enabled", True))
+        catalog_vk_url = str(cfg.get("vk_used_catalog_url") or "").strip()
+        if catalog_enabled and is_valid_catalog_button_url(catalog_vk_url):
+            formatted_text += (
+                "\n\n🔄 Не подошла эта модель?\n"
+                f"Подборка б/у товаров: {catalog_vk_url}\n"
+            )
+    except Exception:
+        pass
     
     # Добавляем подпись для ВКонтакте
     formatted_text += get_vk_signature(enabled=signature_enabled)

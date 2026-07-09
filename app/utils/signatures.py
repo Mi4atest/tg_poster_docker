@@ -1,6 +1,7 @@
 import os
 from typing import Optional
 from app.services.settings_service import get_settings_service
+from app.utils.telegram_post_markup import is_valid_catalog_button_url
 
 # Получаем настройки из переменных окружения
 SIGNATURE_ENABLED = os.getenv("SIGNATURE_ENABLED", "true").lower() == "true"
@@ -29,6 +30,29 @@ def _read_runtime_settings():
         return cfg.get("signatures", {}), cfg.get("contacts", {})
     except Exception:
         return {}, {}
+
+
+def get_telegram_used_catalog_quote(enabled: Optional[bool] = None) -> str:
+    """Возвращает Telegram MarkdownV2-цитату с CTA на каталог б/у.
+
+    Блок включается только если:
+    - флаг telegram_used_catalog_button_enabled = True
+    - URL каталога задан и валиден (http/https)
+    """
+    signatures, _ = _read_runtime_settings()
+    if enabled is None:
+        enabled = bool(signatures.get("telegram_used_catalog_button_enabled", True))
+    if not enabled:
+        return ""
+
+    catalog_url = str(signatures.get("telegram_used_catalog_url") or "").strip()
+    if not is_valid_catalog_button_url(catalog_url):
+        return ""
+
+    return (
+        "\n> *🔄 Не подошла эта модель?*\n"
+        f"> Удобный выбор товаров в [нашем каталоге]({catalog_url})!\n"
+    )
 
 
 def get_telegram_signature(enabled: Optional[bool] = None, phone: Optional[str] = None) -> str:

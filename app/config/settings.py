@@ -144,9 +144,10 @@ SIGNATURE_VK_SHORT_AVITO = os.getenv("SIGNATURE_VK_SHORT_AVITO", "")
 SIGNATURE_VK_SHORT_TELEGRAM = os.getenv("SIGNATURE_VK_SHORT_TELEGRAM", "")
 SIGNATURE_PHONE = os.getenv("SIGNATURE_PHONE", "")
 
-# Кнопка «Каталог б/у» под постами в Telegram-канал (Bot API style=primary)
+# Блок «Каталог б/у» в постах (единый переключатель)
 TELEGRAM_USED_CATALOG_BUTTON_ENABLED = os.getenv("TELEGRAM_USED_CATALOG_BUTTON_ENABLED", "true").lower() == "true"
 TELEGRAM_USED_CATALOG_URL = (os.getenv("TELEGRAM_USED_CATALOG_URL") or "https://t.me/AppleShop43/12185").strip()
+VK_USED_CATALOG_URL = (os.getenv("VK_USED_CATALOG_URL") or "").strip()
 
 # VK upload: при true публикация падает, если не все фото/видео загрузились
 VK_UPLOAD_STRICT_MODE = os.getenv("VK_UPLOAD_STRICT_MODE", "false").lower() in ("1", "true", "yes")

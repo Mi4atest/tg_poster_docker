@@ -75,7 +75,7 @@ def _build_signatures_contacts_text() -> str:
         "📇 Контакты и подписи\n\n"
         f"Подпись: {'включена' if service.is_signature_enabled() else 'выключена'}\n"
         f"Товары ВК: {'включены' if service.is_vk_market_enabled() else 'выключены'}\n"
-        f"Кнопка «Каталог б/у» (канал): {'включена' if service.is_telegram_used_catalog_button_enabled() else 'выключена'}\n\n"
+        f"Блок «Каталог б/у» в постах: {'включен' if service.is_telegram_used_catalog_button_enabled() else 'выключен'}\n\n"
         "Текущие контакты Telegram:\n"
         f"- username: {contacts.get('telegram_username') or 'не задан'}\n"
         f"- user_id: {contacts.get('telegram_user_id') or 'не задан'}\n"
@@ -85,7 +85,8 @@ def _build_signatures_contacts_text() -> str:
         f"- Avito: {signatures.get('avito') or 'не задано'}\n"
         f"- Telegram: {signatures.get('telegram') or 'не задано'}\n"
         f"- Instagram: {signatures.get('instagram') or 'не задано'}\n"
-        f"- Каталог б/у (ссылка кнопки): {signatures.get('telegram_used_catalog_url') or 'не задано'}\n"
+        f"- Каталог б/у (Telegram): {signatures.get('telegram_used_catalog_url') or 'не задано'}\n"
+        f"- Каталог б/у (VK): {signatures.get('vk_used_catalog_url') or 'не задано'}\n"
     )
 
 
@@ -332,7 +333,23 @@ async def request_tg_catalog_url(callback: CallbackQuery, state: FSMContext):
     )
     current = _get_signature_field_current_value("telegram_used_catalog_url")
     await callback.message.edit_text(
-        f"Текущая ссылка кнопки «Каталог б/у»:\n{current}\n\n"
+        f"Текущая ссылка каталога б/у для Telegram:\n{current}\n\n"
+        "Введите новый URL (https://… или http://…):",
+        reply_markup=get_input_cancel_keyboard("settings_signatures"),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "settings_edit_vk_catalog_url")
+async def request_vk_catalog_url(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(SettingsState.waiting_for_signature_value)
+    await state.update_data(
+        signature_field="vk_used_catalog_url",
+        input_return_callback="settings_signatures",
+    )
+    current = _get_signature_field_current_value("vk_used_catalog_url")
+    await callback.message.edit_text(
+        f"Текущая ссылка каталога б/у для VK:\n{current}\n\n"
         "Введите новый URL (https://… или http://…):",
         reply_markup=get_input_cancel_keyboard("settings_signatures"),
     )
@@ -594,7 +611,7 @@ async def save_signature_value(message: Message, state: FSMContext):
         await message.answer("❌ Не удалось определить поле подписи.")
         return
     raw = (message.text or "").strip()
-    if field == "telegram_used_catalog_url":
+    if field in ("telegram_used_catalog_url", "vk_used_catalog_url"):
         if not is_valid_catalog_button_url(raw):
             await message.answer(
                 "❌ Укажите корректный URL с протоколом https:// или http:// (например https://t.me/…)."

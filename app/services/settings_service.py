@@ -49,6 +49,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
         "phone": env_settings.SIGNATURE_PHONE or "",
         "telegram_used_catalog_button_enabled": env_settings.TELEGRAM_USED_CATALOG_BUTTON_ENABLED,
         "telegram_used_catalog_url": env_settings.TELEGRAM_USED_CATALOG_URL or "https://t.me/AppleShop43/12185",
+        "vk_used_catalog_url": env_settings.VK_USED_CATALOG_URL or "",
     },
     "publishing": {
         "interval_minutes": {
@@ -349,6 +350,9 @@ class SettingsService:
 
     def get_telegram_used_catalog_url(self) -> str:
         return str(self.get_all()["signatures"].get("telegram_used_catalog_url") or "").strip()
+
+    def get_vk_used_catalog_url(self) -> str:
+        return str(self.get_all()["signatures"].get("vk_used_catalog_url") or "").strip()
 
     def is_vk_market_publish_allowed(self) -> bool:
         """Публикация товара в VK Market: мастер-флаг VK_MARKET_ENABLED и переключатель в БД."""

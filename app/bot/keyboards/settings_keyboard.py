@@ -79,12 +79,16 @@ def get_settings_signatures_keyboard(
             callback_data="settings_toggle_vk_market"
         )],
         [InlineKeyboardButton(
-            text=("🟢" if catalog_enabled else "🔴") + " Кнопка «Каталог б/у» (Telegram)",
+            text=("🟢" if catalog_enabled else "🔴") + " Блок «Каталог б/у» в постах",
             callback_data="settings_toggle_telegram_used_catalog"
         )],
         [InlineKeyboardButton(
             text="🔗 Ссылка каталога б/у (Telegram)",
             callback_data="settings_edit_tg_catalog_url",
+        )],
+        [InlineKeyboardButton(
+            text="🔗 Ссылка каталога б/у (VK)",
+            callback_data="settings_edit_vk_catalog_url",
         )],
         [InlineKeyboardButton(text="✏️ Изменить поля подписей", callback_data="settings_edit_signatures_menu")],
         [InlineKeyboardButton(text="⬅️ Назад к настройкам", callback_data="settings_root")],

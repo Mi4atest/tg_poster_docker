@@ -12,6 +12,7 @@ from app.bot.handlers import (
     scheduler,
     product_management,
     new_products_management,
+    bulk_price_update,
     settings,
     menu_constructor,
 )
@@ -48,6 +49,7 @@ dp.include_router(start.router)
 dp.include_router(post_creation.router)
 dp.include_router(product_management.router)  # Перемещено выше для приоритета
 dp.include_router(new_products_management.router)
+dp.include_router(bulk_price_update.router)
 dp.include_router(settings.router)
 dp.include_router(post_management.router)
 dp.include_router(scheduler.router)

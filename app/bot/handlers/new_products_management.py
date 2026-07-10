@@ -710,6 +710,9 @@ def _build_root_new_products_keyboard(db) -> "InlineKeyboardMarkup":
             lab = "iPhone"
         txt = f"{em}{lab} ({n.count})" if em else f"{lab} ({n.count})"
         rows.append([InlineKeyboardButton(text=txt, callback_data=cb)])
+    rows.append(
+        [InlineKeyboardButton(text="⚡ Пакетное обновление цен", callback_data="bulk_price_start")]
+    )
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="products_menu")])
     rows.append(
         [InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")]

@@ -5,7 +5,7 @@ import asyncio
 import json
 import logging
 from logging.handlers import RotatingFileHandler
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple, Type
 from urllib.parse import quote, urlencode
 
 import aiohttp
@@ -40,6 +40,14 @@ def _ensure_app_avito_log_handler() -> None:
 AVITO_API_BASE = "https://api.avito.ru"
 # Не более одного параллельного запроса на процесс по умолчанию (лимиты Авито)
 _semaphore = asyncio.Semaphore(1)
+# Повторы смены цены при временных сбоях Авито (429/5xx/сеть): паузы между попытками.
+PRICE_UPDATE_RETRY_BACKOFF_SEC: Tuple[float, ...] = (3.0, 7.0, 15.0)
+_TRANSIENT_HTTP_STATUSES = frozenset({429, 500, 502, 503})
+_TRANSIENT_NETWORK_ERRORS: Tuple[Type[BaseException], ...] = (
+    aiohttp.ClientError,
+    asyncio.TimeoutError,
+    TimeoutError,
+)
 
 
 class AvitoApiError(Exception):
@@ -53,6 +61,13 @@ class AvitoApiError(Exception):
         if self.body:
             return f"{base}: {self.body[:400]}"
         return base
+
+
+def is_transient_avito_price_error(exc: BaseException) -> bool:
+    """Ошибки смены цены, при которых имеет смысл повторить запрос."""
+    if isinstance(exc, AvitoApiError):
+        return exc.status in _TRANSIENT_HTTP_STATUSES
+    return isinstance(exc, _TRANSIENT_NETWORK_ERRORS)
 
 
 async def _request_json(
@@ -246,18 +261,51 @@ async def post_item_price_update(access_token: str, item_id: int, price_rub: int
 
     POST ``/core/v1/items/{item_id}/update_price`` с телом ``{"price": int}`` —
     не путать с PATCH на ``.../accounts/{user_id}/items/{id}/`` (там нет смены цены, 404/405).
+
+    При 429/500/502/503 и сетевых ошибках — до 3 повторов с паузами 3 → 7 → 15 с.
     """
     path = f"/core/v1/items/{int(item_id)}/update_price"
-    data = await _request_json(
-        "POST",
-        path,
-        token=access_token,
-        json_data={"price": int(price_rub)},
-    )
-    if isinstance(data, dict):
-        result = data.get("result")
-        if isinstance(result, dict) and result.get("status") is False:
-            msg = result.get("message") or str(data)
-            raise AvitoApiError(f"Avito: {msg}", body=str(data)[:2000])
-    logger.info("Avito price updated item_id=%s price=%s", item_id, price_rub)
-    return data
+    max_attempts = 1 + len(PRICE_UPDATE_RETRY_BACKOFF_SEC)
+    last_exc: Optional[BaseException] = None
+
+    for attempt in range(max_attempts):
+        if attempt > 0:
+            delay = PRICE_UPDATE_RETRY_BACKOFF_SEC[attempt - 1]
+            logger.info(
+                "Avito price update retry item_id=%s in %.0fs (attempt %s/%s)",
+                item_id,
+                delay,
+                attempt + 1,
+                max_attempts,
+            )
+            await asyncio.sleep(delay)
+        try:
+            data = await _request_json(
+                "POST",
+                path,
+                token=access_token,
+                json_data={"price": int(price_rub)},
+            )
+            if isinstance(data, dict):
+                result = data.get("result")
+                if isinstance(result, dict) and result.get("status") is False:
+                    msg = result.get("message") or str(data)
+                    raise AvitoApiError(f"Avito: {msg}", body=str(data)[:2000])
+            logger.info("Avito price updated item_id=%s price=%s", item_id, price_rub)
+            return data
+        except Exception as exc:
+            last_exc = exc
+            if attempt + 1 < max_attempts and is_transient_avito_price_error(exc):
+                logger.warning(
+                    "Avito price update transient error item_id=%s attempt %s/%s: %s",
+                    item_id,
+                    attempt + 1,
+                    max_attempts,
+                    exc,
+                )
+                continue
+            raise
+
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("Avito price update failed without exception")

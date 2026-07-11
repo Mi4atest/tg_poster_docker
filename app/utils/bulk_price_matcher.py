@@ -1,6 +1,7 @@
 """Сопоставление строк списка цен с товарами в БД."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Optional
@@ -18,7 +19,14 @@ from app.utils.iphone_parser import (
     parse_iphone_storage_type,
 )
 from app.utils.price_change import PriceChangeInfo, PriceChangeLevel, analyze_price_change, price_string_to_int_rub
-from app.utils.product_label import _iphone_model_display_label, _parse_ipad_model, resolve_color_emoji
+from app.utils.product_label import (
+    _parse_airpods_model,
+    _parse_watch_category,
+    _parse_watch_size,
+    _parse_ipad_model,
+    _iphone_model_display_label,
+    resolve_color_emoji,
+)
 
 NEW_COLLECTION_VALUES = ("iPhone новые", "Airpods", "Apple Watch", "iPad")
 PRICE_TOLERANCE_RUB = 100
@@ -29,6 +37,7 @@ class MatchStatus(str, Enum):
     PRICE_MISMATCH = "price_mismatch"
     AMBIGUOUS = "ambiguous"
     NOT_FOUND = "not_found"
+    NEW_ITEM = "new_item"
 
 
 @dataclass
@@ -38,9 +47,17 @@ class ProductMatchKey:
     memory: Optional[str] = None
     color: Optional[str] = None
     storage: Optional[str] = None
+    size: Optional[str] = None
 
     def as_tuple(self) -> tuple:
-        return (self.category, self.model, self.memory or "", self.color or "", self.storage or "")
+        return (
+            self.category,
+            self.model,
+            self.memory or "",
+            self.color or "",
+            self.storage or "",
+            self.size or "",
+        )
 
 
 @dataclass
@@ -92,15 +109,33 @@ def _normalize_memory(mem: Optional[str]) -> Optional[str]:
 def _product_key(product: dict) -> Optional[ProductMatchKey]:
     collection = (product.get("collection_name") or "").strip()
     name = product.get("name") or ""
+    name_low = name.lower()
 
-    if collection == "iPad" or "ipad" in name.lower():
+    if collection == "iPad" or "ipad" in name_low:
         model = _parse_ipad_model(name) or "iPad"
         memory = _normalize_memory(parse_iphone_memory(name))
         color = parse_iphone_color_key(name) or resolve_color_emoji(name)
         return ProductMatchKey(category="ipad", model=model, memory=memory, color=color)
 
+    if collection == "Airpods" or "airpod" in name_low:
+        model = _parse_airpods_model(name) or "AirPods"
+        return ProductMatchKey(category="airpods", model=model)
+
+    if collection == "Apple Watch" or "watch" in name_low or " aw " in f" {name_low} ":
+        cat = _parse_watch_category(name)
+        if not cat:
+            return None
+        size = _parse_watch_size(name)
+        color = parse_iphone_color_key(name) or resolve_color_emoji(name)
+        return ProductMatchKey(
+            category="watch",
+            model=f"AW {cat}",
+            size=size,
+            color=color,
+        )
+
     if collection in NEW_COLLECTION_VALUES or collection == "custom":
-        if "iphone" in name.lower() or collection == "iPhone новые":
+        if "iphone" in name_low or collection == "iPhone новые":
             details = parse_iphone_details(name)
             model_name = details.get("model")
             if not model_name:
@@ -111,7 +146,7 @@ def _product_key(product: dict) -> Optional[ProductMatchKey]:
             memory = _normalize_memory(details.get("memory"))
             color = details.get("color") or resolve_color_emoji(name)
             storage = None
-            if ver in ("17",) or model == "Air":
+            if ver in ("17",) or model in ("Air", "17E"):
                 st = parse_iphone_storage_type(name)
                 if st == "esim":
                     storage = "esim"
@@ -137,15 +172,28 @@ def _parsed_to_key(parsed: ParsedLabel) -> ProductMatchKey:
         memory=_normalize_memory(parsed.memory),
         color=parsed.color,
         storage=_normalize_storage(parsed.storage),
+        size=parsed.size,
     )
+
+
+def _normalize_model_for_match(model: str) -> str:
+    m = (model or "").strip().lower()
+    em = re.match(r"^(\d+)e$", m)
+    if em:
+        return f"{em.group(1)}e"
+    return m
 
 
 def _keys_match(want: ProductMatchKey, have: ProductMatchKey) -> bool:
     if want.category != have.category:
         return False
-    if want.model.lower() != have.model.lower():
+    if _normalize_model_for_match(want.model) != _normalize_model_for_match(have.model):
         return False
+    if want.category == "airpods":
+        return True
     if want.memory and have.memory and want.memory != have.memory:
+        return False
+    if want.size and have.size and want.size != have.size:
         return False
     if want.color and have.color and want.color != have.color:
         return False
@@ -193,13 +241,14 @@ def match_bulk_lines(
         want = _parsed_to_key(parsed)
         matches: List[dict] = []
         for key_tuple, prods in keyed.items():
-            cat, model, mem, color, storage = key_tuple
+            cat, model, mem, color, storage, size = key_tuple
             have = ProductMatchKey(
                 category=cat,
                 model=model,
                 memory=mem or None,
                 color=color or None,
                 storage=storage or None,
+                size=size or None,
             )
             if _keys_match(want, have):
                 matches.extend(prods)

@@ -13,8 +13,10 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 
 from app.bot.keyboards.bulk_price_keyboard import (
+    get_bulk_price_continue_keyboard,
     get_bulk_price_critical_keyboard,
     get_bulk_price_done_keyboard,
+    get_bulk_price_mismatch_keyboard,
     get_bulk_price_preview_keyboard,
     get_bulk_price_start_keyboard,
 )
@@ -22,8 +24,13 @@ from app.bot.handlers.new_products_management import safe_edit_message
 from app.bot.handlers.product_management import execute_product_price_update
 from app.db.database import run_db
 from app.utils.bulk_price_matcher import BulkMatchResult, MatchStatus, match_bulk_lines
-from app.utils.bulk_price_parser import parse_bulk_price_text
-from app.utils.price_change import format_price_change_confirm_prompt
+from app.utils.bulk_price_parser import BulkPriceNewItemLine, parse_bulk_price_input
+from app.utils.price_change import (
+    PriceChangeLevel,
+    analyze_price_change,
+    format_price_change_confirm_prompt,
+    format_price_change_html_lines,
+)
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -34,6 +41,7 @@ TELEGRAM_TEXT_LIMIT = 4090
 class BulkPriceUpdate(StatesGroup):
     waiting_for_list = State()
     waiting_critical_confirm = State()
+    waiting_mismatch_confirm = State()
 
 
 def _result_to_dict(r: BulkMatchResult) -> Dict[str, Any]:
@@ -63,10 +71,12 @@ def _dict_to_result(d: Dict[str, Any]) -> BulkMatchResult:
     )
     parsed = parse_label(line.raw_label)
     price_change = None
-    if d.get("status") == MatchStatus.MATCHED.value and d.get("db_price_rub") is not None:
-        from app.utils.price_change import analyze_price_change
-
-        price_change = analyze_price_change(int(d["db_price_rub"]), line.new_rub)
+    db_price = d.get("db_price_rub")
+    if db_price is not None and d.get("status") in (
+        MatchStatus.MATCHED.value,
+        MatchStatus.PRICE_MISMATCH.value,
+    ):
+        price_change = analyze_price_change(int(db_price), line.new_rub)
 
     return BulkMatchResult(
         line=line,
@@ -105,10 +115,14 @@ def _format_result_line(prefix: str, r: BulkMatchResult) -> str:
         cand = [html.escape(c.get("name", "")) for c in r.candidates[:2] if c.get("name")]
         suffix = f" ({', '.join(cand)})" if cand else ""
         return f"{prefix} {label}: несколько кандидатов{suffix}"
+    if r.status == MatchStatus.NEW_ITEM:
+        price = r.line.new_rub
+        return f"{prefix} {label}: новая позиция, цена {price}₽ <i>(не применяется)</i>"
     return f"{prefix} {label}"
 
 
 def _preview_header(results: List[BulkMatchResult]) -> str:
+    new_items = [r for r in results if r.status == MatchStatus.NEW_ITEM]
     ready = [r for r in results if r.is_ready and not r.is_critical]
     critical = [r for r in results if r.is_ready and r.is_critical]
     mismatch = [r for r in results if r.status == MatchStatus.PRICE_MISMATCH]
@@ -120,10 +134,11 @@ def _preview_header(results: List[BulkMatchResult]) -> str:
         "",
         f"Всего строк: {len(results)}",
         f"✅ Готово к применению: {len(ready)}",
-        f"🚨 CRITICAL (подтверждение по одной): {len(critical)}",
-        f"⚠️ Цена в базе отличается: {len(mismatch)}",
+        f"🚨 Крупное изменение (по одной): {len(critical)}",
+        f"⚠️ Расхождение с базой: {len(mismatch)}",
         f"❓ Неоднозначно: {len(ambiguous)}",
         f"❌ Не найдено: {len(not_found)}",
+        f"🆕 Новые позиции (инфо): {len(new_items)}",
     ]
     if not ready and not critical:
         lines.extend(["", "<i>Нет позиций для автоматического применения.</i>"])
@@ -131,6 +146,7 @@ def _preview_header(results: List[BulkMatchResult]) -> str:
 
 
 def _preview_detail_lines(results: List[BulkMatchResult]) -> List[str]:
+    new_items = [r for r in results if r.status == MatchStatus.NEW_ITEM]
     ready = [r for r in results if r.is_ready and not r.is_critical]
     critical = [r for r in results if r.is_ready and r.is_critical]
     mismatch = [r for r in results if r.status == MatchStatus.PRICE_MISMATCH]
@@ -144,6 +160,7 @@ def _preview_detail_lines(results: List[BulkMatchResult]) -> List[str]:
         (mismatch, "⚠️"),
         (ambiguous, "❓"),
         (not_found, "❌"),
+        (new_items, "🆕"),
     ):
         for r in group:
             flat.append((prefix, r))
@@ -199,9 +216,14 @@ async def _send_preview(
     *,
     ready_count: int,
     critical_count: int,
+    mismatch_count: int,
 ) -> None:
     parts = _format_preview_messages(results)
-    keyboard = get_bulk_price_preview_keyboard(ready_count, critical_count)
+    keyboard = get_bulk_price_preview_keyboard(
+        ready_count,
+        critical_count=critical_count,
+        mismatch_count=mismatch_count,
+    )
     for i, text in enumerate(parts):
         is_last = i == len(parts) - 1
         await message.answer(
@@ -211,15 +233,49 @@ async def _send_preview(
         )
 
 
-def _summary_text(applied: int, skipped_critical: int, cancelled: bool) -> str:
+def _summary_text(
+    applied: int,
+    *,
+    skipped_critical: int = 0,
+    skipped_mismatch: int = 0,
+    cancelled: bool = False,
+) -> str:
     lines = ["⚡ <b>Пакетное обновление завершено</b>", ""]
     lines.append(f"✅ Применено: {applied}")
     if skipped_critical:
-        lines.append(f"⏭ Пропущено CRITICAL: {skipped_critical}")
+        lines.append(f"⏭ Пропущено (крупное изменение): {skipped_critical}")
+    if skipped_mismatch:
+        lines.append(f"⏭ Пропущено (расхождения): {skipped_mismatch}")
     if cancelled:
         lines.append("⏹ Остановлено пользователем")
     lines.append("")
     lines.append("Статус синхронизации площадок — в сообщении «📡 Синхронизация площадок».")
+    return "\n".join(lines)
+
+
+def format_mismatch_confirm_prompt(
+    product_name: str,
+    *,
+    list_old_rub: int,
+    db_old_rub: int,
+    new_rub: int,
+    price_change=None,
+) -> str:
+    name = html.escape(product_name or "Без названия")
+    lines = [
+        "⚠️ <b>Расхождение с прайсом</b>",
+        "",
+        f"📦 {name}",
+        f"В прайсе (было): {list_old_rub}₽",
+        f"Сейчас в базе: {db_old_rub}₽",
+        f"Поставить: {new_rub}₽",
+        "",
+        "<i>«Старая» цена в прайсе не совпала с базой. Новая цена всё равно может быть верной.</i>",
+    ]
+    if price_change is not None and price_change.level == PriceChangeLevel.CRITICAL:
+        lines.extend(["", *format_price_change_html_lines(price_change)])
+    lines.append("")
+    lines.append("Применить новую цену на всех площадках?")
     return "\n".join(lines)
 
 
@@ -228,16 +284,83 @@ async def _save_results(state: FSMContext, results: List[BulkMatchResult]) -> No
         bulk_results=[_result_to_dict(r) for r in results],
         bulk_applied=0,
         bulk_skipped_critical=0,
+        bulk_skipped_mismatch=0,
         bulk_critical_ids=[
             r.product_id for r in results if r.is_ready and r.is_critical and r.product_id
         ],
         bulk_critical_index=0,
+        bulk_mismatch_ids=[
+            r.product_id
+            for r in results
+            if r.status == MatchStatus.PRICE_MISMATCH and r.product_id
+        ],
+        bulk_mismatch_index=0,
     )
 
 
 async def _load_results(state: FSMContext) -> List[BulkMatchResult]:
     data = await state.get_data()
     return [_dict_to_result(d) for d in data.get("bulk_results") or []]
+
+
+def _pending_critical(data: dict) -> List[int]:
+    ids: List[int] = list(data.get("bulk_critical_ids") or [])
+    index = int(data.get("bulk_critical_index") or 0)
+    return ids[index:]
+
+
+def _pending_mismatch(data: dict) -> List[int]:
+    ids: List[int] = list(data.get("bulk_mismatch_ids") or [])
+    index = int(data.get("bulk_mismatch_index") or 0)
+    return ids[index:]
+
+
+async def _finish_bulk_session(
+    callback: CallbackQuery,
+    state: FSMContext,
+    *,
+    cancelled: bool = False,
+) -> None:
+    data = await state.get_data()
+    applied = int(data.get("bulk_applied") or 0)
+    skipped_critical = int(data.get("bulk_skipped_critical") or 0)
+    skipped_mismatch = int(data.get("bulk_skipped_mismatch") or 0)
+    await state.clear()
+    await callback.message.answer(
+        _summary_text(
+            applied,
+            skipped_critical=skipped_critical,
+            skipped_mismatch=skipped_mismatch,
+            cancelled=cancelled,
+        ),
+        parse_mode="HTML",
+        reply_markup=get_bulk_price_done_keyboard(),
+    )
+
+
+async def _offer_next_step(callback: CallbackQuery, state: FSMContext) -> None:
+    """После применения готовых/крупных — предложить следующий шаг, если остались позиции."""
+    data = await state.get_data()
+    pending_crit = _pending_critical(data)
+    pending_mis = _pending_mismatch(data)
+
+    if pending_crit:
+        await _show_next_critical(callback, state)
+        return
+    if pending_mis:
+        await callback.message.answer(
+            f"Осталось проверить расхождений: {len(pending_mis)}",
+            reply_markup=get_bulk_price_continue_keyboard("mismatch", len(pending_mis)),
+        )
+        return
+
+    await _finish_bulk_session(callback, state)
+
+
+@router.callback_query(F.data == "bulk_price_finish")
+async def bulk_price_finish(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await _finish_bulk_session(callback, state)
 
 
 @router.callback_query(F.data == "bulk_price_start")
@@ -276,8 +399,10 @@ async def bulk_price_receive(message: Message, state: FSMContext) -> None:
         await message.answer("❌ Отправьте непустой список цен.")
         return
 
-    lines = parse_bulk_price_text(text)
-    if not lines:
+    lines = parse_bulk_price_input(text)
+    price_lines, new_item_lines, _skipped = lines
+
+    if not price_lines and not new_item_lines:
         await message.answer(
             "❌ Не удалось распознать ни одной строки.\n"
             "Формат: <code>название: 67900 → 68500</code>",
@@ -290,29 +415,58 @@ async def bulk_price_receive(message: Message, state: FSMContext) -> None:
     except Exception:
         pass
 
-    results = await run_db(match_bulk_lines, lines)
+    results = await run_db(match_bulk_lines, price_lines)
+    for item in new_item_lines:
+        from app.utils.bulk_price_parser import BulkPriceLine, parse_label
+
+        pseudo = BulkPriceLine(
+            raw_label=item.raw_label,
+            old_rub=0,
+            new_rub=item.new_rub,
+            line_no=item.line_no,
+        )
+        results.append(
+            BulkMatchResult(
+                line=pseudo,
+                parsed=parse_label(item.raw_label),
+                status=MatchStatus.NEW_ITEM,
+                display_label=item.raw_label,
+            )
+        )
+    results.sort(key=lambda r: r.line.line_no)
     await _save_results(state, results)
     await state.set_state(None)
 
     ready_count = sum(1 for r in results if r.is_ready and not r.is_critical)
     critical_count = sum(1 for r in results if r.is_ready and r.is_critical)
+    mismatch_count = sum(1 for r in results if r.status == MatchStatus.PRICE_MISMATCH)
     await _send_preview(
         message,
         results,
         ready_count=ready_count,
         critical_count=critical_count,
+        mismatch_count=mismatch_count,
     )
 
 
 @router.callback_query(F.data == "bulk_price_critical_start")
 async def bulk_price_critical_start(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
-    critical_ids = data.get("bulk_critical_ids") or []
-    if not critical_ids:
-        await callback.answer("Нет CRITICAL-позиций", show_alert=True)
+    if not _pending_critical(data):
+        await callback.answer("Нет позиций с крупным изменением", show_alert=True)
         return
     await callback.answer()
     await _show_next_critical(callback, state)
+
+
+@router.callback_query(F.data == "bulk_price_mismatch_start")
+async def bulk_price_mismatch_start(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    if not _pending_mismatch(data):
+        await callback.answer("Нет расхождений для проверки", show_alert=True)
+        return
+    await callback.answer()
+    await _show_next_mismatch(callback, state)
 
 
 @router.callback_query(F.data == "bulk_price_apply")
@@ -345,18 +499,7 @@ async def bulk_price_apply(callback: CallbackQuery, state: FSMContext) -> None:
         await asyncio.sleep(0.3)
 
     await state.update_data(bulk_applied=applied)
-    critical_ids = (await state.get_data()).get("bulk_critical_ids") or []
-    if critical_ids:
-        await _show_next_critical(callback, state)
-        return
-
-    skipped = int((await state.get_data()).get("bulk_skipped_critical") or 0)
-    await state.clear()
-    await callback.message.answer(
-        _summary_text(applied, skipped, cancelled=False),
-        parse_mode="HTML",
-        reply_markup=get_bulk_price_done_keyboard(),
-    )
+    await _offer_next_step(callback, state)
 
 
 async def _show_next_critical(callback: CallbackQuery, state: FSMContext) -> None:
@@ -366,34 +509,77 @@ async def _show_next_critical(callback: CallbackQuery, state: FSMContext) -> Non
     results = await _load_results(state)
 
     if index >= len(critical_ids):
-        applied = int(data.get("bulk_applied") or 0)
-        skipped = int(data.get("bulk_skipped_critical") or 0)
-        await state.clear()
-        await callback.message.answer(
-            _summary_text(applied, skipped, cancelled=False),
-            parse_mode="HTML",
-            reply_markup=get_bulk_price_done_keyboard(),
-        )
+        await _offer_next_step(callback, state)
         return
 
     product_id = critical_ids[index]
     match = next((r for r in results if r.product_id == product_id), None)
-    if not match or not match.price_change:
+    if not match:
         await state.update_data(bulk_critical_index=index + 1)
         await _show_next_critical(callback, state)
         return
 
+    db_old = match.db_price_rub or match.line.old_rub
+    price_change = match.price_change or analyze_price_change(db_old, match.line.new_rub)
+
     await state.update_data(
         bulk_critical_product_id=product_id,
         bulk_critical_formatted_price=f"{match.line.new_rub}₽",
-        bulk_critical_old_rub=match.db_price_rub or match.line.old_rub,
+        bulk_critical_old_rub=db_old,
     )
     await state.set_state(BulkPriceUpdate.waiting_critical_confirm)
     name = match.product_name or match.display_label
     await callback.message.answer(
-        format_price_change_confirm_prompt(name, match.price_change),
+        format_price_change_confirm_prompt(name, price_change),
         parse_mode="HTML",
         reply_markup=get_bulk_price_critical_keyboard(product_id),
+    )
+
+
+async def _show_next_mismatch(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    mismatch_ids: List[int] = list(data.get("bulk_mismatch_ids") or [])
+    index = int(data.get("bulk_mismatch_index") or 0)
+    results = await _load_results(state)
+
+    if index >= len(mismatch_ids):
+        await _offer_next_step(callback, state)
+        return
+
+    product_id = mismatch_ids[index]
+    match = next(
+        (
+            r
+            for r in results
+            if r.product_id == product_id and r.status == MatchStatus.PRICE_MISMATCH
+        ),
+        None,
+    )
+    if not match or match.db_price_rub is None:
+        await state.update_data(bulk_mismatch_index=index + 1)
+        await _show_next_mismatch(callback, state)
+        return
+
+    db_old = match.db_price_rub
+    price_change = analyze_price_change(db_old, match.line.new_rub)
+
+    await state.update_data(
+        bulk_mismatch_product_id=product_id,
+        bulk_mismatch_formatted_price=f"{match.line.new_rub}₽",
+        bulk_mismatch_old_rub=db_old,
+    )
+    await state.set_state(BulkPriceUpdate.waiting_mismatch_confirm)
+    name = match.product_name or match.display_label
+    await callback.message.answer(
+        format_mismatch_confirm_prompt(
+            name,
+            list_old_rub=match.line.old_rub,
+            db_old_rub=db_old,
+            new_rub=match.line.new_rub,
+            price_change=price_change,
+        ),
+        parse_mode="HTML",
+        reply_markup=get_bulk_price_mismatch_keyboard(product_id),
     )
 
 
@@ -449,15 +635,59 @@ async def bulk_price_critical_skip(callback: CallbackQuery, state: FSMContext) -
     await _show_next_critical(callback, state)
 
 
+@router.callback_query(F.data.startswith("bulk_mismatch_confirm_"))
+async def bulk_price_mismatch_confirm(callback: CallbackQuery, state: FSMContext) -> None:
+    try:
+        product_id = int(callback.data.replace("bulk_mismatch_confirm_", ""))
+    except ValueError:
+        await callback.answer("Ошибка")
+        return
+
+    data = await state.get_data()
+    if data.get("bulk_mismatch_product_id") != product_id:
+        await callback.answer("Сессия устарела", show_alert=True)
+        return
+
+    formatted = data.get("bulk_mismatch_formatted_price")
+    old_rub = int(data.get("bulk_mismatch_old_rub") or 0)
+    if not formatted:
+        await callback.answer("Нет сохранённой цены", show_alert=True)
+        return
+
+    await callback.answer()
+    summary, _ = await execute_product_price_update(
+        product_id,
+        formatted,
+        old_rub,
+        bot=callback.message.bot,
+        chat_id=callback.message.chat.id,
+    )
+
+    applied = int(data.get("bulk_applied") or 0)
+    if summary:
+        applied += 1
+    index = int(data.get("bulk_mismatch_index") or 0) + 1
+    await state.update_data(bulk_applied=applied, bulk_mismatch_index=index)
+    await state.set_state(None)
+
+    if summary:
+        await callback.message.answer(summary, parse_mode="HTML")
+
+    await _show_next_mismatch(callback, state)
+
+
+@router.callback_query(F.data.startswith("bulk_mismatch_skip_"))
+async def bulk_price_mismatch_skip(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    skipped = int(data.get("bulk_skipped_mismatch") or 0) + 1
+    index = int(data.get("bulk_mismatch_index") or 0) + 1
+    await state.update_data(bulk_skipped_mismatch=skipped, bulk_mismatch_index=index)
+    await state.set_state(None)
+    await callback.answer("Пропущено")
+    await _show_next_mismatch(callback, state)
+
+
 @router.callback_query(F.data == "bulk_price_stop")
 async def bulk_price_stop(callback: CallbackQuery, state: FSMContext) -> None:
-    data = await state.get_data()
-    applied = int(data.get("bulk_applied") or 0)
-    skipped = int(data.get("bulk_skipped_critical") or 0)
-    await state.clear()
     await callback.answer()
-    await callback.message.answer(
-        _summary_text(applied, skipped, cancelled=True),
-        parse_mode="HTML",
-        reply_markup=get_bulk_price_done_keyboard(),
-    )
+    await _finish_bulk_session(callback, state, cancelled=True)

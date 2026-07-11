@@ -71,6 +71,14 @@ def test_parse_label_ipad():
     assert p.color == "🔵"
 
 
+def test_parse_label_ipad_air_gray():
+    p = parse_label("iPad Air 11 m4 128 wifi - gray")
+    assert p.category == "ipad"
+    assert p.model == "iPad Air M4"
+    assert p.memory == "128"
+    assert p.color == "🔘"
+
+
 def test_parse_label_ipad_air():
     p = parse_label("iPad Air 11 m4 128 wifi - gray")
     assert p.category == "ipad"
@@ -113,3 +121,54 @@ def test_parse_label_15_plus():
     p = parse_label("15 plus 128 - от")
     assert p.model == "15 Plus"
     assert p.memory == "128"
+
+
+def test_parse_label_airpods():
+    p = parse_label("Airpods 4 anc -")
+    assert p.category == "airpods"
+    assert p.model == "AirPods 4 ANC"
+
+
+def test_parse_label_airpods_pro2():
+    p = parse_label("Airpods pro 2 (usb-c) -")
+    assert p.category == "airpods"
+    assert p.model == "AirPods Pro 2"
+
+
+def test_parse_label_watch_se3():
+    p = parse_label("Se3 44 - midnight")
+    assert p.category == "watch"
+    assert p.model == "AW SE 3"
+    assert p.size == "44mm"
+    assert p.color == "⚫️"
+
+
+def test_parse_label_watch_11():
+    p = parse_label("11 42 - black")
+    assert p.category == "watch"
+    assert p.model == "AW 11"
+    assert p.size == "42mm"
+    assert p.color == "⚫️"
+
+
+def test_parse_label_17e_cyrillic():
+    p = parse_label("17е 256 ⚫️ (esim) -")
+    assert p.model == "17E"
+    assert p.memory == "256"
+    assert p.storage == "esim"
+
+
+def test_parse_label_16e():
+    p = parse_label("16e 128 ⚫️ -")
+    assert p.model == "16E"
+    assert p.memory == "128"
+
+
+def test_parse_new_item_line():
+    from app.utils.bulk_price_parser import parse_bulk_price_input
+
+    text = "Pencil 1 -: Новый элемент, цена: 8501₽"
+    lines, new_items, skipped = parse_bulk_price_input(text)
+    assert not lines
+    assert len(new_items) == 1
+    assert new_items[0].new_rub == 8501

@@ -221,17 +221,25 @@ def save_product_price(product_id: int, price: str) -> Optional[dict]:
         logger.error("save_product_price: invalid price %r", price)
         return None
 
+    from app.services.product_price_history_service import record_price_change
+
     with SessionLocal() as db:
-        row = db.execute(
-            text("SELECT id FROM products WHERE id = :id LIMIT 1"), {"id": product_id}
-        ).first()
+        row = (
+            db.execute(
+                text("SELECT id, price FROM products WHERE id = :id LIMIT 1"),
+                {"id": product_id},
+            )
+            .mappings()
+            .first()
+        )
         if not row:
             return None
-        db.execute(
-            text("UPDATE products SET price = :price, updated_at = NOW() WHERE id = :id"),
-            {"price": price, "id": product_id},
+        old_price = row.get("price")
+        changed = record_price_change(
+            db, product_id, old_price, price, source="manual", update_product_price=True
         )
-        db.commit()
+        if changed:
+            db.commit()
         product = _product_api_dict(db, product_id)
 
     _invalidate_menu_cache()
@@ -341,3 +349,23 @@ def set_product_availability(product_id: int, availability_status: str) -> Optio
         product = _product_api_dict(db, product_id)
     _invalidate_menu_cache()
     return product
+
+
+def fetch_stale_price_list(min_days: int = 60) -> tuple[list[dict], int]:
+    """Активные б/у для экрана застоя и счётчик для бейджа."""
+    from app.db.stale_price_queries import count_stale_badge, fetch_stale_used_products
+
+    with SessionLocal() as db:
+        products = fetch_stale_used_products(db)
+        badge = count_stale_badge(db, min_days)
+    return products, int(badge)
+
+
+def fetch_stale_price_detail(product_id: int) -> tuple[Optional[dict], list[dict]]:
+    """Товар и история цен для экрана price_stale_item."""
+    from app.db.stale_price_queries import fetch_price_history, fetch_stale_used_products_by_id
+
+    with SessionLocal() as db:
+        product = fetch_stale_used_products_by_id(db, product_id)
+        history = fetch_price_history(db, product_id) if product else []
+    return product, history

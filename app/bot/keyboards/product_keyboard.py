@@ -598,3 +598,73 @@ def get_full_products_list_keyboard(
     ])
     
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+STALE_PRICE_PER_PAGE = 10
+
+
+def get_stale_price_list_keyboard(
+    products: List[dict],
+    page: int = 0,
+    per_page: int = STALE_PRICE_PER_PAGE,
+) -> InlineKeyboardMarkup:
+    """Пагинированные кнопки застоявшихся б/у-товаров."""
+    from app.utils.stale_price_utils import days_without_price_change
+
+    buttons = []
+    start_idx = page * per_page
+    end_idx = min(start_idx + per_page, len(products))
+
+    for i in range(start_idx, end_idx):
+        product = products[i]
+        days = days_without_price_change(
+            product.get("price_changed_at") or product.get("created_at")
+        )
+        label = product.get("name", "Без названия")
+        label = replace_color_with_emoji(label)
+        if len(label) > 32:
+            label = label[:29] + "..."
+        btn_text = f"{label} · {days}д."
+        buttons.append([
+            InlineKeyboardButton(
+                text=btn_text,
+                callback_data=f"price_stale_item_{product['id']}",
+            )
+        ])
+
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(
+            InlineKeyboardButton(text="⬅️", callback_data=f"price_stale_page_{page - 1}")
+        )
+    if end_idx < len(products):
+        nav_buttons.append(
+            InlineKeyboardButton(text="➡️", callback_data=f"price_stale_page_{page + 1}")
+        )
+    if nav_buttons:
+        buttons.append(nav_buttons)
+
+    buttons.append([
+        InlineKeyboardButton(text="⬅️ Назад в архив", callback_data="products_archive"),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_stale_price_detail_keyboard(product_id: int) -> InlineKeyboardMarkup:
+    """Экран истории цен одного товара."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📦 Открыть карточку товара",
+                    callback_data=f"product_{product_id}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⬅️ Назад к застою",
+                    callback_data="price_stale_list",
+                )
+            ],
+        ]
+    )

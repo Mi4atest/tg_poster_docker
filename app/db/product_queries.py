@@ -17,7 +17,7 @@ _PRODUCT_DETAIL_COLUMNS_1 = """
 """.strip()
 
 _PRODUCT_DETAIL_COLUMNS_2 = """
-    created_at, updated_at, archived_at, availability_status,
+    created_at, updated_at, archived_at, price_changed_at, availability_status,
     channel_message_id, availability_message_ids,
     max_link, custom_button_id, max_share_url,
     avito_item_id, avito_url, instagram_link, instagram_media_id
@@ -31,7 +31,7 @@ _PRODUCT_SYNC_COLUMNS = """
 
 _PRODUCT_LIST_COLUMNS = """
     id, name, price, status, collection_name, category_name,
-    vk_product_link, telegram_link, created_at, archived_at,
+    vk_product_link, telegram_link, created_at, archived_at, price_changed_at,
     availability_status, payment_method, final_price, post_id, vk_product_id
 """.strip()
 

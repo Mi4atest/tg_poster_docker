@@ -311,6 +311,69 @@ def ensure_posts_created_at_index() -> bool:
         return False
 
 
+def ensure_product_price_history_schema() -> bool:
+    """price_changed_at, product_price_history и backfill для существующих товаров."""
+    try:
+        inspector = inspect(engine)
+        if "products" not in inspector.get_table_names():
+            return False
+        statements = []
+        prod_cols = {col["name"] for col in inspector.get_columns("products")}
+        if "price_changed_at" not in prod_cols:
+            statements.append(
+                "ALTER TABLE products ADD COLUMN price_changed_at TIMESTAMP"
+            )
+        tables = set(inspector.get_table_names())
+        if "product_price_history" not in tables:
+            statements.extend([
+                """
+                CREATE TABLE product_price_history (
+                    id SERIAL PRIMARY KEY,
+                    product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+                    old_price VARCHAR,
+                    new_price VARCHAR NOT NULL,
+                    changed_at TIMESTAMP NOT NULL,
+                    source VARCHAR NOT NULL DEFAULT 'manual'
+                )
+                """,
+                """
+                CREATE INDEX ix_product_price_history_product_changed
+                ON product_price_history (product_id, changed_at)
+                """,
+            ])
+        with engine.connect() as conn:
+            for stmt in statements:
+                conn.execute(text(stmt))
+            conn.execute(
+                text(
+                    "UPDATE products SET price_changed_at = created_at "
+                    "WHERE price_changed_at IS NULL"
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO product_price_history (product_id, old_price, new_price, changed_at, source)
+                    SELECT p.id, NULL, COALESCE(p.price, ''), p.created_at, 'publication'
+                    FROM products p
+                    WHERE COALESCE(p.price, '') != ''
+                      AND NOT EXISTS (
+                          SELECT 1 FROM product_price_history h WHERE h.product_id = p.id
+                      )
+                    """
+                )
+            )
+            conn.commit()
+        if statements:
+            logger.info("Схема истории цен добавлена/обновлена")
+            return True
+        logger.info("Схема истории цен актуальна (backfill выполнен)")
+        return False
+    except Exception as e:
+        logger.error("Ошибка ensure_product_price_history_schema: %s", e)
+        return False
+
+
 def ensure_database_schema():
     """Обеспечивает актуальность схемы базы данных."""
     logger.info("Проверка схемы базы данных...")
@@ -325,6 +388,7 @@ def ensure_database_schema():
 
     ensure_new_menu_constructor_columns()
     ensure_posts_created_at_index()
+    ensure_product_price_history_schema()
 
     init_alembic_version_table()
 

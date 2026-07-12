@@ -169,3 +169,6 @@ BACKUP_BOT_TOKEN = os.getenv("BACKUP_BOT_TOKEN", "")
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "")
 BACKUP_PROJECT_NAME = os.getenv("BACKUP_PROJECT_NAME", "")
 BACKUP_MEDIA = os.getenv("BACKUP_MEDIA", "false").strip().lower() in ("1", "true", "yes")
+
+# Застой по цене (б/у): бейдж на кнопке в архиве — товары без смены цены ≥ N дней
+STALE_BADGE_MIN_DAYS = int(os.getenv("STALE_BADGE_MIN_DAYS", "60"))

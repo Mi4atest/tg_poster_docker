@@ -797,6 +797,18 @@ class VKProductPublisher:
                 status='active'
             )
             db.add(product)
+            db.flush()
+            from app.services.product_price_history_service import record_publication_price
+            from datetime import datetime, timezone
+
+            pub_price = product_data.get('price') or ''
+            if pub_price:
+                record_publication_price(
+                    db,
+                    product.id,
+                    pub_price,
+                    changed_at=product.created_at or datetime.now(timezone.utc),
+                )
             market_log = (
                 f"Published to VK Market (photos {len(photo_data_list)}/{expected_photos}, "
                 f"strict={VK_UPLOAD_STRICT_MODE})"

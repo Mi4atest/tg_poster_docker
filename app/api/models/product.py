@@ -59,6 +59,7 @@ class Product(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     archived_at = Column(DateTime, nullable=True)  # Дата архивации товара
+    price_changed_at = Column(DateTime, nullable=True)  # Последняя смена цены
     
     # Relationship
     post = relationship("Post", backref="products", passive_deletes=True)

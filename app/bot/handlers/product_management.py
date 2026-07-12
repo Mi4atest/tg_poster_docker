@@ -19,13 +19,20 @@ from app.bot.keyboards.product_keyboard import (
     get_product_detail_keyboard,
     get_product_price_edit_keyboard,
     get_product_status_confirmation_keyboard,
+    get_stale_price_detail_keyboard,
+    get_stale_price_list_keyboard,
     get_iphone_versions_keyboard,
     get_iphone_models_keyboard,
     get_iphone_model_products_keyboard
 )
 from app.utils.iphone_parser import group_products_by_model, get_model_display_name
 from app.bot.utils.product_list_formatter import format_full_products_list
-from app.config.settings import MAX_SHARE_FALLBACK_PREFIX
+from app.bot.utils.stale_price_formatter import (
+    format_stale_detail_text,
+    format_stale_list_text,
+    stale_button_label,
+)
+from app.config.settings import MAX_SHARE_FALLBACK_PREFIX, STALE_BADGE_MIN_DAYS
 from app.utils.time_msk import format_status_date_msk
 from app.utils.price_change import (
     PriceChangeInfo,
@@ -1552,6 +1559,101 @@ async def product_confirm_action(callback: CallbackQuery, state: FSMContext):
 
 
 SEARCH_PER_PAGE = 10
+STALE_LIST_MAX_LEN = 4090
+
+
+async def _fetch_stale_price_data() -> tuple[list[dict], int]:
+    from app.db.database import run_db
+    from app.services.product_ops_service import fetch_stale_price_list
+
+    return await run_db(fetch_stale_price_list, STALE_BADGE_MIN_DAYS)
+
+
+async def _fetch_stale_price_detail(product_id: int) -> tuple[Optional[dict], list[dict]]:
+    from app.db.database import run_db
+    from app.services.product_ops_service import fetch_stale_price_detail
+
+    return await run_db(fetch_stale_price_detail, product_id)
+
+
+async def _send_long_html_message(message, text: str, reply_markup, *, bot, chat_id: int):
+    """Отправить длинный HTML-текст с клавиатурой на последнем фрагменте."""
+    send_opts = {"parse_mode": "HTML", "link_preview_options": LinkPreviewOptions(is_disabled=True)}
+    if len(text) <= STALE_LIST_MAX_LEN:
+        await safe_edit_message(
+            message,
+            text,
+            reply_markup=reply_markup,
+            parse_mode="HTML",
+            disable_link_preview=True,
+        )
+        return
+    parts = []
+    rest = text
+    while rest:
+        if len(rest) <= STALE_LIST_MAX_LEN:
+            parts.append(rest)
+            break
+        chunk = rest[:STALE_LIST_MAX_LEN]
+        last_nl = chunk.rfind("\n")
+        if last_nl > 100:
+            parts.append(rest[: last_nl + 1])
+            rest = rest[last_nl + 1 :]
+        else:
+            parts.append(chunk)
+            rest = rest[STALE_LIST_MAX_LEN:]
+    await safe_edit_message(
+        message,
+        parts[0],
+        reply_markup=None,
+        parse_mode="HTML",
+        disable_link_preview=True,
+    )
+    for extra in parts[1:-1]:
+        await bot.send_message(chat_id=chat_id, text=extra, **send_opts)
+    await bot.send_message(
+        chat_id=chat_id,
+        text=parts[-1],
+        reply_markup=reply_markup,
+        **send_opts,
+    )
+
+
+async def _render_price_stale_list(
+    message,
+    state: FSMContext,
+    *,
+    page: int = 0,
+    bot=None,
+    chat_id: Optional[int] = None,
+) -> None:
+    """Экран «Застой по цене»: текстовый рейтинг + пагинированные кнопки."""
+    products, badge_count = await _fetch_stale_price_data()
+    await state.update_data(products_back="price_stale_list", stale_page=page)
+
+    if not products:
+        await safe_edit_message(
+            message,
+            "🕰 <b>Застой по цене (б/у)</b>\n\nНет активных б/у товаров.",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="⬅️ Назад в архив", callback_data="products_archive")]
+                ]
+            ),
+            parse_mode="HTML",
+        )
+        return
+
+    per_page = 10
+    last_page = max(0, (len(products) - 1) // per_page)
+    page = min(max(0, page), last_page)
+    await state.update_data(stale_page=page)
+
+    text = format_stale_list_text(products, badge_count, STALE_BADGE_MIN_DAYS)
+    keyboard = get_stale_price_list_keyboard(products, page=page)
+    _bot = bot or message.bot
+    _chat_id = chat_id or message.chat.id
+    await _send_long_html_message(message, text, keyboard, bot=_bot, chat_id=_chat_id)
 
 
 async def _render_product_search(
@@ -1728,7 +1830,26 @@ async def show_archived_products(message, year=None, month=None, day=None, state
     
     products, total = await get_all_products_api(status_filter="unavailable")
     
+    stale_badge_count = 0
+    if year is None:
+        try:
+            _, stale_badge_count = await _fetch_stale_price_data()
+        except Exception as ex:
+            logger.warning("stale badge count failed: %s", ex)
+
     if not products:
+        if year is None:
+            buttons = [
+                [ikb("📊 Вечерний отчет", "evening_report_start")],
+                [ikb(stale_button_label(stale_badge_count), "price_stale_list")],
+                [InlineKeyboardButton(text="⬅️ Назад в меню товаров", callback_data="products_menu")],
+            ]
+            await safe_edit_message(
+                message,
+                "📁 Архив товаров пуст.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+            )
+            return
         text = "📁 Архив товаров пуст."
         await safe_edit_message(message, text, reply_markup=get_products_menu_keyboard())
         return
@@ -1888,6 +2009,7 @@ async def show_archived_products(message, year=None, month=None, day=None, state
     # Кнопка "Вечерний отчет" (только на корневом уровне архива)
     if year is None:
         buttons.append([ikb("📊 Вечерний отчет", "evening_report_start")])
+        buttons.append([ikb(stale_button_label(stale_badge_count), "price_stale_list")])
     
     # Кнопка назад в меню товаров
     buttons.append([InlineKeyboardButton(
@@ -1901,6 +2023,64 @@ async def show_archived_products(message, year=None, month=None, day=None, state
             products_back=_archive_products_back_data(year, month, day)
         )
     await safe_edit_message(message, response_text, reply_markup=keyboard)
+
+
+@router.callback_query(F.data == "price_stale_list")
+async def price_stale_list(callback: CallbackQuery, state: FSMContext):
+    """Список застоя по цене (б/у): текст + пагинированные кнопки."""
+    data = await state.get_data()
+    page = int(data.get("stale_page") or 0)
+    await _render_price_stale_list(
+        callback.message,
+        state,
+        page=page,
+        bot=callback.bot,
+        chat_id=callback.message.chat.id,
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("price_stale_page_"))
+async def price_stale_page(callback: CallbackQuery, state: FSMContext):
+    """Пагинация списка застоя."""
+    try:
+        page = int(callback.data.replace("price_stale_page_", ""))
+    except ValueError:
+        await callback.answer("Ошибка")
+        return
+    await _render_price_stale_list(
+        callback.message,
+        state,
+        page=page,
+        bot=callback.bot,
+        chat_id=callback.message.chat.id,
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("price_stale_item_"))
+async def price_stale_item(callback: CallbackQuery, state: FSMContext):
+    """История цен одного застоявшегося товара."""
+    try:
+        product_id = int(callback.data.replace("price_stale_item_", ""))
+    except ValueError:
+        await callback.answer("Ошибка")
+        return
+
+    product, history = await _fetch_stale_price_detail(product_id)
+    if not product:
+        await callback.answer("Товар не найден или не активен", show_alert=True)
+        return
+
+    await state.update_data(products_back="price_stale_list")
+    text = format_stale_detail_text(product, history)
+    await safe_edit_message(
+        callback.message,
+        text,
+        reply_markup=get_stale_price_detail_keyboard(product_id),
+        parse_mode="HTML",
+    )
+    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("products_archive_year_"))

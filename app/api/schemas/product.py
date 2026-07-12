@@ -84,6 +84,7 @@ class Product(ProductBase):
     updated_at: datetime
     archived_at: Optional[datetime] = None
     published_at: Optional[datetime] = None  # обогащение: ранняя дата публикации из поста/товара
+    price_changed_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True

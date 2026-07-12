@@ -102,11 +102,31 @@ def fetch_used_products_for_list(db: Session) -> list[dict[str, Any]]:
 
 
 _POST_DETAIL_SELECT = """
-SELECT max_share_url, vk_post_id, vk_post_link
+SELECT max_share_url, vk_post_id, vk_post_link,
+       published_telegram_at, published_vk_at, published_max_at, published_instagram_at
 FROM posts
 WHERE id = :id
 LIMIT 1
 """
+
+
+def _resolve_published_at(product_data: dict[str, Any], post_row: Optional[dict[str, Any]]) -> Optional[datetime]:
+    """Самая ранняя дата публикации на площадках; иначе created_at товара."""
+    candidates: list[datetime] = []
+    if post_row:
+        for key in (
+            "published_telegram_at",
+            "published_vk_at",
+            "published_max_at",
+            "published_instagram_at",
+        ):
+            val = post_row.get(key)
+            if isinstance(val, datetime):
+                candidates.append(val)
+    created = product_data.get("created_at")
+    if isinstance(created, datetime):
+        candidates.append(created)
+    return min(candidates) if candidates else None
 
 
 def _enrich_product_detail_row(conn, row) -> Optional[dict[str, Any]]:
@@ -126,8 +146,11 @@ def _enrich_product_detail_row(conn, row) -> Optional[dict[str, Any]]:
                 data["max_share_url"] = post_row["max_share_url"]
             data["vk_post_id"] = post_row.get("vk_post_id")
             data["vk_post_link"] = post_row.get("vk_post_link")
+            data["published_at"] = _resolve_published_at(data, post_row)
     data.setdefault("vk_post_id", None)
     data.setdefault("vk_post_link", None)
+    if "published_at" not in data:
+        data["published_at"] = _resolve_published_at(data, None)
     return data
 
 
@@ -178,8 +201,13 @@ def product_detail_row_to_api_dict(row: dict[str, Any]) -> dict[str, Any]:
     """Словарь для бота/API (JSON-serializable)."""
     from app.api.schemas.product import Product as ProductSchema
 
+    published_at = row.get("published_at")
     out = ProductSchema.model_validate(row).model_dump(mode="json")
     for key, val in out.items():
         if isinstance(val, datetime):
             out[key] = val.isoformat()
+    if published_at is not None:
+        out["published_at"] = (
+            published_at.isoformat() if isinstance(published_at, datetime) else published_at
+        )
     return out

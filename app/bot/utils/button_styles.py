@@ -19,7 +19,7 @@ _PRIMARY_EXACT = frozenset({
 _SUCCESS_EXACT = frozenset({
     "confirm_yes",
     "avito_pub_go",
-    "evening_report_send",
+    "evening_report_save",
 })
 
 _DANGER_EXACT = frozenset({

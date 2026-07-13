@@ -374,6 +374,55 @@ def ensure_product_price_history_schema() -> bool:
         return False
 
 
+def ensure_evening_reports_table() -> bool:
+    """Таблица вечерних отчётов (один отчёт на календарный день)."""
+    try:
+        inspector = inspect(engine)
+        if "evening_reports" in inspector.get_table_names():
+            return False
+        with engine.connect() as conn:
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE evening_reports (
+                        id SERIAL PRIMARY KEY,
+                        report_date DATE NOT NULL,
+                        notes_text TEXT,
+                        morning_cash DOUBLE PRECISION,
+                        day_cash DOUBLE PRECISION,
+                        bn DOUBLE PRECISION,
+                        new_advance DOUBLE PRECISION,
+                        old_advance DOUBLE PRECISION,
+                        surrendered DOUBLE PRECISION,
+                        buybacks DOUBLE PRECISION,
+                        wholesale DOUBLE PRECISION,
+                        credit DOUBLE PRECISION,
+                        nf_primary DOUBLE PRECISION,
+                        nf_secondary DOUBLE PRECISION,
+                        extra_items JSON NOT NULL DEFAULT '[]',
+                        final_cash DOUBLE PRECISION,
+                        report_text TEXT,
+                        created_at TIMESTAMP,
+                        updated_at TIMESTAMP,
+                        CONSTRAINT uq_evening_reports_report_date UNIQUE (report_date)
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_evening_reports_report_date "
+                    "ON evening_reports (report_date)"
+                )
+            )
+            conn.commit()
+        logger.info("Таблица evening_reports создана")
+        return True
+    except Exception as e:
+        logger.error("Ошибка создания evening_reports: %s", e)
+        return False
+
+
 def ensure_database_schema():
     """Обеспечивает актуальность схемы базы данных."""
     logger.info("Проверка схемы базы данных...")
@@ -389,6 +438,7 @@ def ensure_database_schema():
     ensure_new_menu_constructor_columns()
     ensure_posts_created_at_index()
     ensure_product_price_history_schema()
+    ensure_evening_reports_table()
 
     init_alembic_version_table()
 

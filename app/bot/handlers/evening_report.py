@@ -270,6 +270,9 @@ async def evening_report_save(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Укажите «Касса на утро» и «За день»", show_alert=True)
         return
 
+    # Сразу снимаем «Загрузка», чтобы повторные нажатия не копились в пуле
+    await callback.answer("Сохраняю…")
+
     report_text = build_report_text(draft)
     final_cash = calc_final_cash(draft)
 
@@ -277,16 +280,21 @@ async def evening_report_save(callback: CallbackQuery, state: FSMContext):
         return save_report(draft, report_text=report_text, final_cash=final_cash)
 
     try:
-        report_id = await asyncio.to_thread(_save)
+        report_id = await asyncio.wait_for(
+            asyncio.to_thread(_save),
+            timeout=ARCHIVE_DB_TIMEOUT_SEC + 5.0,
+        )
         await state.update_data(
             er_report_id=report_id,
             er_saved_snapshot=draft_snapshot(draft),
         )
         await show_report_panel(callback, state, hint="✅ Отчёт сохранён.")
-        await callback.answer("Сохранено")
+    except asyncio.TimeoutError:
+        logger.error("evening_report save timed out for %s", draft.get("report_date"))
+        await callback.message.answer("❌ Сохранение слишком долгое. Попробуйте ещё раз.")
     except Exception as e:
         logger.error("Error saving evening report: %s", e)
-        await callback.answer("❌ Ошибка сохранения", show_alert=True)
+        await callback.message.answer("❌ Ошибка сохранения отчёта.")
 
 
 @router.callback_query(StateFilter(EveningReport), F.data == "evening_report_copy")

@@ -6,11 +6,15 @@ from sqlalchemy.orm import sessionmaker
 
 from app.config.settings import DATABASE_URL
 
-# statement_timeout: зависший запрос отваливается быстро, а не держит соединение 30+ секунд
+# statement_timeout: зависший запрос отваливается быстро.
+# idle_in_transaction_session_timeout: рвёт сессии, застрявшие после SELECT без COMMIT
+# (иначе они исчерпывают пул и весь бот перестаёт отвечать).
 if DATABASE_URL.startswith("sqlite"):
     _connect_args = {"check_same_thread": False}
 else:
-    _connect_args = {"options": "-c statement_timeout=10000"}
+    _connect_args = {
+        "options": "-c statement_timeout=10000 -c idle_in_transaction_session_timeout=15000"
+    }
 
 # Create SQLAlchemy engine
 engine = create_engine(

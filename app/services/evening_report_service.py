@@ -213,12 +213,48 @@ def get_report_text_by_date(report_date: date) -> Optional[str]:
     return None
 
 
+_UPSERT_SQL = text(
+    """
+    INSERT INTO evening_reports (
+        report_date, notes_text, morning_cash, day_cash, bn,
+        new_advance, old_advance, surrendered, buybacks, wholesale,
+        credit, nf_primary, nf_secondary, extra_items, final_cash,
+        report_text, created_at, updated_at
+    ) VALUES (
+        :report_date, :notes_text, :morning_cash, :day_cash, :bn,
+        :new_advance, :old_advance, :surrendered, :buybacks, :wholesale,
+        :credit, :nf_primary, :nf_secondary, CAST(:extra_items AS jsonb),
+        :final_cash, :report_text, :updated_at, :updated_at
+    )
+    ON CONFLICT (report_date) DO UPDATE SET
+        notes_text = EXCLUDED.notes_text,
+        morning_cash = EXCLUDED.morning_cash,
+        day_cash = EXCLUDED.day_cash,
+        bn = EXCLUDED.bn,
+        new_advance = EXCLUDED.new_advance,
+        old_advance = EXCLUDED.old_advance,
+        surrendered = EXCLUDED.surrendered,
+        buybacks = EXCLUDED.buybacks,
+        wholesale = EXCLUDED.wholesale,
+        credit = EXCLUDED.credit,
+        nf_primary = EXCLUDED.nf_primary,
+        nf_secondary = EXCLUDED.nf_secondary,
+        extra_items = EXCLUDED.extra_items,
+        final_cash = EXCLUDED.final_cash,
+        report_text = EXCLUDED.report_text,
+        updated_at = EXCLUDED.updated_at
+    RETURNING id
+    """
+)
+
+
 def save_report(
     draft: dict[str, Any],
     *,
     report_text: str,
     final_cash: float,
 ) -> int:
+    """Один UPSERT — без SELECT+INSERT гонки, которая оставляла idle in transaction."""
     report_date = date.fromisoformat(draft["report_date"])
     extra_items = list(draft.get("extra_items") or [])
     now = datetime.utcnow()
@@ -236,77 +272,34 @@ def save_report(
         "credit": draft.get("credit"),
         "nf_primary": draft.get("nf_primary"),
         "nf_secondary": draft.get("nf_secondary"),
-        "extra_items": json.dumps(extra_items),
+        "extra_items": json.dumps(extra_items, ensure_ascii=False),
         "final_cash": final_cash,
         "report_text": report_text,
         "updated_at": now,
     }
     last_error: Optional[BaseException] = None
     for attempt in range(2):
+        t0 = time.monotonic()
         db = SessionLocal()
         try:
-            existing_id = db.execute(
-                text("SELECT id FROM evening_reports WHERE report_date = :report_date LIMIT 1"),
-                {"report_date": report_date},
-            ).scalar()
-            if existing_id:
-                db.execute(
-                    text(
-                        """
-                        UPDATE evening_reports SET
-                            notes_text = :notes_text,
-                            morning_cash = :morning_cash,
-                            day_cash = :day_cash,
-                            bn = :bn,
-                            new_advance = :new_advance,
-                            old_advance = :old_advance,
-                            surrendered = :surrendered,
-                            buybacks = :buybacks,
-                            wholesale = :wholesale,
-                            credit = :credit,
-                            nf_primary = :nf_primary,
-                            nf_secondary = :nf_secondary,
-                            extra_items = CAST(:extra_items AS JSON),
-                            final_cash = :final_cash,
-                            report_text = :report_text,
-                            updated_at = :updated_at
-                        WHERE id = :record_id
-                        """
-                    ),
-                    {**params, "record_id": existing_id},
-                )
-                db.commit()
-                return int(existing_id)
-
-            row = db.execute(
-                text(
-                    """
-                    INSERT INTO evening_reports (
-                        report_date, notes_text, morning_cash, day_cash, bn,
-                        new_advance, old_advance, surrendered, buybacks, wholesale,
-                        credit, nf_primary, nf_secondary, extra_items, final_cash,
-                        report_text, created_at, updated_at
-                    ) VALUES (
-                        :report_date, :notes_text, :morning_cash, :day_cash, :bn,
-                        :new_advance, :old_advance, :surrendered, :buybacks, :wholesale,
-                        :credit, :nf_primary, :nf_secondary, CAST(:extra_items AS JSON),
-                        :final_cash, :report_text, :updated_at, :updated_at
-                    )
-                    RETURNING id
-                    """
-                ),
-                params,
-            ).scalar_one()
+            row_id = db.execute(_UPSERT_SQL, params).scalar_one()
             db.commit()
-            return int(row)
-        except (OperationalError, DBAPIError) as exc:
-            last_error = exc
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            logger.info(
+                "evening_report saved id=%s date=%s in %sms",
+                row_id,
+                report_date,
+                elapsed_ms,
+            )
+            return int(row_id)
+        except (OperationalError, DBAPIError) as ec:
+            last_error = ec
             db.rollback()
             logger.warning(
                 "evening_report save attempt %s failed for %s: %s",
                 attempt + 1,
                 report_date,
-                exc,
+                ec,
             )
             if attempt == 0:
                 continue

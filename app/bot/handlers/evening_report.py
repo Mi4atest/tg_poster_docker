@@ -29,7 +29,12 @@ from app.bot.utils.evening_report_flow import (
     show_report_panel,
     sync_draft_to_state,
 )
-from app.services.evening_report_service import load_or_create_draft, save_report
+from app.services.evening_report_service import (
+    ARCHIVE_DB_TIMEOUT_SEC,
+    empty_draft,
+    load_or_create_draft,
+    save_report,
+)
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -49,7 +54,18 @@ async def _init_report_state(state: FSMContext, for_date: date | None = None) ->
     def _load():
         return load_or_create_draft(report_date)
 
-    draft = await asyncio.to_thread(_load)
+    try:
+        draft = await asyncio.wait_for(
+            asyncio.to_thread(_load),
+            timeout=ARCHIVE_DB_TIMEOUT_SEC + 5.0,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("evening_report load timed out for %s", report_date)
+        draft = empty_draft(report_date)
+    except Exception:
+        logger.exception("evening_report load failed, using empty draft")
+        draft = empty_draft(report_date)
+
     saved = draft_snapshot(draft)
     await state.update_data(
         **sync_draft_to_state(draft),
@@ -62,10 +78,32 @@ async def _init_report_state(state: FSMContext, for_date: date | None = None) ->
 
 @router.callback_query(F.data == "evening_report_start")
 async def evening_report_start(callback: CallbackQuery, state: FSMContext):
-    await _init_report_state(state)
-    await state.set_state(EveningReport.panel)
-    await show_report_panel(callback, state)
     await callback.answer()
+    try:
+        await state.update_data(er_archive_back=None)
+        await _init_report_state(state)
+        await state.set_state(EveningReport.panel)
+        await show_report_panel(callback, state)
+    except Exception:
+        logger.exception("evening_report_start failed")
+        await callback.message.answer("❌ Не удалось открыть вечерний отчёт. Попробуйте ещё раз.")
+
+
+@router.callback_query(F.data.startswith("evening_report_date_"))
+async def evening_report_for_date(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    try:
+        suffix = callback.data.removeprefix("evening_report_date_")
+        year_s, month_s, day_s = suffix.split("_")
+        year, month, day = int(year_s), int(month_s), int(day_s)
+        report_date = date(year, month, day)
+        await state.update_data(er_archive_back={"year": year, "month": month, "day": day})
+        await _init_report_state(state, for_date=report_date)
+        await state.set_state(EveningReport.panel)
+        await show_report_panel(callback, state)
+    except Exception:
+        logger.exception("evening_report_for_date failed")
+        await callback.message.answer("❌ Не удалось открыть вечерний отчёт. Попробуйте ещё раз.")
 
 
 @router.callback_query(StateFilter(EveningReport), F.data == "er_back_panel")
@@ -156,8 +194,6 @@ async def er_extra_manage(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(StateFilter(EveningReport), F.data == "er_extra_add")
 async def er_extra_add(callback: CallbackQuery, state: FSMContext):
-    from aiogram.types import InlineKeyboardMarkup
-
     await callback.message.edit_text(
         "Выберите тип:",
         reply_markup=get_evening_report_extra_kind_keyboard(),
@@ -238,8 +274,7 @@ async def evening_report_save(callback: CallbackQuery, state: FSMContext):
     final_cash = calc_final_cash(draft)
 
     def _save():
-        record = save_report(draft, report_text=report_text, final_cash=final_cash)
-        return record.id
+        return save_report(draft, report_text=report_text, final_cash=final_cash)
 
     try:
         report_id = await asyncio.to_thread(_save)
@@ -279,6 +314,16 @@ async def evening_report_delete_copy(callback: CallbackQuery):
 async def evening_report_cancel(callback: CallbackQuery, state: FSMContext):
     from app.bot.handlers.product_management import show_archived_products
 
+    data = await state.get_data()
+    back = data.get("er_archive_back")
     await state.clear()
-    await show_archived_products(callback.message, state=state)
+    if back:
+        await show_archived_products(
+            callback.message,
+            year=back["year"],
+            month=back["month"],
+            day=back["day"],
+        )
+    else:
+        await show_archived_products(callback.message)
     await callback.answer()

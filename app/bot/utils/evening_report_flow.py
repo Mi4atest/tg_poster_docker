@@ -4,7 +4,7 @@ from __future__ import annotations
 import html
 import re
 from copy import deepcopy
-from datetime import date, datetime
+from datetime import date
 from typing import Any, Optional, Union
 
 from aiogram.exceptions import TelegramBadRequest
@@ -22,8 +22,8 @@ MONEY_FIELD_LABELS: dict[str, str] = {
     "morning_cash": "Касса на утро",
     "day_cash": "За день",
     "bn": "БН",
-    "new_advance": "Новый аванс",
-    "old_advance": "Старый аванс",
+    "new_advance": "Нов. аванс",
+    "old_advance": "Ст. аванс",
     "surrendered": "Сдано",
     "buybacks": "Выкупы",
     "wholesale": "Опт",
@@ -291,6 +291,7 @@ async def show_report_panel(
     body = format_panel_body(data, hint=hint)
     report_text = build_report_text(draft)
     kb = get_evening_report_panel_keyboard(
+        draft=draft,
         report_text=report_text,
         has_changes=has_unsaved_changes(data),
     )
@@ -341,6 +342,7 @@ async def refresh_report_panel(
     body = format_panel_body(data, hint=hint)
     report_text = build_report_text(draft)
     kb = get_evening_report_panel_keyboard(
+        draft=draft,
         report_text=report_text,
         has_changes=has_unsaved_changes(data),
     )

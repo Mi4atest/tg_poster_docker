@@ -423,6 +423,27 @@ def ensure_evening_reports_table() -> bool:
         return False
 
 
+def ensure_evening_reports_index() -> bool:
+    """Индекс report_date для существующей таблицы (идемпотентно)."""
+    try:
+        inspector = inspect(engine)
+        if "evening_reports" not in inspector.get_table_names():
+            return False
+        with engine.connect() as conn:
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_evening_reports_report_date "
+                    "ON evening_reports (report_date)"
+                )
+            )
+            conn.commit()
+        logger.info("Индекс ix_evening_reports_report_date проверен")
+        return True
+    except Exception as e:
+        logger.error("Ошибка индекса evening_reports: %s", e)
+        return False
+
+
 def ensure_database_schema():
     """Обеспечивает актуальность схемы базы данных."""
     logger.info("Проверка схемы базы данных...")
@@ -439,6 +460,7 @@ def ensure_database_schema():
     ensure_posts_created_at_index()
     ensure_product_price_history_schema()
     ensure_evening_reports_table()
+    ensure_evening_reports_index()
 
     init_alembic_version_table()
 

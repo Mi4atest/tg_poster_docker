@@ -1861,9 +1861,18 @@ async def products_archive(callback: CallbackQuery, state: FSMContext, year=None
 
 async def show_archived_products(message, year=None, month=None, day=None, state: Optional[FSMContext] = None):
     """Показать архив товаров с группировкой по датам архивации."""
+    import asyncio
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
     from datetime import datetime
-    
+
+    from app.services.evening_report_service import (
+        ARCHIVE_DB_TIMEOUT_SEC,
+        get_report_text_by_date,
+        get_saved_report_days_for_month,
+        get_saved_report_months_for_year,
+        get_saved_report_years,
+    )
+
     products, total = await get_all_products_api(status_filter="unavailable")
     
     stale_badge_count = 0
@@ -1935,6 +1944,33 @@ async def show_archived_products(message, year=None, month=None, day=None, state
             products_by_date[archive_year][archive_month][archive_day] = []
         
         products_by_date[archive_year][archive_month][archive_day].append(product)
+
+    report_years: set[int] = set()
+    report_months: set[int] = set()
+    report_days: set[int] = set()
+    try:
+        if year is None:
+            report_years = await asyncio.wait_for(
+                asyncio.to_thread(get_saved_report_years),
+                timeout=ARCHIVE_DB_TIMEOUT_SEC,
+            )
+        elif month is None:
+            report_months = await asyncio.wait_for(
+                asyncio.to_thread(get_saved_report_months_for_year, year),
+                timeout=ARCHIVE_DB_TIMEOUT_SEC,
+            )
+        elif day is None:
+            report_days = await asyncio.wait_for(
+                asyncio.to_thread(get_saved_report_days_for_month, year, month),
+                timeout=ARCHIVE_DB_TIMEOUT_SEC,
+            )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "evening_report calendar load timed out (year=%s month=%s day=%s)",
+            year,
+            month,
+            day,
+        )
     
     # Создаем кнопки и текст в зависимости от уровня навигации
     buttons = []
@@ -1956,13 +1992,13 @@ async def show_archived_products(message, year=None, month=None, day=None, state
             
             response_text += "\n📂 Архив по годам:\n\n"
         
-        # Добавляем кнопки годов
-        years = sorted(products_by_date.keys(), reverse=True)
+        # Добавляем кнопки годов (товары ∪ отчёты)
+        years = sorted(set(products_by_date.keys()) | report_years, reverse=True)
         for year_val in years:
             year_count = sum(
-                len(products_by_date[year_val][m][d])
-                for m in products_by_date[year_val]
-                for d in products_by_date[year_val][m]
+                len(products_by_date.get(year_val, {}).get(m, {}).get(d, []))
+                for m in products_by_date.get(year_val, {})
+                for d in products_by_date.get(year_val, {}).get(m, {})
             )
             buttons.append([InlineKeyboardButton(
                 text=f"📅 {year_val} ({year_count} товаров)",
@@ -1973,11 +2009,11 @@ async def show_archived_products(message, year=None, month=None, day=None, state
         # Уровень года - показываем месяцы
         response_text = f"📁 Архив товаров за {year} год:\n\n"
         
-        months = sorted(products_by_date[year].keys(), reverse=True)
+        months = sorted(set(products_by_date.get(year, {}).keys()) | report_months, reverse=True)
         for month_val in months:
             month_count = sum(
-                len(products_by_date[year][month_val][d])
-                for d in products_by_date[year][month_val]
+                len(products_by_date.get(year, {}).get(month_val, {}).get(d, []))
+                for d in products_by_date.get(year, {}).get(month_val, {})
             )
             month_names = {
                 1: "Январь", 2: "Февраль", 3: "Март", 4: "Апрель",
@@ -2005,11 +2041,14 @@ async def show_archived_products(message, year=None, month=None, day=None, state
         month_name = month_names.get(month, str(month))
         response_text = f"📁 Архив товаров за {month_name} {year} года:\n\n"
         
-        days = sorted(products_by_date[year][month].keys(), reverse=True)
+        days = sorted(set(products_by_date.get(year, {}).get(month, {}).keys()) | report_days, reverse=True)
         for day_val in days:
-            day_count = len(products_by_date[year][month][day_val])
+            day_count = len(products_by_date.get(year, {}).get(month, {}).get(day_val, []))
+            day_label = f"📅 {day_val} {month_name} ({day_count} товаров)"
+            if day_val in report_days:
+                day_label += " ●"
             buttons.append([InlineKeyboardButton(
-                text=f"📅 {day_val} {month_name} ({day_count} товаров)",
+                text=day_label,
                 callback_data=f"products_archive_day_{year}_{month}_{day_val}"
             )])
         
@@ -2019,7 +2058,11 @@ async def show_archived_products(message, year=None, month=None, day=None, state
         )])
     
     else:
-        # Уровень дня - показываем товары за этот день
+        # Уровень дня - товары (если есть) + вечерний отчёт
+        from datetime import date as date_cls
+
+        from app.bot.keyboards.evening_report_keyboard import evening_report_date_callback
+
         month_names = {
             1: "Января", 2: "Февраля", 3: "Марта", 4: "Апреля",
             5: "Мая", 6: "Июня", 7: "Июля", 8: "Августа",
@@ -2027,8 +2070,24 @@ async def show_archived_products(message, year=None, month=None, day=None, state
         }
         month_name = month_names.get(month, str(month))
         response_text = f"📁 Архив товаров за {day} {month_name} {year} года:\n\n"
-        
-        day_products = products_by_date[year][month][day]
+
+        report_date = date_cls(year, month, day)
+        try:
+            report_text_saved = await asyncio.wait_for(
+                asyncio.to_thread(get_report_text_by_date, report_date),
+                timeout=ARCHIVE_DB_TIMEOUT_SEC,
+            )
+        except asyncio.TimeoutError:
+            report_text_saved = None
+            logger.warning("evening_report text load timed out for %s", report_date)
+        er_cb = evening_report_date_callback(year, month, day)
+        if report_text_saved:
+            response_text += f"📊 Вечерний отчёт:\n{report_text_saved}\n\n"
+            buttons.append([ikb("📊 Открыть отчёт", er_cb)])
+        else:
+            buttons.append([ikb("📊 Создать отчёт за этот день", er_cb)])
+
+        day_products = products_by_date.get(year, {}).get(month, {}).get(day, [])
         for i, product in enumerate(day_products, 1):
             product_name = product.get("name", "Без названия")
             response_text += f"{i}. {product_name}\n"

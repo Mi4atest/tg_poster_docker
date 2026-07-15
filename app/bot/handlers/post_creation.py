@@ -8,7 +8,11 @@ import random
 from datetime import datetime
 from typing import List, Optional
 
-from app.bot.keyboards.main_keyboard import get_skip_back_keyboard, get_create_post_entry_keyboard
+from app.bot.keyboards.main_keyboard import (
+    get_skip_back_keyboard,
+    get_text_only_confirm_keyboard,
+    get_create_post_entry_keyboard,
+)
 from app.bot.utils.main_menu import build_main_keyboard
 from app.bot.keyboards.post_avito_keyboard import format_post_creation_text_prompt
 from app.bot.keyboards.product_keyboard import get_category_selection_keyboard, get_collection_selection_keyboard
@@ -20,6 +24,11 @@ from app.integrations.avito.condition_maps import clamp_avito_level
 from app.bot.keyboards.post_avito_keyboard import next_screen_level, next_body_level
 from app.bot.utils.button_styles import ikb
 from app.bot.utils.post_media import collect_album_media, format_media_summary
+from app.bot.utils.post_success_ui import (
+    build_post_ready_keyboard,
+    build_post_ready_text,
+    post_media_counts,
+)
 
 router = Router()
 
@@ -27,8 +36,6 @@ router = Router()
 class PostCreation(StatesGroup):
     waiting_for_text = State()
     waiting_for_photos = State()
-    waiting_for_videos = State()
-    confirmation = State()
     selecting_category = State()
     selecting_collection = State()
 
@@ -107,37 +114,12 @@ async def _finalize_post_creation(callback: CallbackQuery, state: FSMContext, av
             photo_count = len(photos)
             video_count = len(videos)
             post_name = post.get("name", "")
-
-            success_text = "✅ Пост успешно создан!\n\n"
-            success_text += f"📝 {post_name}\n\n"
-
-            if photo_count > 0:
-                success_text += f"📷 Фотографий: {photo_count}\n"
-
-            if video_count > 0:
-                success_text += f"📹 Видео: {video_count}\n"
-
-            success_text += "\nПост сохранён как черновик. Опубликовать его можно через «В очередь» или «В черновики»."
-            success_text += "\n\n" + get_platform_status_hint_text()
-
             post_id = post.get("id")
-            from app.config.settings import VK_MARKET_ENABLED
-            if VK_MARKET_ENABLED:
-                buttons = [
-                    [InlineKeyboardButton(text="📦 Настроить товар (категория/подборка)", callback_data=f"setup_product_{post_id}")],
-                    [ikb("📋 В очередь/Создать новый", f"add_to_queue_and_create_{post_id}")],
-                    [InlineKeyboardButton(text="📝 В черновики", callback_data="pending_posts")],
-                    [InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")],
-                ]
-            else:
-                buttons = [
-                    [ikb("📋 В очередь/Создать новый", f"add_to_queue_and_create_{post_id}")],
-                    [InlineKeyboardButton(text="📝 В черновики", callback_data="pending_posts")],
-                    [InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")],
-                ]
-            keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
 
-            await callback.message.edit_text(success_text, reply_markup=keyboard)
+            success_text = build_post_ready_text(post_name, photo_count, video_count)
+            keyboard = build_post_ready_keyboard(post_id)
+
+            await callback.message.edit_text(success_text, reply_markup=keyboard, parse_mode="HTML")
             await state.update_data(post_id=post_id)
         else:
             await callback.message.edit_text(
@@ -153,15 +135,95 @@ async def _finalize_post_creation(callback: CallbackQuery, state: FSMContext, av
     await state.clear()
 
 
-@router.callback_query(PostCreation.waiting_for_videos, F.data == "skip")
-async def skip_videos(callback: CallbackQuery, state: FSMContext):
-    """После видео — сразу создание поста (параметры Авито задаются на шаге текста)."""
-    data = await state.get_data()
-    draft = {
+def _avito_draft_from_state(data: dict) -> dict:
+    return {
         "screen_level": clamp_avito_level(data.get("avito_screen_level", 1)),
         "body_level": clamp_avito_level(data.get("avito_body_level", 1)),
     }
-    await _finalize_post_creation(callback, state, draft)
+
+
+def _has_media(photos: list, videos: list) -> bool:
+    return bool(photos or videos)
+
+
+def _media_step_keyboard(photos: list, videos: list) -> InlineKeyboardMarkup:
+    return get_skip_back_keyboard()
+
+
+MEDIA_UPLOAD_HINT = (
+    "📷 Отправь фото обычным альбомом — порядок сохранится.\n"
+    "При желании можно как раньше — «Отправить без группировки»."
+)
+
+
+def _build_initial_media_prompt(intro_phrase: str) -> str:
+    return f"{intro_phrase}\n\n{MEDIA_UPLOAD_HINT}"
+
+
+def _build_media_status_text(photos: list, videos: list, *, photo_limit_hit: bool = False) -> str:
+    summary = _format_media_summary(photos, videos)
+    if photo_limit_hit and not _has_media(photos, videos):
+        return (
+            "❌ Уже загружено максимум 10 фото.\n"
+            f"✅ {summary}\n\n"
+            "Нажми «Далее», чтобы продолжить, или «Назад» к редактированию текста."
+        )
+    if photo_limit_hit:
+        return (
+            "⚠️ Часть фото не добавлена — лимит 10.\n"
+            f"✅ {summary}\n\n"
+            "Отправь ещё фото/видео либо нажми «Далее»."
+        )
+    return f"✅ {summary}\n\nОтправь ещё фото/видео либо нажми «Далее»."
+
+
+async def _restore_media_step(callback: CallbackQuery, state: FSMContext) -> None:
+    """Return to the media upload screen after cancelling text-only confirmation."""
+    data = await state.get_data()
+    photos = list(data.get("photos", []))
+    videos = list(data.get("videos", []))
+    if _has_media(photos, videos):
+        text = _build_media_status_text(photos, videos)
+    else:
+        intro = data.get("media_intro_phrase") or "Отправь фото и видео для поста."
+        text = _build_initial_media_prompt(intro)
+    await callback.message.edit_text(
+        text,
+        reply_markup=_media_step_keyboard(photos, videos),
+    )
+
+
+@router.callback_query(PostCreation.waiting_for_photos, F.data == "skip")
+async def skip_photos(callback: CallbackQuery, state: FSMContext):
+    """Finish media step: create post or ask to confirm text-only."""
+    data = await state.get_data()
+    photos = list(data.get("photos", []))
+    videos = list(data.get("videos", []))
+
+    if _has_media(photos, videos):
+        await _finalize_post_creation(callback, state, _avito_draft_from_state(data))
+        await callback.answer()
+        return
+
+    await callback.message.edit_text(
+        "⚠️ Без фото?\n\n"
+        "Медиа не добавлены. Обычно пост публикуют с фото или видео.\n"
+        "Создать пост только с текстом?",
+        reply_markup=get_text_only_confirm_keyboard(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(PostCreation.waiting_for_photos, F.data == "pc_text_only_yes")
+async def confirm_text_only_post(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    await _finalize_post_creation(callback, state, _avito_draft_from_state(data))
+    await callback.answer()
+
+
+@router.callback_query(PostCreation.waiting_for_photos, F.data == "pc_text_only_no")
+async def cancel_text_only_post(callback: CallbackQuery, state: FSMContext):
+    await _restore_media_step(callback, state)
     await callback.answer()
 
 
@@ -320,19 +382,20 @@ async def process_post_text(message: Message, state: FSMContext):
     ]
 
     # Выбираем случайную фразу из списка
-    import random
     photo_phrase = random.choice(photo_phrases)
 
     # Ask for photos
     status_message = await message.reply(
-        f"{photo_phrase}\n\n"
-        "📷 Отправь фото обычным альбомом — порядок сохранится.\n"
-        "При желании можно как раньше — «Отправить без группировки».",
-        reply_markup=get_skip_back_keyboard()
+        _build_initial_media_prompt(photo_phrase),
+        reply_markup=_media_step_keyboard([], []),
     )
 
     # Сохраняем ID сообщения бота
-    await state.update_data(bot_message_ids=[status_message.message_id], status_message_id=status_message.message_id)
+    await state.update_data(
+        bot_message_ids=[status_message.message_id],
+        status_message_id=status_message.message_id,
+        media_intro_phrase=photo_phrase,
+    )
 
     await state.update_data(photos=[], videos=[])
 
@@ -377,7 +440,7 @@ async def process_text_with_media(
         "✅ Текст поста сохранён!\n\n"
         f"{warning}✅ {summary}\n\n"
         "Отправь ещё фото/видео либо нажми «Далее».",
-        reply_markup=get_skip_back_keyboard(),
+        reply_markup=_media_step_keyboard(photos, videos),
     )
     await state.update_data(
         status_message_id=status_message_obj.message_id,
@@ -431,18 +494,25 @@ async def _update_photos_status(message: Message, state: FSMContext, status_text
 
     if status_message_id:
         try:
+            photos = list(data.get("photos", []))
+            videos = list(data.get("videos", []))
             await message.bot.edit_message_text(
                 chat_id=message.chat.id,
                 message_id=status_message_id,
                 text=status_text,
-                reply_markup=get_skip_back_keyboard(),
+                reply_markup=_media_step_keyboard(photos, videos),
             )
             await state.update_data(bot_message_ids=[status_message_id])
             return
         except Exception as e:
             print(f"Error editing status message: {str(e)}")
 
-    status_message_obj = await message.answer(status_text, reply_markup=get_skip_back_keyboard())
+    photos = list(data.get("photos", []))
+    videos = list(data.get("videos", []))
+    status_message_obj = await message.answer(
+        status_text,
+        reply_markup=_media_step_keyboard(photos, videos),
+    )
     await state.update_data(
         status_message_id=status_message_obj.message_id,
         bot_message_ids=[status_message_obj.message_id],
@@ -474,198 +544,9 @@ async def process_media_in_photos(
 
     await state.update_data(photos=photos, videos=videos)
 
-    summary = _format_media_summary(photos, videos)
-    if photo_limit_hit and photos_added == 0 and videos_added == 0:
-        status_text = (
-            "❌ Уже загружено максимум 10 фото.\n"
-            f"✅ {summary}\n\n"
-            "Нажми «Далее», чтобы продолжить, или «Назад» к редактированию текста."
-        )
-    elif photo_limit_hit:
-        status_text = (
-            "⚠️ Часть фото не добавлена — лимит 10.\n"
-            f"✅ {summary}\n\n"
-            "Отправь ещё фото/видео либо нажми «Далее»."
-        )
-    else:
-        status_text = (
-            f"✅ {summary}\n\n"
-            "Отправь ещё фото/видео либо нажми «Далее»."
-        )
-
+    status_text = _build_media_status_text(photos, videos, photo_limit_hit=photo_limit_hit)
     await _update_photos_status(message, state, status_text)
 
-@router.callback_query(PostCreation.waiting_for_photos, F.data == "skip")
-async def skip_photos(callback: CallbackQuery, state: FSMContext):
-    """Move from the photo stage to the video stage, preserving everything."""
-    data = await state.get_data()
-    photos = list(data.get("photos", []))
-    videos = list(data.get("videos", []))
-
-    summary = _format_media_summary(photos, videos)
-
-    await callback.message.edit_text(
-        f"✅ {summary}\n\n"
-        "📹 Отправь видео для поста (одним альбомом или по одному).\n"
-        "Если видео уже добавлены — можно нажать «Далее».",
-        reply_markup=get_skip_back_keyboard(),
-    )
-
-    await state.set_state(PostCreation.waiting_for_videos)
-    await callback.answer()
-
-@router.callback_query(PostCreation.waiting_for_videos, F.data == "back")
-async def back_to_photos(callback: CallbackQuery, state: FSMContext):
-    """Go back to adding photos."""
-    await callback.message.edit_text(
-        "📷 Отправьте фотографии для поста (от 1 до 10 шт).\n\n"
-        "Отправляйте по одной фотографии за раз. Порядок отправки будет сохранен.",
-        reply_markup=get_skip_back_keyboard()
-    )
-
-    # Move back to previous state
-    await state.set_state(PostCreation.waiting_for_photos)
-
-    await callback.answer()
-
-@router.message(PostCreation.waiting_for_videos, F.video)
-async def process_video(
-    message: Message,
-    state: FSMContext,
-    album: Optional[List[Message]] = None,
-):
-    """Add a single video or a whole video album during the videos stage."""
-    data = await state.get_data()
-    videos: list[str] = list(data.get("videos", []))
-    status_message_id = data.get("status_message_id")
-
-    if album:
-        new_files = [m.video.file_id for m in album if m.video]
-    elif message.video:
-        new_files = [message.video.file_id]
-    else:
-        return
-
-    for file_id in new_files:
-        if file_id not in videos:
-            videos.append(file_id)
-
-    await state.update_data(videos=videos)
-
-    status_text = f"📹 Видео: {len(videos)}\n\nОтправь ещё видео или нажми «Далее»."
-
-    if status_message_id:
-        try:
-            await message.bot.edit_message_text(
-                chat_id=message.chat.id,
-                message_id=status_message_id,
-                text=status_text,
-                reply_markup=get_skip_back_keyboard(),
-            )
-            return
-        except Exception as e:
-            print(f"Error editing message: {str(e)}")
-
-    status_message_obj = await message.answer(status_text, reply_markup=get_skip_back_keyboard())
-    await state.update_data(status_message_id=status_message_obj.message_id)
-
-@router.callback_query(PostCreation.confirmation, F.data == "confirm_create")
-async def confirm_create_post(callback: CallbackQuery, state: FSMContext):
-    """Create the post after confirmation."""
-    # Get all data
-    data = await state.get_data()
-    text = data.get("text", "")
-    photos = data.get("photos", [])
-    videos = data.get("videos", [])
-
-    # Send data to API
-    await callback.message.edit_text("⏳ Создаю пост...")
-
-    try:
-        post = await create_post_api(
-            text,
-            photos,
-            videos,
-            avito_draft={
-                "screen_level": clamp_avito_level(data.get("avito_screen_level", 1)),
-                "body_level": clamp_avito_level(data.get("avito_body_level", 1)),
-            },
-        )
-
-        if post:
-            # Format success message
-            photo_count = len(photos)
-            video_count = len(videos)
-            post_name = post.get("name", "")
-
-            success_text = f"✅ Пост успешно создан!\n\n"
-            success_text += f"📝 {post_name}\n\n"
-
-            if photo_count > 0:
-                success_text += f"📷 Фотографий: {photo_count}\n"
-
-            if video_count > 0:
-                success_text += f"📹 Видео: {video_count}\n"
-
-            success_text += "\nПост сохранён как черновик. Опубликовать его можно через «В очередь» или «В черновики»."
-            success_text += "\n\n" + get_platform_status_hint_text()
-
-            # Create keyboard for post actions
-            post_id = post.get("id")
-            
-            # Сохраняем post_id в state для возможного выбора категории/подборки
-            await state.update_data(post_id=post_id)
-            
-            # Предлагаем выбрать категорию и подборку для товара (опционально, для отладки)
-            from app.config.settings import VK_MARKET_ENABLED
-            if VK_MARKET_ENABLED:
-                buttons = [
-                    [InlineKeyboardButton(text="📦 Настроить товар (категория/подборка)", callback_data=f"setup_product_{post_id}")],
-                    [ikb("📋 В очередь/Создать новый", f"add_to_queue_and_create_{post_id}")],
-                    [InlineKeyboardButton(text="📝 В черновики", callback_data="pending_posts")],
-                    [InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")]
-                ]
-            else:
-                buttons = [
-                    [ikb("📋 В очередь/Создать новый", f"add_to_queue_and_create_{post_id}")],
-                    [InlineKeyboardButton(text="📝 В черновики", callback_data="pending_posts")],
-                    [InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")]
-                ]
-            keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
-
-            await callback.message.edit_text(success_text, reply_markup=keyboard)
-
-            # Не очищаем state полностью, оставляем post_id для возможной настройки товара
-            return
-        else:
-            await callback.message.edit_text(
-                "❌ Ошибка при создании поста. Пожалуйста, попробуйте еще раз.",
-                reply_markup=await build_main_keyboard(callback.message.bot)
-            )
-    except Exception as e:
-        await callback.message.edit_text(
-            f"❌ Произошла ошибка: {str(e)}",
-            reply_markup=await build_main_keyboard(callback.message.bot)
-        )
-
-    # Reset state
-    await state.clear()
-
-    await callback.answer()
-
-@router.callback_query(PostCreation.confirmation, F.data == "back_to_videos")
-async def back_to_videos_from_confirmation(callback: CallbackQuery, state: FSMContext):
-    """Go back to adding videos from confirmation."""
-    await callback.message.edit_text(
-        "📹 Вернемся к добавлению видео для поста (до 50 МБ).\n\n"
-        "Отправляйте по одному видео за раз.",
-        reply_markup=get_skip_back_keyboard()
-    )
-
-    # Move back to videos state
-    await state.set_state(PostCreation.waiting_for_videos)
-
-    await callback.answer()
 
 @router.callback_query(F.data == "back_to_main")
 async def back_to_main_menu(callback: CallbackQuery, state: FSMContext):
@@ -686,20 +567,6 @@ async def back_to_main_menu(callback: CallbackQuery, state: FSMContext):
         parse_mode="HTML",
         reply_markup=await build_main_keyboard(callback.bot),
     )
-
-    await callback.answer()
-
-@router.callback_query(PostCreation.confirmation, F.data == "cancel_create")
-async def cancel_create_post(callback: CallbackQuery, state: FSMContext):
-    """Cancel post creation."""
-    await callback.message.edit_text(
-        "❌ Создание поста отменено.\n\n"
-        "Выберите действие:",
-        reply_markup=await build_main_keyboard(callback.bot),
-    )
-
-    # Reset state
-    await state.clear()
 
     await callback.answer()
 
@@ -772,14 +639,17 @@ async def select_collection(callback: CallbackQuery, state: FSMContext):
     if collection:
         text += f"📁 Подборка: {collection}\n"
     text += "\nЭти настройки будут использованы при публикации товара в ВК."
-    
-    buttons = [
-        [ikb("📋 В очередь/Создать новый", f"add_to_queue_and_create_{post_id}")],
-        [InlineKeyboardButton(text="📝 В черновики", callback_data="pending_posts")],
-        [InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")]
-    ]
-    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
-    
-    await callback.message.edit_text(text, reply_markup=keyboard)
+
+    from app.bot.handlers.post_management import get_post_api
+
+    post = await get_post_api(post_id) if post_id else None
+    if post:
+        photo_count, video_count = post_media_counts(post)
+        text = build_post_ready_text(post.get("name", ""), photo_count, video_count)
+        keyboard = build_post_ready_keyboard(post_id)
+    else:
+        keyboard = build_post_ready_keyboard(post_id or "")
+
+    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
     await state.clear()
     await callback.answer()

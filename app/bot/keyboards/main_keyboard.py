@@ -186,6 +186,15 @@ def get_skip_back_keyboard() -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
+
+def get_text_only_confirm_keyboard() -> InlineKeyboardMarkup:
+    """Confirm creating a post without photos/videos."""
+    buttons = [
+        [ikb("✅ Да, только текст", "pc_text_only_yes")],
+        [ikb("⬅️ Нет, добавлю фото", "pc_text_only_no")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
 def get_publish_all_pending_confirmation_keyboard() -> InlineKeyboardMarkup:
     """Подтверждение массового добавления черновиков в очередь."""
     buttons = [

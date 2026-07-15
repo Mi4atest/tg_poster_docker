@@ -15,7 +15,7 @@ from app.bot.keyboards.scheduler_keyboard import (
 )
 from app.bot.keyboards.main_keyboard import get_create_post_entry_keyboard
 from app.bot.keyboards.post_avito_keyboard import format_post_creation_text_prompt
-from app.bot.utils.platform_status import get_platform_status_hint_text
+from app.bot.utils.post_success_ui import build_post_queued_keyboard, build_post_queued_text, post_media_counts
 from app.services.settings_service import get_settings_service
 from app.bot.handlers.queue_avito_ui import (
     build_avito_platform_text,
@@ -430,65 +430,91 @@ async def publish_now(callback: CallbackQuery):
         await callback.answer("❌ Ошибка", show_alert=True)
 
 
-@router.callback_query(F.data.startswith("add_to_queue_and_create_"))
-async def add_to_queue_and_create(callback: CallbackQuery, state: FSMContext):
-    """Добавить пост в очередь публикации и сразу предложить создать новый."""
+@router.callback_query(F.data.startswith("create_another_post_"))
+async def create_another_post(callback: CallbackQuery, state: FSMContext):
+    """Открыть форму нового поста (текущий уже в очереди)."""
     try:
-        post_id = callback.data.replace("add_to_queue_and_create_", "")
-        orchestrator = get_orchestrator(callback.bot)
-        
-        # Убеждаемся, что добавляем во все платформы, включая ВК
-        success = orchestrator.add_post_to_queue(post_id, platforms=["vk", "telegram", "instagram", "max", "avito"])
-        
-        if success:
-            await callback.answer("✅ Пост добавлен в очередь публикации")
-            from app.bot.handlers.post_creation import PostCreation
+        await callback.answer()
+        from app.bot.handlers.post_creation import PostCreation
 
-            await state.update_data(avito_screen_level=1, avito_body_level=1)
-            service = get_settings_service()
-            vk_market_enabled = service.is_vk_market_enabled()
-            avito_enabled = service.is_platform_enabled("avito")
-            status_hint = get_platform_status_hint_text()
-            await safe_edit_message(
-                callback.message,
-                "✅ Пост добавлен в очередь публикации!\n\n"
-                + format_post_creation_text_prompt(
-                    status_hint, 0, 0, avito_enabled=avito_enabled
-                ),
-                reply_markup=get_create_post_entry_keyboard(
-                    vk_market_enabled,
-                    avito_enabled=avito_enabled,
-                    avito_screen_level=1,
-                    avito_body_level=1,
-                ),
-                parse_mode="HTML",
-            )
-            await state.set_state(PostCreation.waiting_for_text)
-        else:
-            await callback.answer("❌ Ошибка при добавлении поста в очередь", show_alert=True)
+        await state.update_data(avito_screen_level=1, avito_body_level=1)
+        service = get_settings_service()
+        vk_market_enabled = service.is_vk_market_enabled()
+        avito_enabled = service.is_platform_enabled("avito")
+        from app.bot.utils.platform_status import get_platform_status_hint_text
+
+        status_hint = get_platform_status_hint_text()
+        await safe_edit_message(
+            callback.message,
+            format_post_creation_text_prompt(status_hint, 1, 1, avito_enabled=avito_enabled),
+            reply_markup=get_create_post_entry_keyboard(
+                vk_market_enabled,
+                avito_enabled=avito_enabled,
+                avito_screen_level=1,
+                avito_body_level=1,
+            ),
+            parse_mode="HTML",
+        )
+        await state.set_state(PostCreation.waiting_for_text)
     except Exception as e:
-        logger.error(f"Error adding to queue and creating: {str(e)}")
+        logger.error(f"Error opening new post form: {str(e)}")
         await callback.answer("❌ Ошибка", show_alert=True)
 
-@router.callback_query(F.data.startswith("add_to_queue_") & ~F.data.startswith("add_to_queue_and_create_"))
-async def add_to_queue(callback: CallbackQuery):
-    """Добавить пост в очередь публикации."""
+
+@router.callback_query(F.data.startswith("add_to_queue_and_create_"))
+async def add_to_queue_and_create_legacy(callback: CallbackQuery, state: FSMContext):
+    """Старые сообщения: ставим в очередь и показываем экран «что дальше»."""
+    post_id = callback.data.replace("add_to_queue_and_create_", "")
+    await _show_post_queued_screen(callback, state, post_id)
+
+
+@router.callback_query(
+    F.data.startswith("add_to_queue_") & ~F.data.startswith("add_to_queue_and_create_")
+)
+async def add_to_queue(callback: CallbackQuery, state: FSMContext):
+    """Добавить пост в очередь и показать экран «что дальше»."""
+    post_id = callback.data.replace("add_to_queue_", "")
+    await _show_post_queued_screen(callback, state, post_id)
+
+
+async def _show_post_queued_screen(callback: CallbackQuery, state: FSMContext, post_id: str) -> None:
     try:
-        post_id = callback.data.replace("add_to_queue_", "")
+        from app.bot.handlers.post_management import get_post_api
+
+        post = await get_post_api(post_id)
+        if not post:
+            await callback.answer("❌ Пост не найден", show_alert=True)
+            return
+
         orchestrator = get_orchestrator(callback.bot)
-        
-        # Убеждаемся, что добавляем во все платформы, включая ВК
-        success = orchestrator.add_post_to_queue(post_id, platforms=["vk", "telegram", "instagram", "max", "avito"])
-        
-        if success:
-            await callback.answer("✅ Пост добавлен в очередь публикации")
-            # Обновляем сообщение
-            text = callback.message.text
-            text += "\n\n✅ Пост добавлен в очередь публикации!"
-            text += "\n\n" + get_platform_status_hint_text()
-            await safe_edit_message(callback.message, text, reply_markup=callback.message.reply_markup)
-        else:
+        success = orchestrator.add_post_to_queue(
+            post_id, platforms=["vk", "telegram", "instagram", "max", "avito"]
+        )
+
+        if not success:
             await callback.answer("❌ Ошибка при добавлении поста в очередь", show_alert=True)
+            return
+
+        stats = orchestrator.get_queue_stats()
+        photo_count, video_count = post_media_counts(post)
+        avito_draft = post.get("avito_draft") if isinstance(post.get("avito_draft"), dict) else None
+
+        text = build_post_queued_text(
+            post.get("name", ""),
+            photo_count,
+            video_count,
+            stats,
+            avito_draft=avito_draft,
+        )
+        keyboard = build_post_queued_keyboard(post_id)
+
+        await callback.answer("✅ Пост добавлен в очередь")
+        await safe_edit_message(
+            callback.message,
+            text,
+            reply_markup=keyboard,
+            parse_mode="HTML",
+        )
     except Exception as e:
         logger.error(f"Error adding to queue: {str(e)}")
         await callback.answer("❌ Ошибка", show_alert=True)

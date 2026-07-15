@@ -28,7 +28,7 @@ _DANGER_EXACT = frozenset({
     "cancel_publish_all_pending",
 })
 
-_PRIMARY_PREFIXES = ("queue_publish_now_", "add_to_queue_and_create_")
+_PRIMARY_PREFIXES = ("queue_publish_now_", "add_to_queue_and_create_", "add_to_queue_", "create_another_post_")
 _DANGER_PREFIXES = ("queue_cancel_post_",)
 
 

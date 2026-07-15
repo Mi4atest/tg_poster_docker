@@ -32,6 +32,8 @@ from app.bot.utils.stale_price_formatter import (
     format_stale_list_text,
     stale_button_label,
 )
+from app.utils.stale_price_utils import STALE_SORT_PRICE, STALE_SORT_SALE
+from app.bot.utils.price_history_formatter import format_price_history_expandable_html
 from app.config.settings import MAX_SHARE_FALLBACK_PREFIX, STALE_BADGE_MIN_DAYS
 from app.utils.time_msk import format_status_date_msk
 from app.utils.price_change import (
@@ -377,11 +379,31 @@ def format_product_status_html(product: dict) -> str:
     return line + "\n"
 
 
-def format_product_card_html(product: dict) -> str:
+async def get_product_price_history_api(product_id: int) -> list:
+    """История смены цены товара для карточки."""
+    import asyncio
+
+    from app.services.product_ops_service import fetch_product_price_history
+
+    try:
+        return await asyncio.to_thread(fetch_product_price_history, product_id)
+    except Exception as e:
+        logger.error("Error getting price history for product %s: %s", product_id, e)
+        return []
+
+
+def format_product_card_html(
+    product: dict,
+    price_history: Optional[list] = None,
+) -> str:
     """Полная карточка б/у-товара для Telegram."""
     text = f"📦 <b>{product.get('name', 'Без названия')}</b>\n\n"
     if product.get("price"):
         text += f"💵 Цена: {product['price']}\n"
+    if price_history is not None:
+        history_block = format_price_history_expandable_html(price_history)
+        if history_block:
+            text += history_block
     if product.get("category_name"):
         text += f"📂 Категория: {product['category_name']}\n"
     if product.get("collection_name"):
@@ -390,6 +412,21 @@ def format_product_card_html(product: dict) -> str:
     text += format_product_status_html(product)
     text += format_product_platform_links_html(product)
     return text
+
+
+async def build_product_card_html(
+    product: dict,
+    *,
+    price_history: Optional[list] = None,
+) -> str:
+    """Карточка товара с подгрузкой истории цен при необходимости."""
+    if price_history is None:
+        product_id = product.get("id")
+        if product_id:
+            price_history = await get_product_price_history_api(product_id)
+        else:
+            price_history = []
+    return format_product_card_html(product, price_history=price_history)
 
 
 _MAX_TELEGRAM_CHANNEL_LINK_RE = re.compile(
@@ -952,7 +989,7 @@ async def product_detail(callback: CallbackQuery, state: FSMContext):
 
     # Формируем текст с информацией о товаре
     status = product.get("status", "active")
-    text = format_product_card_html(product)
+    text = await build_product_card_html(product)
 
     try:
         await safe_edit_message(
@@ -1185,7 +1222,7 @@ async def _return_to_used_product_detail(
         return
 
     status = product.get("status", "active")
-    text = format_product_card_html(product)
+    text = await build_product_card_html(product)
 
     await safe_edit_message(
         callback.message,
@@ -1306,7 +1343,7 @@ async def _after_product_price_updated(
 ) -> None:
     """Карточка товара и обновление списка б/у в канале после смены цены."""
     status = updated_product.get("status", "active")
-    text = format_product_card_html(updated_product)
+    text = await build_product_card_html(updated_product)
     from app.bot.keyboards.product_keyboard import get_product_detail_keyboard
 
     await message.answer(
@@ -1507,7 +1544,7 @@ async def product_confirm_action(callback: CallbackQuery, state: FSMContext):
         updated_product = await get_product_api(product_id)
         if updated_product:
             status = updated_product.get("status", "active")
-            text = format_product_card_html(updated_product)
+            text = await build_product_card_html(updated_product)
             await safe_edit_message(
                 callback.message,
                 text,
@@ -1546,11 +1583,13 @@ SEARCH_PER_PAGE = 10
 STALE_LIST_MAX_LEN = 4090
 
 
-async def _fetch_stale_price_data() -> tuple[list[dict], int]:
+async def _fetch_stale_price_data(
+    sort_mode: str = STALE_SORT_PRICE,
+) -> tuple[list[dict], int]:
     from app.db.database import run_db
     from app.services.product_ops_service import fetch_stale_price_list
 
-    return await run_db(fetch_stale_price_list, STALE_BADGE_MIN_DAYS)
+    return await run_db(fetch_stale_price_list, STALE_BADGE_MIN_DAYS, sort_mode=sort_mode)
 
 
 async def _fetch_stale_price_detail(product_id: int) -> tuple[Optional[dict], list[dict]]:
@@ -1608,12 +1647,23 @@ async def _render_price_stale_list(
     state: FSMContext,
     *,
     page: int = 0,
+    sort_mode: Optional[str] = None,
     bot=None,
     chat_id: Optional[int] = None,
 ) -> None:
     """Экран «Застой по цене»: текстовый рейтинг + пагинированные кнопки."""
-    products, badge_count = await _fetch_stale_price_data()
-    await state.update_data(products_back="price_stale_list", stale_page=page)
+    data = await state.get_data()
+    if sort_mode is None:
+        sort_mode = data.get("stale_sort_mode") or STALE_SORT_PRICE
+    if sort_mode not in (STALE_SORT_PRICE, STALE_SORT_SALE):
+        sort_mode = STALE_SORT_PRICE
+
+    products, badge_count = await _fetch_stale_price_data(sort_mode)
+    await state.update_data(
+        products_back="price_stale_list",
+        stale_page=page,
+        stale_sort_mode=sort_mode,
+    )
 
     if not products:
         await safe_edit_message(
@@ -1633,8 +1683,10 @@ async def _render_price_stale_list(
     page = min(max(0, page), last_page)
     await state.update_data(stale_page=page)
 
-    text = format_stale_list_text(products, badge_count, STALE_BADGE_MIN_DAYS)
-    keyboard = get_stale_price_list_keyboard(products, page=page)
+    text = format_stale_list_text(
+        products, badge_count, STALE_BADGE_MIN_DAYS, sort_mode=sort_mode
+    )
+    keyboard = get_stale_price_list_keyboard(products, page=page, sort_mode=sort_mode)
     _bot = bot or message.bot
     _chat_id = chat_id or message.chat.id
     await _send_long_html_message(message, text, keyboard, bot=_bot, chat_id=_chat_id)
@@ -2014,10 +2066,12 @@ async def price_stale_list(callback: CallbackQuery, state: FSMContext):
     """Список застоя по цене (б/у): текст + пагинированные кнопки."""
     data = await state.get_data()
     page = int(data.get("stale_page") or 0)
+    sort_mode = data.get("stale_sort_mode") or STALE_SORT_PRICE
     await _render_price_stale_list(
         callback.message,
         state,
         page=page,
+        sort_mode=sort_mode,
         bot=callback.bot,
         chat_id=callback.message.chat.id,
     )
@@ -2032,10 +2086,41 @@ async def price_stale_page(callback: CallbackQuery, state: FSMContext):
     except ValueError:
         await callback.answer("Ошибка")
         return
+    data = await state.get_data()
+    sort_mode = data.get("stale_sort_mode") or STALE_SORT_PRICE
     await _render_price_stale_list(
         callback.message,
         state,
         page=page,
+        sort_mode=sort_mode,
+        bot=callback.bot,
+        chat_id=callback.message.chat.id,
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "price_stale_sort_price")
+async def price_stale_sort_price(callback: CallbackQuery, state: FSMContext):
+    """Сортировка застоя: по давности смены цены."""
+    await _render_price_stale_list(
+        callback.message,
+        state,
+        page=0,
+        sort_mode=STALE_SORT_PRICE,
+        bot=callback.bot,
+        chat_id=callback.message.chat.id,
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "price_stale_sort_sale")
+async def price_stale_sort_sale(callback: CallbackQuery, state: FSMContext):
+    """Сортировка застоя: по давности в продаже."""
+    await _render_price_stale_list(
+        callback.message,
+        state,
+        page=0,
+        sort_mode=STALE_SORT_SALE,
         bot=callback.bot,
         chat_id=callback.message.chat.id,
     )
@@ -2201,7 +2286,7 @@ async def process_product_unavailable(product_id: int, payment_method: Optional[
     refreshed = await get_product_api(product_id) or updated_product
     if refreshed:
         status = refreshed.get("status", "unavailable")
-        text = format_product_card_html(refreshed)
+        text = await build_product_card_html(refreshed)
         await safe_edit_message(
             callback.message,
             text,

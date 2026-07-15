@@ -607,8 +607,11 @@ def get_stale_price_list_keyboard(
     products: List[dict],
     page: int = 0,
     per_page: int = STALE_PRICE_PER_PAGE,
+    *,
+    sort_mode: str = "price",
 ) -> InlineKeyboardMarkup:
     """Пагинированные кнопки застоявшихся б/у-товаров."""
+    from app.utils.stale_price_utils import STALE_SORT_PRICE, STALE_SORT_SALE
     from app.utils.stale_price_utils import days_without_price_change
 
     buttons = []
@@ -624,13 +627,21 @@ def get_stale_price_list_keyboard(
         label = replace_color_with_emoji(label)
         if len(label) > 32:
             label = label[:29] + "..."
-        btn_text = f"{label} · {days}д."
+        repriced = "↺" if product.get("price_repriced") else ""
+        btn_text = f"{label} · {days}д.{repriced}"
         buttons.append([
             InlineKeyboardButton(
                 text=btn_text,
                 callback_data=f"price_stale_item_{product['id']}",
             )
         ])
+
+    price_label = "🕰 По цене ✓" if sort_mode == STALE_SORT_PRICE else "🕰 По цене"
+    sale_label = "📅 В продаже ✓" if sort_mode == STALE_SORT_SALE else "📅 В продаже"
+    buttons.append([
+        InlineKeyboardButton(text=price_label, callback_data="price_stale_sort_price"),
+        InlineKeyboardButton(text=sale_label, callback_data="price_stale_sort_sale"),
+    ])
 
     nav_buttons = []
     if page > 0:

@@ -69,6 +69,43 @@ def test_price_update_scenario():
     assert "📅 с 01.07.2026, 12:35" in text
 
 
+def test_product_card_with_price_history():
+    product = {**BASE, "status": "active", "created_at": BASE["published_at"]}
+    history = [
+        {
+            "old_price": None,
+            "new_price": "23900₽",
+            "changed_at": "2026-07-01T09:35:00+00:00",
+            "source": "publication",
+        },
+        {
+            "old_price": "23900₽",
+            "new_price": "21900₽",
+            "changed_at": "2026-07-10T09:35:00+00:00",
+            "source": "manual",
+        },
+    ]
+    text = format_product_card_html(product, price_history=history)
+    assert "<blockquote expandable>" in text
+    assert "23900" in text
+    assert "21900" in text
+    assert "↓" in text
+
+
+def test_product_card_without_real_price_changes():
+    product = {**BASE, "status": "active", "created_at": BASE["published_at"]}
+    history = [
+        {
+            "old_price": None,
+            "new_price": "23900₽",
+            "changed_at": "2026-07-01T09:35:00+00:00",
+            "source": "publication",
+        },
+    ]
+    text = format_product_card_html(product, price_history=history)
+    assert "blockquote" not in text
+
+
 def test_restore_to_active_scenario():
     product = {
         **BASE,

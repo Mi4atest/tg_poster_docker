@@ -2,16 +2,19 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.utils.stale_price_utils import STALE_SORT_PRICE, STALE_SORT_SALE
 from app.db.product_queries import USED_EXCLUDED_COLLECTIONS
 
+StaleSortMode = Literal["price", "sale"]
+
 _STALE_USED_WHERE = """
-    status = 'active'
-    AND (collection_name IS NULL OR collection_name NOT IN (:c1, :c2, :c3, :c4, :c5))
+    p.status = 'active'
+    AND (p.collection_name IS NULL OR p.collection_name NOT IN (:c1, :c2, :c3, :c4, :c5))
 """
 
 _STALE_PARAMS = {
@@ -22,26 +25,46 @@ _STALE_PARAMS = {
     "c5": USED_EXCLUDED_COLLECTIONS[4],
 }
 
+_STALE_SELECT = """
+    SELECT p.id, p.name, p.price, p.collection_name, p.price_changed_at, p.created_at,
+           po.published_telegram_at,
+           EXISTS (
+               SELECT 1 FROM product_price_history h
+               WHERE h.product_id = p.id AND h.source != 'publication'
+           ) AS price_repriced
+    FROM products p
+    LEFT JOIN posts po ON po.id = p.post_id
+    WHERE {where_clause}
+"""
+
+_SORT_ORDERS: dict[str, str] = {
+    STALE_SORT_PRICE: "COALESCE(p.price_changed_at, p.created_at) ASC, p.id ASC",
+    STALE_SORT_SALE: "COALESCE(po.published_telegram_at, p.created_at) ASC, p.id ASC",
+}
+
 
 def _row_to_dict(row) -> dict[str, Any]:
     d = dict(row)
     for k, v in d.items():
         if isinstance(v, datetime):
             d[k] = v.isoformat()
+        elif k == "price_repriced" and v is not None:
+            d[k] = bool(v)
     return d
 
 
-def fetch_stale_used_products(db: Session) -> list[dict[str, Any]]:
-    """Активные б/у-товары, сортировка от давней смены цены к недавней."""
+def fetch_stale_used_products(
+    db: Session,
+    *,
+    sort_mode: StaleSortMode = STALE_SORT_PRICE,
+) -> list[dict[str, Any]]:
+    """Активные б/у-товары для экрана застоя."""
+    order = _SORT_ORDERS.get(sort_mode, _SORT_ORDERS[STALE_SORT_PRICE])
     rows = (
         db.execute(
             text(
-                f"""
-                SELECT id, name, price, collection_name, price_changed_at, created_at
-                FROM products
-                WHERE {_STALE_USED_WHERE}
-                ORDER BY COALESCE(price_changed_at, created_at) ASC, id ASC
-                """
+                _STALE_SELECT.format(where_clause=_STALE_USED_WHERE)
+                + f" ORDER BY {order}"
             ),
             _STALE_PARAMS,
         )
@@ -57,9 +80,10 @@ def count_stale_badge(db: Session, min_days: int = 60) -> int:
         db.execute(
             text(
                 f"""
-                SELECT COUNT(*) FROM products
-                WHERE {_STALE_USED_WHERE}
-                  AND COALESCE(price_changed_at, created_at)
+                SELECT COUNT(*) FROM products p
+                WHERE p.status = 'active'
+                  AND (p.collection_name IS NULL OR p.collection_name NOT IN (:c1, :c2, :c3, :c4, :c5))
+                  AND COALESCE(p.price_changed_at, p.created_at)
                       <= NOW() - (:min_days * INTERVAL '1 day')
                 """
             ),
@@ -99,11 +123,7 @@ def fetch_stale_used_products_by_id(db: Session, product_id: int) -> Optional[di
     row = (
         db.execute(
             text(
-                f"""
-                SELECT id, name, price, collection_name, price_changed_at, created_at
-                FROM products
-                WHERE id = :id AND {_STALE_USED_WHERE}
-                """
+                _STALE_SELECT.format(where_clause=_STALE_USED_WHERE + " AND p.id = :id")
             ),
             {**_STALE_PARAMS, "id": product_id},
         )

@@ -351,14 +351,26 @@ def set_product_availability(product_id: int, availability_status: str) -> Optio
     return product
 
 
-def fetch_stale_price_list(min_days: int = 60) -> tuple[list[dict], int]:
+def fetch_stale_price_list(
+    min_days: int = 60,
+    *,
+    sort_mode: str = "price",
+) -> tuple[list[dict], int]:
     """Активные б/у для экрана застоя и счётчик для бейджа."""
     from app.db.stale_price_queries import count_stale_badge, fetch_stale_used_products
 
     with SessionLocal() as db:
-        products = fetch_stale_used_products(db)
+        products = fetch_stale_used_products(db, sort_mode=sort_mode)
         badge = count_stale_badge(db, min_days)
     return products, int(badge)
+
+
+def fetch_product_price_history(product_id: int, limit: int = 20) -> list[dict]:
+    """История цен для карточки товара."""
+    from app.db.stale_price_queries import fetch_price_history
+
+    with SessionLocal() as db:
+        return fetch_price_history(db, product_id, limit=limit)
 
 
 def fetch_stale_price_detail(product_id: int) -> tuple[Optional[dict], list[dict]]:

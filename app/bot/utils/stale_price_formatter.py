@@ -4,7 +4,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Optional
 
-from app.utils.stale_price_utils import days_without_price_change
+from app.utils.stale_price_utils import STALE_SORT_PRICE, STALE_SORT_SALE
+from app.utils.stale_price_utils import days_in_sale, days_without_price_change
 from app.utils.color_emoji import replace_color_with_emoji
 from app.utils.price_change import price_string_to_int_rub
 from app.utils.product_formatter import format_product_name_for_list
@@ -36,22 +37,42 @@ def _format_price_display(price: Optional[str]) -> str:
     return str(price)
 
 
-def format_stale_list_line(index: int, product: dict[str, Any]) -> str:
-    """Одна строка рейтинга: 1. 14 Pro 128Gb 🟡 2273 — 39500₽ · 110д."""
-    from app.utils.stale_price_utils import days_without_price_change
-
-    label = _short_product_label(product)
-    price = _format_price_display(product.get("price"))
-    days = days_without_price_change(
+def _format_stale_days_suffix(product: dict[str, Any]) -> str:
+    """Суффикс строки: · 6д. или · 6д.↺ · 85д.в"""
+    days_price = days_without_price_change(
         product.get("price_changed_at") or product.get("created_at")
     )
-    return f"{index}. {label} — {price} · {days}д."
+    if not product.get("price_repriced"):
+        return f" · {days_price}д."
+
+    days_sale = days_in_sale(product)
+    if days_sale != days_price:
+        return f" · {days_price}д.↺ · {days_sale}д.в"
+    return f" · {days_price}д.↺"
 
 
-def format_stale_list_header(total: int, badge_count: int, min_days: int) -> str:
+def format_stale_list_line(index: int, product: dict[str, Any]) -> str:
+    """Одна строка рейтинга: 1. 14 Pro 128Gb 🟡 2273 — 39500₽ · 110д."""
+    label = _short_product_label(product)
+    price = _format_price_display(product.get("price"))
+    suffix = _format_stale_days_suffix(product)
+    return f"{index}. {label} — {price}{suffix}"
+
+
+def format_stale_list_header(
+    total: int,
+    badge_count: int,
+    min_days: int,
+    *,
+    sort_mode: str = STALE_SORT_PRICE,
+) -> str:
+    sort_hint = ""
+    if sort_mode == STALE_SORT_SALE:
+        sort_hint = " · 📅 по давности в продаже"
     return (
-        f"🕰 <b>Застой по цене (б/у)</b>\n"
-        f"Всего: {total} · без смены ≥{min_days}д.: {badge_count}\n\n"
+        f"🕰 <b>Застой по цене (б/у)</b>{sort_hint}\n"
+        f"Всего: {total} · без смены ≥{min_days}д.: {badge_count}\n"
+        f"<i>↺ — цена менялась · Nд.в — дней в продаже</i>\n\n"
     )
 
 
@@ -59,11 +80,13 @@ def format_stale_list_text(
     products: list[dict[str, Any]],
     badge_count: int,
     min_days: int,
+    *,
+    sort_mode: str = STALE_SORT_PRICE,
 ) -> str:
-    """Полный текстовый список всех активных б/у (от старой смены цены к новой)."""
+    """Полный текстовый список активных б/у."""
     if not products:
         return "🕰 <b>Застой по цене (б/у)</b>\n\nНет активных б/у товаров."
-    header = format_stale_list_header(len(products), badge_count, min_days)
+    header = format_stale_list_header(len(products), badge_count, min_days, sort_mode=sort_mode)
     lines = [format_stale_list_line(i, p) for i, p in enumerate(products, 1)]
     return header + "\n".join(lines)
 
@@ -92,16 +115,15 @@ def format_stale_detail_text(
     history: list[dict[str, Any]],
 ) -> str:
     """Экран истории цен по одному товару."""
-    from app.utils.stale_price_utils import days_without_price_change
-
     name = product.get("name") or "Без названия"
     price = _format_price_display(product.get("price"))
     days = days_without_price_change(
         product.get("price_changed_at") or product.get("created_at")
     )
+    sale_days = days_in_sale(product)
     lines = [
         f"📦 <b>{name}</b>",
-        f"💵 Сейчас: {price} · {days}д. без смены",
+        f"💵 Сейчас: {price} · {days}д. без смены · {sale_days}д. в продаже",
         "",
         "📈 <b>История цен:</b>",
     ]

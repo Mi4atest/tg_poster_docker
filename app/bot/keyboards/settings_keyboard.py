@@ -35,12 +35,36 @@ def get_settings_reports_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def get_settings_update_keyboard() -> InlineKeyboardMarkup:
-    buttons = [
-        [InlineKeyboardButton(text="✅ Да, обновить", callback_data="settings_update_project_confirm")],
-        [InlineKeyboardButton(text="📋 Статус / лог", callback_data="settings_update_project_status")],
-        [InlineKeyboardButton(text="⬅️ Назад к настройкам", callback_data="settings_root")],
-    ]
+def get_settings_update_keyboard(
+    *,
+    running: bool = False,
+    up_to_date: bool = False,
+    has_update: bool = False,
+    fetch_ok: bool = True,
+) -> InlineKeyboardMarkup:
+    buttons = []
+    if running:
+        buttons.append([
+            InlineKeyboardButton(text="🔄 Обновить статус", callback_data="settings_update_project"),
+        ])
+    else:
+        buttons.append([
+            InlineKeyboardButton(text="🔄 Проверить снова", callback_data="settings_update_project"),
+        ])
+        if up_to_date:
+            buttons.append([
+                InlineKeyboardButton(text="🔄 Обновить всё равно", callback_data="settings_update_project_force"),
+            ])
+        else:
+            buttons.append([
+                InlineKeyboardButton(text="✅ Обновить", callback_data="settings_update_project_confirm"),
+            ])
+    buttons.append([
+        InlineKeyboardButton(text="📋 Подробности / лог", callback_data="settings_update_project_status"),
+    ])
+    buttons.append([
+        InlineKeyboardButton(text="⬅️ Назад к настройкам", callback_data="settings_root"),
+    ])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 

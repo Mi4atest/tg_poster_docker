@@ -1056,36 +1056,68 @@ async def save_backup_schedule(message: Message, state: FSMContext):
 
 @router.callback_query(F.data == "settings_update_project")
 async def settings_update_project(callback: CallbackQuery):
-    from app.services.project_update_service import is_update_running
+    from app.services.project_update_service import build_update_screen
 
-    running = await is_update_running()
-    status_line = "⏳ Сейчас идёт обновление." if running else "Готово к обновлению."
-    await callback.message.edit_text(
-        "🔄 <b>Обновить с GitHub</b>\n\n"
-        f"{status_line}\n\n"
-        "Подтянет одобренные коммиты из ветки <code>Test_planner</code>, "
-        "пересоберёт контейнер приложения и перезапустит бота.\n\n"
-        "<b>Не затрагивается:</b> база данных, токены, настройки, ссылки, "
-        "кнопки «В наличии», медиа.\n\n"
-        "<b>Рекомендуется</b> сделать бэкап перед обновлением "
-        "(«💾 Резервное копирование»).\n\n"
-        "Продолжить?",
-        reply_markup=get_settings_update_keyboard(),
-        parse_mode="HTML",
-    )
-    await callback.answer()
-
+    await callback.answer("Проверяю GitHub…")
+    text, check, running = await build_update_screen(refresh=True)
+    try:
+        await callback.message.edit_text(
+            text,
+            reply_markup=get_settings_update_keyboard(
+                running=running,
+                up_to_date=bool(check.fetch_ok and check.up_to_date),
+                has_update=bool(check.fetch_ok and not check.up_to_date and check.behind > 0),
+                fetch_ok=check.fetch_ok,
+            ),
+            parse_mode="HTML",
+        )
+    except TelegramBadRequest as e:
+        if "message is not modified" not in str(e).lower():
+            raise
 
 @router.callback_query(F.data == "settings_update_project_confirm")
 async def settings_update_project_confirm(callback: CallbackQuery):
-    from app.services.project_update_service import start_project_update
+    from app.services.project_update_service import build_update_screen, start_project_update
 
-    ok, msg = await start_project_update()
-    await callback.answer("Запускаю обновление…" if ok else "Не удалось запустить")
+    ok, msg = await start_project_update(force=False)
+    await callback.answer("Запускаю обновление…" if ok else "Не запущено")
+    _, check, running = await build_update_screen(refresh=False)
+    if ok:
+        running = True
     try:
         await callback.message.edit_text(
             msg,
-            reply_markup=get_settings_update_keyboard(),
+            reply_markup=get_settings_update_keyboard(
+                running=running,
+                up_to_date=bool(check.fetch_ok and check.up_to_date),
+                has_update=bool(check.fetch_ok and not check.up_to_date and check.behind > 0),
+                fetch_ok=check.fetch_ok,
+            ),
+            parse_mode="HTML",
+        )
+    except TelegramBadRequest as e:
+        if "message is not modified" not in str(e).lower():
+            raise
+
+
+@router.callback_query(F.data == "settings_update_project_force")
+async def settings_update_project_force(callback: CallbackQuery):
+    from app.services.project_update_service import build_update_screen, start_project_update
+
+    ok, msg = await start_project_update(force=True)
+    await callback.answer("Принудительная пересборка…" if ok else "Не запущено")
+    _, check, running = await build_update_screen(refresh=False)
+    if ok:
+        running = True
+    try:
+        await callback.message.edit_text(
+            msg,
+            reply_markup=get_settings_update_keyboard(
+                running=running,
+                up_to_date=bool(check.fetch_ok and check.up_to_date),
+                has_update=bool(check.fetch_ok and not check.up_to_date and check.behind > 0),
+                fetch_ok=check.fetch_ok,
+            ),
             parse_mode="HTML",
         )
     except TelegramBadRequest as e:
@@ -1095,13 +1127,22 @@ async def settings_update_project_confirm(callback: CallbackQuery):
 
 @router.callback_query(F.data == "settings_update_project_status")
 async def settings_update_project_status(callback: CallbackQuery):
-    from app.services.project_update_service import get_update_status_message
+    from app.services.project_update_service import (
+        build_update_screen,
+        get_update_details_message,
+    )
 
-    text = await get_update_status_message()
+    text = await get_update_details_message()
+    _, check, running = await build_update_screen(refresh=False)
     try:
         await callback.message.edit_text(
-            f"🔄 <b>Статус обновления</b>\n\n{text}",
-            reply_markup=get_settings_update_keyboard(),
+            f"🔄 <b>Подробности обновления</b>\n\n{text}",
+            reply_markup=get_settings_update_keyboard(
+                running=running,
+                up_to_date=bool(check.fetch_ok and check.up_to_date),
+                has_update=bool(check.fetch_ok and not check.up_to_date and check.behind > 0),
+                fetch_ok=check.fetch_ok,
+            ),
             parse_mode="HTML",
         )
     except TelegramBadRequest as e:

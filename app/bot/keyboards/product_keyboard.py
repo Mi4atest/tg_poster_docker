@@ -610,9 +610,13 @@ def get_stale_price_list_keyboard(
     *,
     sort_mode: str = "price",
 ) -> InlineKeyboardMarkup:
-    """Пагинированные кнопки застоявшихся б/у-товаров."""
+    """Пагинированные кнопки застоявшихся б/у-товаров.
+
+    Цифра на кнопке совпадает со списком выше:
+    По цене — дни без смены (+↺); По продаже — дни с публикации в TG.
+    """
     from app.utils.stale_price_utils import STALE_SORT_PRICE, STALE_SORT_SALE
-    from app.utils.stale_price_utils import days_without_price_change
+    from app.utils.stale_price_utils import days_in_sale, days_without_price_change
 
     buttons = []
     start_idx = page * per_page
@@ -620,14 +624,18 @@ def get_stale_price_list_keyboard(
 
     for i in range(start_idx, end_idx):
         product = products[i]
-        days = days_without_price_change(
-            product.get("price_changed_at") or product.get("created_at")
-        )
+        if sort_mode == STALE_SORT_SALE:
+            days = days_in_sale(product)
+            repriced = ""
+        else:
+            days = days_without_price_change(
+                product.get("price_changed_at") or product.get("created_at")
+            )
+            repriced = "↺" if product.get("price_repriced") else ""
         label = product.get("name", "Без названия")
         label = replace_color_with_emoji(label)
         if len(label) > 32:
             label = label[:29] + "..."
-        repriced = "↺" if product.get("price_repriced") else ""
         btn_text = f"{label} · {days}д.{repriced}"
         buttons.append([
             InlineKeyboardButton(

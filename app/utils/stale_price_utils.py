@@ -37,9 +37,14 @@ def days_without_price_change(
 
 
 def resolve_sale_start(product: dict) -> Optional[datetime]:
-    """Дата начала продажи: published_at / TG / VK / created_at."""
+    """Дата начала продажи: прежде всего публикация в Telegram.
+
+    Порядок приоритета (берём самую раннюю из имеющихся):
+    published_telegram_at → published_at → published_vk_at → created_at.
+    Для б/у «в продаже» = момент поста в TG-канале, а не создание карточки в Товарах.
+    """
     candidates: list[datetime] = []
-    for key in ("published_at", "published_telegram_at", "published_vk_at", "created_at"):
+    for key in ("published_telegram_at", "published_at", "published_vk_at", "created_at"):
         parsed = parse_product_datetime(product.get(key))
         if parsed:
             candidates.append(parsed)

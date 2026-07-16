@@ -17,6 +17,7 @@ from app.bot.utils.stale_price_formatter import (
     stale_button_label,
 )
 from app.utils.stale_price_utils import (
+    STALE_SORT_PRICE,
     STALE_SORT_SALE,
     days_in_sale,
     days_without_price_change,
@@ -50,6 +51,16 @@ def test_days_in_sale():
     assert days_in_sale(product) == 85
 
 
+def test_days_in_sale_prefers_telegram_over_created():
+    """«В продаже» — с публикации в TG, даже если карточка Товара появилась позже."""
+    now = datetime.now(timezone.utc)
+    product = {
+        "created_at": (now - timedelta(days=45)).isoformat(),
+        "published_telegram_at": (now - timedelta(days=243)).isoformat(),
+    }
+    assert days_in_sale(product) == 244
+
+
 def test_format_stale_list_line_without_repriced():
     product = {
         "name": "iPhone 14 Pro 128Gb Gold 2273",
@@ -58,11 +69,47 @@ def test_format_stale_list_line_without_repriced():
         "created_at": (datetime.now(timezone.utc) - timedelta(days=109)).isoformat(),
         "price_repriced": False,
     }
-    line = format_stale_list_line(1, product)
+    line = format_stale_list_line(1, product, sort_mode=STALE_SORT_PRICE)
     assert line.startswith("1.")
     assert "39500" in line
     assert "д." in line
     assert "↺" not in line
+    assert "д.в" not in line
+
+
+def test_format_stale_list_line_price_mode_ignores_longer_sale():
+    """По цене — только дни без смены, даже если TG-публикация раньше."""
+    now = datetime.now(timezone.utc)
+    product = {
+        "name": "iPhone 15 Pro Max 256Gb Blue Titanium 4766",
+        "price": "48500₽",
+        "price_changed_at": (now - timedelta(days=45)).isoformat(),
+        "created_at": (now - timedelta(days=45)).isoformat(),
+        "published_telegram_at": (now - timedelta(days=243)).isoformat(),
+        "price_repriced": False,
+    }
+    line = format_stale_list_line(1, product, sort_mode=STALE_SORT_PRICE)
+    assert "46д." in line
+    assert "244д" not in line
+    assert "д.в" not in line
+
+
+def test_format_stale_list_line_sale_mode_uses_telegram():
+    """По продаже — одна цифра: дни с публикации в TG."""
+    now = datetime.now(timezone.utc)
+    product = {
+        "name": "iPhone 15 Pro Max 256Gb Blue Titanium 4766",
+        "price": "48500₽",
+        "price_changed_at": (now - timedelta(days=45)).isoformat(),
+        "created_at": (now - timedelta(days=45)).isoformat(),
+        "published_telegram_at": (now - timedelta(days=243)).isoformat(),
+        "price_repriced": True,
+    }
+    line = format_stale_list_line(1, product, sort_mode=STALE_SORT_SALE)
+    assert "244д." in line
+    assert "46д." not in line
+    assert "↺" not in line
+    assert "д.в" not in line
 
 
 def test_format_stale_list_line_with_repriced():
@@ -72,11 +119,13 @@ def test_format_stale_list_line_with_repriced():
         "price": "41900₽",
         "price_changed_at": (now - timedelta(days=5)).isoformat(),
         "created_at": (now - timedelta(days=84)).isoformat(),
+        "published_telegram_at": (now - timedelta(days=84)).isoformat(),
         "price_repriced": True,
     }
-    line = format_stale_list_line(80, product)
+    line = format_stale_list_line(80, product, sort_mode=STALE_SORT_PRICE)
     assert "↺" in line
-    assert "д.в" in line
+    assert "д.в" not in line
+    assert "6д." in line
 
 
 def test_format_stale_list_text_header():
@@ -92,7 +141,7 @@ def test_format_stale_list_text_header():
     text = format_stale_list_text(products, badge_count=1, min_days=60)
     assert "Застой по цене" in text
     assert "без смены ≥60д." in text
-    assert "↺ — цена менялась" in text
+    assert "без смены цены" in text
     assert "1." in text
 
 
@@ -110,6 +159,7 @@ def test_format_stale_list_text_sale_sort_hint():
         products, badge_count=1, min_days=60, sort_mode=STALE_SORT_SALE
     )
     assert "по давности в продаже" in text
+    assert "с публикации в TG" in text
 
 
 def test_format_stale_detail_with_history():

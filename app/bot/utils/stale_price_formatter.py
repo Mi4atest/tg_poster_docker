@@ -37,25 +37,36 @@ def _format_price_display(price: Optional[str]) -> str:
     return str(price)
 
 
-def _format_stale_days_suffix(product: dict[str, Any]) -> str:
-    """Суффикс строки: · 6д. или · 6д.↺ · 85д.в"""
+def _format_stale_days_suffix(
+    product: dict[str, Any],
+    *,
+    sort_mode: str = STALE_SORT_PRICE,
+) -> str:
+    """Одна цифра в строке — смысл задаёт тумблер.
+
+    По цене: дней без смены цены (+ ↺ если цена реально менялась).
+    По продаже: дней с публикации в Telegram (fallback: VK / created_at).
+    """
+    if sort_mode == STALE_SORT_SALE:
+        return f" · {days_in_sale(product)}д."
+
     days_price = days_without_price_change(
         product.get("price_changed_at") or product.get("created_at")
     )
-    if not product.get("price_repriced"):
-        return f" · {days_price}д."
-
-    days_sale = days_in_sale(product)
-    if days_sale != days_price:
-        return f" · {days_price}д.↺ · {days_sale}д.в"
-    return f" · {days_price}д.↺"
+    mark = "↺" if product.get("price_repriced") else ""
+    return f" · {days_price}д.{mark}"
 
 
-def format_stale_list_line(index: int, product: dict[str, Any]) -> str:
+def format_stale_list_line(
+    index: int,
+    product: dict[str, Any],
+    *,
+    sort_mode: str = STALE_SORT_PRICE,
+) -> str:
     """Одна строка рейтинга: 1. 14 Pro 128Gb 🟡 2273 — 39500₽ · 110д."""
     label = _short_product_label(product)
     price = _format_price_display(product.get("price"))
-    suffix = _format_stale_days_suffix(product)
+    suffix = _format_stale_days_suffix(product, sort_mode=sort_mode)
     return f"{index}. {label} — {price}{suffix}"
 
 
@@ -66,13 +77,16 @@ def format_stale_list_header(
     *,
     sort_mode: str = STALE_SORT_PRICE,
 ) -> str:
-    sort_hint = ""
     if sort_mode == STALE_SORT_SALE:
-        sort_hint = " · 📅 по давности в продаже"
+        return (
+            f"🕰 <b>Застой по цене (б/у)</b> · 📅 по давности в продаже\n"
+            f"Всего: {total} · без смены ≥{min_days}д.: {badge_count}\n"
+            f"<i>Nд. — дней в продаже с публикации в TG</i>\n\n"
+        )
     return (
-        f"🕰 <b>Застой по цене (б/у)</b>{sort_hint}\n"
+        f"🕰 <b>Застой по цене (б/у)</b>\n"
         f"Всего: {total} · без смены ≥{min_days}д.: {badge_count}\n"
-        f"<i>↺ — цена менялась · Nд.в — дней в продаже</i>\n\n"
+        f"<i>Nд. — без смены цены · ↺ — цена менялась</i>\n\n"
     )
 
 
@@ -87,7 +101,10 @@ def format_stale_list_text(
     if not products:
         return "🕰 <b>Застой по цене (б/у)</b>\n\nНет активных б/у товаров."
     header = format_stale_list_header(len(products), badge_count, min_days, sort_mode=sort_mode)
-    lines = [format_stale_list_line(i, p) for i, p in enumerate(products, 1)]
+    lines = [
+        format_stale_list_line(i, p, sort_mode=sort_mode)
+        for i, p in enumerate(products, 1)
+    ]
     return header + "\n".join(lines)
 
 

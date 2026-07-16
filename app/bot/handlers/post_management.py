@@ -7,6 +7,7 @@ from aiogram.exceptions import TelegramBadRequest
 import aiohttp
 from datetime import datetime
 import asyncio
+import time
 from typing import List, Optional, Tuple, Any
 import json
 import os
@@ -305,27 +306,65 @@ async def get_pending_posts_api():
 
 async def get_post_api(post_id):
     """Get a specific post from API."""
+    t0 = time.perf_counter()
     try:
         async with aiohttp.ClientSession() as session:
             url = f"http://{API_HOST}:{API_PORT}/api/posts/{post_id}"
-            print(f"Fetching post from {url}")
-
-            try:
-                async with session.get(url) as response:
-                    print(f"API response status: {response.status}")
-
-                    if response.status == 200:
-                        post_data = await response.json()
-                        return post_data
-                    else:
-                        error_text = await response.text()
-                        print(f"API Error: {response.status} - {error_text}")
-                        return None
-            except Exception as e:
-                print(f"Error during API request: {str(e)}")
+            async with session.get(url) as response:
+                elapsed_ms = (time.perf_counter() - t0) * 1000
+                if response.status == 200:
+                    post_data = await response.json()
+                    # #region agent log
+                    logger.info(
+                        "get_post_api post_id=%s status=%s elapsed_ms=%.0f hypothesisId=E",
+                        post_id,
+                        response.status,
+                        elapsed_ms,
+                    )
+                    # #endregion
+                    return post_data
+                logger.warning(
+                    "get_post_api failed post_id=%s status=%s elapsed_ms=%.0f",
+                    post_id,
+                    response.status,
+                    elapsed_ms,
+                )
                 return None
     except Exception as e:
-        print(f"Error in get_post_api: {str(e)}")
+        logger.warning(
+            "get_post_api failed post_id=%s after_ms=%.0f: %s",
+            post_id,
+            (time.perf_counter() - t0) * 1000,
+            e,
+        )
+        return None
+
+
+async def get_post_card_api(post_id: str, truncate: int = 1200) -> Optional[dict]:
+    """Get a post optimized for card viewing (truncated text)."""
+    t0 = time.perf_counter()
+    try:
+        async with aiohttp.ClientSession() as session:
+            url = f"http://{API_HOST}:{API_PORT}/api/posts/{post_id}/card"
+            params = {"truncate": truncate}
+            async with session.get(url, params=params) as response:
+                elapsed_ms = (time.perf_counter() - t0) * 1000
+                if response.status == 200:
+                    return await response.json()
+                logger.warning(
+                    "get_post_card_api failed post_id=%s status=%s elapsed_ms=%.0f",
+                    post_id,
+                    response.status,
+                    elapsed_ms,
+                )
+                return None
+    except Exception as e:
+        logger.warning(
+            "get_post_card_api failed post_id=%s after_ms=%.0f: %s",
+            post_id,
+            (time.perf_counter() - t0) * 1000,
+            e,
+        )
         return None
 
 
@@ -1102,11 +1141,12 @@ async def show_archived_posts(message: Message, year=None, month=None, day=None,
 @router.callback_query(lambda c: c.data and c.data.startswith("view_post_"))
 async def view_post_callback(callback: CallbackQuery):
     """Handle post selection via callback query."""
+    await callback.answer()
     # Extract post_id from callback data
     post_id = callback.data.replace("view_post_", "")
 
     # Get post details
-    post = await get_post_api(post_id)
+    post = await get_post_card_api(post_id, truncate=1000)
 
     if not post:
         await callback.message.edit_text(
@@ -1115,7 +1155,6 @@ async def view_post_callback(callback: CallbackQuery):
                 [InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")]
             ])
         )
-        await callback.answer()
         return
 
     response_text = format_post_card(post)
@@ -1131,8 +1170,6 @@ async def view_post_callback(callback: CallbackQuery):
         response_text,
         reply_markup=post_actions_kb_for_user(user_data),
     )
-
-    await callback.answer()
 
 # Оставляем для обратной совместимости
 @router.message(lambda message: message.text and message.text.isdigit() and
@@ -1159,7 +1196,7 @@ async def process_post_selection(message: Message, state: FSMContext):
         return
 
     # Get post details
-    post = await get_post_api(post_id)
+    post = await get_post_card_api(post_id, truncate=1000)
 
     if not post:
         await message.reply("❌ Пост не найден. Возможно, он был удален.")

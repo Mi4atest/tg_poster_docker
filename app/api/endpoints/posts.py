@@ -3,8 +3,10 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 from typing import List, Optional
 from datetime import datetime, timezone
+import logging
 import os
 import json
+import time
 
 from pydantic import BaseModel
 
@@ -15,6 +17,7 @@ from app.config.settings import MEDIA_DIR, MEDIA_STRUCTURE
 from app.integrations.avito.errors import AvitoAutoCreateUnavailableError
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def _fetch_post_row(db: Session, post_id: str) -> Optional[dict]:
@@ -34,6 +37,14 @@ def _row_as_post_schema(db: Session, row: dict) -> PostSchema:
         data["videos"] = []
     data["logs"] = []
     return PostSchema.model_validate(data)
+
+
+def _post_id_to_schema(db: Session, post_id: str) -> PostSchema:
+    """Схема поста без lazy-load publication_logs (избегаем 500 и лишних запросов)."""
+    row = _fetch_post_row(db, post_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Post not found")
+    return _row_as_post_schema(db, row)
 
 
 class PublishPostOptions(BaseModel):
@@ -75,6 +86,7 @@ def create_storage_path(post_name: str) -> str:
 @router.post("/", response_model=PostSchema, status_code=status.HTTP_201_CREATED)
 def create_post(post_data: PostCreate, db: Session = Depends(get_db)):
     """Create a new post."""
+    t0 = time.perf_counter()
     # Generate post name from text
     post_name = generate_post_name(post_data.text)
 
@@ -97,8 +109,21 @@ def create_post(post_data: PostCreate, db: Session = Depends(get_db)):
 
     # Save post to database
     db.add(db_post)
+    db.flush()
+    post_id = db_post.id
+    created_at = db_post.created_at
+    updated_at = db_post.updated_at
     db.commit()
-    db.refresh(db_post)
+    t_commit = time.perf_counter()
+    # #region agent log
+    logger.info(
+        "create_post commit ok post_id=%s photos=%s videos=%s commit_ms=%.0f hypothesisId=A",
+        post_id,
+        len(photos),
+        len(videos),
+        (t_commit - t0) * 1000,
+    )
+    # #endregion
 
     # Save post text to file
     post_dir = MEDIA_DIR / storage_path
@@ -112,7 +137,48 @@ def create_post(post_data: PostCreate, db: Session = Depends(get_db)):
             "videos": videos
         }, f, ensure_ascii=False, indent=2)
 
-    return db_post
+    t_files = time.perf_counter()
+    result = PostSchema.model_validate(
+        {
+            "id": post_id,
+            "text": post_data.text,
+            "created_at": created_at,
+            "updated_at": updated_at,
+            "photos": photos,
+            "videos": videos,
+            "is_published_vk": False,
+            "is_published_telegram": False,
+            "is_published_instagram": False,
+            "is_published_max": False,
+            "is_published_avito": False,
+            "published_vk_at": None,
+            "published_telegram_at": None,
+            "published_instagram_at": None,
+            "published_max_at": None,
+            "published_avito_at": None,
+            "storage_path": storage_path,
+            "name": post_name,
+            "telegram_link": None,
+            "max_link": None,
+            "max_share_url": None,
+            "instagram_link": None,
+            "instagram_media_id": None,
+            "avito_item_id": None,
+            "avito_url": None,
+            "avito_draft": post_data.avito_draft if isinstance(post_data.avito_draft, dict) else None,
+            "logs": [],
+        }
+    )
+    # #region agent log
+    logger.info(
+        "create_post done post_id=%s files_ms=%.0f schema_ms=%.0f total_ms=%.0f hypothesisId=B",
+        post_id,
+        (t_files - t_commit) * 1000,
+        (time.perf_counter() - t_files) * 1000,
+        (time.perf_counter() - t0) * 1000,
+    )
+    # #endregion
+    return result
 
 @router.get("/archive/summary")
 def get_archive_summary(db: Session = Depends(get_db)):
@@ -306,10 +372,60 @@ def get_posts(skip: int = 0, limit: int = 10000, search: str = None, db: Session
 @router.get("/{post_id}", response_model=PostSchema)
 def get_post(post_id: str, db: Session = Depends(get_db)):
     """Get a specific post by ID."""
+    t0 = time.perf_counter()
     row = _fetch_post_row(db, post_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Post not found")
-    return _row_as_post_schema(db, row)
+    result = _row_as_post_schema(db, row)
+    # #region agent log
+    logger.info(
+        "get_post post_id=%s elapsed_ms=%.0f hypothesisId=C",
+        post_id,
+        (time.perf_counter() - t0) * 1000,
+    )
+    # #endregion
+    return result
+
+
+@router.get("/{post_id}/card", response_model=PostSchema)
+def get_post_card(
+    post_id: str,
+    truncate: int = 1200,
+    db: Session = Depends(get_db),
+):
+    """Fast card view for UI: fetches only a truncated text snippet."""
+    # #region SQL that avoids returning huge TEXT blobs
+    row = (
+        db.execute(
+            text(
+                """
+                SELECT
+                    id,
+                    LEFT(text, :trunc) AS text,
+                    created_at,
+                    updated_at,
+                    photos,
+                    videos,
+                    is_published_vk,
+                    is_published_telegram,
+                    is_published_instagram,
+                    is_published_max,
+                    is_published_avito,
+                    name
+                FROM posts
+                WHERE id = :id
+                LIMIT 1
+                """
+            ),
+            {"id": post_id, "trunc": int(truncate)},
+        )
+        .mappings()
+        .first()
+    )
+    # #endregion
+    if row is None:
+        raise HTTPException(status_code=404, detail="Post not found")
+    return _row_as_post_schema(db, dict(row))
 
 @router.delete("/{post_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_post(post_id: str, db: Session = Depends(get_db)):
@@ -415,7 +531,7 @@ async def update_post(post_id: str, data: dict, db: Session = Depends(get_db)):
                 "videos": post.videos
             }, f, ensure_ascii=False, indent=2)
 
-    return post
+    return _post_id_to_schema(db, post_id)
 
 @router.post("/{post_id}/publish/{platform}", response_model=PostSchema)
 async def publish_post(
@@ -492,9 +608,7 @@ async def publish_post(
 
         raise HTTPException(status_code=500, detail=str(e))
 
-    # Refresh the post to get the updated status
-    db.refresh(post)
-    return post
+    return _post_id_to_schema(db, post_id)
 
 @router.get("/export/telegram")
 def export_telegram_posts(db: Session = Depends(get_db), format: str = "txt"):

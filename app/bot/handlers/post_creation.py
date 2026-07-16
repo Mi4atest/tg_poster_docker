@@ -4,7 +4,9 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import aiohttp
+import logging
 import random
+import time
 from datetime import datetime
 from typing import List, Optional
 
@@ -31,6 +33,7 @@ from app.bot.utils.post_success_ui import (
 )
 
 router = Router()
+logger = logging.getLogger(__name__)
 
 # Define states for post creation
 class PostCreation(StatesGroup):
@@ -57,6 +60,7 @@ async def delete_previous_messages(message, state):
 
 async def create_post_api(text, photos, videos, avito_draft=None):
     """Send post data to API."""
+    t0 = time.perf_counter()
     try:
         async with aiohttp.ClientSession() as session:
             url = f"http://{API_HOST}:{API_PORT}/api/posts/"
@@ -67,28 +71,52 @@ async def create_post_api(text, photos, videos, avito_draft=None):
             }
             if isinstance(avito_draft, dict):
                 data["avito_draft"] = avito_draft
-            print(f"Creating post via {url} with {len(photos)} photos and {len(videos)} videos")
-            print(f"DEBUG: Photos data: {photos}")
-            print(f"DEBUG: Videos data: {videos}")
-            print(f"DEBUG: Full data being sent: {data}")
+            # #region agent log
+            logger.info(
+                "create_post_api start url=%s photos=%s videos=%s hypothesisId=D",
+                url,
+                len(data["photos"]),
+                len(data["videos"]),
+            )
+            # #endregion
 
             try:
                 async with session.post(url, json=data) as response:
-                    print(f"API response status: {response.status}")
+                    elapsed_ms = (time.perf_counter() - t0) * 1000
+                    # #region agent log
+                    logger.info(
+                        "create_post_api response status=%s elapsed_ms=%.0f hypothesisId=D",
+                        response.status,
+                        elapsed_ms,
+                    )
+                    # #endregion
 
                     if response.status == 201:
                         result = await response.json()
-                        print(f"Post created successfully with ID: {result.get('id')}")
+                        logger.info(
+                            "create_post_api ok post_id=%s total_ms=%.0f",
+                            result.get("id"),
+                            (time.perf_counter() - t0) * 1000,
+                        )
                         return result
                     else:
                         error_text = await response.text()
-                        print(f"API Error: {response.status} - {error_text}")
+                        logger.warning(
+                            "create_post_api failed status=%s elapsed_ms=%.0f body=%s",
+                            response.status,
+                            elapsed_ms,
+                            error_text[:500],
+                        )
                         return None
             except Exception as e:
-                print(f"Error during API request: {str(e)}")
+                logger.warning(
+                    "create_post_api request error after_ms=%.0f: %s",
+                    (time.perf_counter() - t0) * 1000,
+                    e,
+                )
                 return None
     except Exception as e:
-        print(f"Error creating post: {str(e)}")
+        logger.warning("create_post_api error: %s", e)
         return None
 
 
@@ -201,8 +229,8 @@ async def skip_photos(callback: CallbackQuery, state: FSMContext):
     videos = list(data.get("videos", []))
 
     if _has_media(photos, videos):
-        await _finalize_post_creation(callback, state, _avito_draft_from_state(data))
         await callback.answer()
+        await _finalize_post_creation(callback, state, _avito_draft_from_state(data))
         return
 
     await callback.message.edit_text(
@@ -217,8 +245,8 @@ async def skip_photos(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(PostCreation.waiting_for_photos, F.data == "pc_text_only_yes")
 async def confirm_text_only_post(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    await _finalize_post_creation(callback, state, _avito_draft_from_state(data))
     await callback.answer()
+    await _finalize_post_creation(callback, state, _avito_draft_from_state(data))
 
 
 @router.callback_query(PostCreation.waiting_for_photos, F.data == "pc_text_only_no")

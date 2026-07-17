@@ -9,7 +9,6 @@ from datetime import date, datetime, timedelta
 from typing import Any, Optional
 
 from sqlalchemy import text
-from sqlalchemy.exc import DBAPIError, OperationalError
 
 from app.db.database import SessionLocal
 
@@ -213,39 +212,55 @@ def get_report_text_by_date(report_date: date) -> Optional[str]:
     return None
 
 
-_UPSERT_SQL = text(
-    """
-    INSERT INTO evening_reports (
-        report_date, notes_text, morning_cash, day_cash, bn,
-        new_advance, old_advance, surrendered, buybacks, wholesale,
-        credit, nf_primary, nf_secondary, extra_items, final_cash,
-        report_text, created_at, updated_at
-    ) VALUES (
-        :report_date, :notes_text, :morning_cash, :day_cash, :bn,
-        :new_advance, :old_advance, :surrendered, :buybacks, :wholesale,
-        :credit, :nf_primary, :nf_secondary, CAST(:extra_items AS jsonb),
-        :final_cash, :report_text, :updated_at, :updated_at
-    )
-    ON CONFLICT (report_date) DO UPDATE SET
-        notes_text = EXCLUDED.notes_text,
-        morning_cash = EXCLUDED.morning_cash,
-        day_cash = EXCLUDED.day_cash,
-        bn = EXCLUDED.bn,
-        new_advance = EXCLUDED.new_advance,
-        old_advance = EXCLUDED.old_advance,
-        surrendered = EXCLUDED.surrendered,
-        buybacks = EXCLUDED.buybacks,
-        wholesale = EXCLUDED.wholesale,
-        credit = EXCLUDED.credit,
-        nf_primary = EXCLUDED.nf_primary,
-        nf_secondary = EXCLUDED.nf_secondary,
-        extra_items = EXCLUDED.extra_items,
-        final_cash = EXCLUDED.final_cash,
-        report_text = EXCLUDED.report_text,
-        updated_at = EXCLUDED.updated_at
-    RETURNING id
-    """
+# psycopg2 (вне пула SQLAlchemy): autocommit — нет окна idle in transaction между execute и commit.
+_UPSERT_PG = """
+INSERT INTO evening_reports (
+    report_date, notes_text, morning_cash, day_cash, bn,
+    new_advance, old_advance, surrendered, buybacks, wholesale,
+    credit, nf_primary, nf_secondary, extra_items, final_cash,
+    report_text, created_at, updated_at
+) VALUES (
+    %s, %s, %s, %s, %s,
+    %s, %s, %s, %s, %s,
+    %s, %s, %s, %s::jsonb, %s,
+    %s, %s, %s
 )
+ON CONFLICT (report_date) DO UPDATE SET
+    notes_text = EXCLUDED.notes_text,
+    morning_cash = EXCLUDED.morning_cash,
+    day_cash = EXCLUDED.day_cash,
+    bn = EXCLUDED.bn,
+    new_advance = EXCLUDED.new_advance,
+    old_advance = EXCLUDED.old_advance,
+    surrendered = EXCLUDED.surrendered,
+    buybacks = EXCLUDED.buybacks,
+    wholesale = EXCLUDED.wholesale,
+    credit = EXCLUDED.credit,
+    nf_primary = EXCLUDED.nf_primary,
+    nf_secondary = EXCLUDED.nf_secondary,
+    extra_items = EXCLUDED.extra_items,
+    final_cash = EXCLUDED.final_cash,
+    report_text = EXCLUDED.report_text,
+    updated_at = EXCLUDED.updated_at
+RETURNING id
+"""
+
+
+def _er_pg_connect():
+    """Отдельное соединение вне пула SQLAlchemy (пул бота бывает «отравлен»)."""
+    import psycopg2
+    from app.db.database import engine
+
+    u = engine.url
+    return psycopg2.connect(
+        host=u.host,
+        port=u.port or 5432,
+        user=u.username,
+        password=u.password,
+        dbname=u.database,
+        connect_timeout=5,
+        options="-c statement_timeout=10000",
+    )
 
 
 def save_report(
@@ -254,47 +269,60 @@ def save_report(
     report_text: str,
     final_cash: float,
 ) -> int:
-    """Один UPSERT — без SELECT+INSERT гонки, которая оставляла idle in transaction."""
+    """UPSERT через psycopg2 autocommit — обход зависаний Session/пула."""
     report_date = date.fromisoformat(draft["report_date"])
     extra_items = list(draft.get("extra_items") or [])
     now = datetime.utcnow()
-    params = {
-        "report_date": report_date,
-        "notes_text": draft.get("notes_text"),
-        "morning_cash": draft.get("morning_cash"),
-        "day_cash": draft.get("day_cash"),
-        "bn": draft.get("bn"),
-        "new_advance": draft.get("new_advance"),
-        "old_advance": draft.get("old_advance"),
-        "surrendered": draft.get("surrendered"),
-        "buybacks": draft.get("buybacks"),
-        "wholesale": draft.get("wholesale"),
-        "credit": draft.get("credit"),
-        "nf_primary": draft.get("nf_primary"),
-        "nf_secondary": draft.get("nf_secondary"),
-        "extra_items": json.dumps(extra_items, ensure_ascii=False),
-        "final_cash": final_cash,
-        "report_text": report_text,
-        "updated_at": now,
-    }
+    values = (
+        report_date,
+        draft.get("notes_text"),
+        draft.get("morning_cash"),
+        draft.get("day_cash"),
+        draft.get("bn"),
+        draft.get("new_advance"),
+        draft.get("old_advance"),
+        draft.get("surrendered"),
+        draft.get("buybacks"),
+        draft.get("wholesale"),
+        draft.get("credit"),
+        draft.get("nf_primary"),
+        draft.get("nf_secondary"),
+        json.dumps(extra_items, ensure_ascii=False),
+        final_cash,
+        report_text,
+        now,
+        now,
+    )
     last_error: Optional[BaseException] = None
     for attempt in range(2):
         t0 = time.monotonic()
-        db = SessionLocal()
+        conn = None
         try:
-            row_id = db.execute(_UPSERT_SQL, params).scalar_one()
-            db.commit()
+            t_conn = time.monotonic()
+            conn = _er_pg_connect()
+            conn.autocommit = True
+            connect_ms = int((time.monotonic() - t_conn) * 1000)
+            t_exec = time.monotonic()
+            with conn.cursor() as cur:
+                cur.execute(_UPSERT_PG, values)
+                row = cur.fetchone()
+            exec_ms = int((time.monotonic() - t_exec) * 1000)
+            if not row:
+                raise RuntimeError("UPSERT returned no id")
+            row_id = int(row[0])
             elapsed_ms = int((time.monotonic() - t0) * 1000)
             logger.info(
-                "evening_report saved id=%s date=%s in %sms",
+                "evening_report saved id=%s date=%s in %sms (connect=%s exec=%s via=psycopg2)",
                 row_id,
                 report_date,
                 elapsed_ms,
+                connect_ms,
+                exec_ms,
             )
-            return int(row_id)
-        except (OperationalError, DBAPIError) as ec:
+            return row_id
+        except Exception as ec:
             last_error = ec
-            db.rollback()
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
             logger.warning(
                 "evening_report save attempt %s failed for %s: %s",
                 attempt + 1,
@@ -304,11 +332,12 @@ def save_report(
             if attempt == 0:
                 continue
             raise
-        except Exception:
-            db.rollback()
-            raise
         finally:
-            db.close()
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
     if last_error:
         raise last_error
     raise RuntimeError("save_report failed without exception")

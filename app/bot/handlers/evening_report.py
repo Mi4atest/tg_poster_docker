@@ -30,7 +30,6 @@ from app.bot.utils.evening_report_flow import (
     sync_draft_to_state,
 )
 from app.services.evening_report_service import (
-    ARCHIVE_DB_TIMEOUT_SEC,
     empty_draft,
     load_or_create_draft,
     save_report,
@@ -55,13 +54,7 @@ async def _init_report_state(state: FSMContext, for_date: date | None = None) ->
         return load_or_create_draft(report_date)
 
     try:
-        draft = await asyncio.wait_for(
-            asyncio.to_thread(_load),
-            timeout=ARCHIVE_DB_TIMEOUT_SEC + 5.0,
-        )
-    except asyncio.TimeoutError:
-        logger.warning("evening_report load timed out for %s", report_date)
-        draft = empty_draft(report_date)
+        draft = await asyncio.to_thread(_load)
     except Exception:
         logger.exception("evening_report load failed, using empty draft")
         draft = empty_draft(report_date)
@@ -270,7 +263,7 @@ async def evening_report_save(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Укажите «Касса на утро» и «За день»", show_alert=True)
         return
 
-    # Сразу снимаем «Загрузка», чтобы повторные нажатия не копились в пуле
+    # Сразу снимаем «Загрузка», чтобы повторные нажатия не копились
     await callback.answer("Сохраняю…")
 
     report_text = build_report_text(draft)
@@ -280,21 +273,17 @@ async def evening_report_save(callback: CallbackQuery, state: FSMContext):
         return save_report(draft, report_text=report_text, final_cash=final_cash)
 
     try:
-        report_id = await asyncio.wait_for(
-            asyncio.to_thread(_save),
-            timeout=ARCHIVE_DB_TIMEOUT_SEC + 5.0,
-        )
+        # Не используем wait_for: при таймауте поток продолжал держать соединение
+        # в idle in transaction и забивал пул. statement_timeout оборвёт зависший SQL.
+        report_id = await asyncio.to_thread(_save)
         await state.update_data(
             er_report_id=report_id,
             er_saved_snapshot=draft_snapshot(draft),
         )
         await show_report_panel(callback, state, hint="✅ Отчёт сохранён.")
-    except asyncio.TimeoutError:
-        logger.error("evening_report save timed out for %s", draft.get("report_date"))
-        await callback.message.answer("❌ Сохранение слишком долгое. Попробуйте ещё раз.")
     except Exception as e:
         logger.error("Error saving evening report: %s", e)
-        await callback.message.answer("❌ Ошибка сохранения отчёта.")
+        await callback.message.answer("❌ Ошибка сохранения отчёта. Попробуйте ещё раз.")
 
 
 @router.callback_query(StateFilter(EveningReport), F.data == "evening_report_copy")

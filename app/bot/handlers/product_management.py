@@ -694,7 +694,7 @@ async def sync_telegram_links(callback: CallbackQuery):
             finally:
                 db.close()
 
-        posts_count, posts_processed, updated_products = await asyncio.to_thread(_sync)
+        posts_count, posts_processed, updated_products, created_missing = await asyncio.to_thread(_sync)
         await safe_edit_message(
             callback.message,
             (
@@ -714,6 +714,7 @@ async def sync_telegram_links(callback: CallbackQuery):
             "🔄 Обновление постов\n\n"
             f"Проверено постов с ссылкой: {posts_count}\n"
             f"Постов с товарами: {posts_processed}\n"
+            f"Создано отсутствующих товаров: {created_missing}\n"
             f"Обновлено ссылок у товаров: {updated_products}\n\n"
             f"{channel_line}"
         )

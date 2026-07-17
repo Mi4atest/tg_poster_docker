@@ -36,11 +36,108 @@ _PRODUCT_LIST_COLUMNS = """
 """.strip()
 
 
-def sync_telegram_links_to_products(db: Session) -> tuple[int, int, int]:
+def insert_product_row(
+    db: Session,
+    *,
+    post_id: str,
+    name: str,
+    price: Optional[str] = None,
+    vk_product_id: Optional[int] = None,
+    vk_product_link: Optional[str] = None,
+    telegram_link: Optional[str] = None,
+    category_id: Optional[int] = None,
+    category_name: Optional[str] = None,
+    collection_id: Optional[int] = None,
+    collection_name: Optional[str] = None,
+    status: str = "active",
+) -> int:
+    """Узкий INSERT товара без ORM (широкий ORM INSERT рвёт соединение app↔PG)."""
+    product_id = db.execute(
+        text(
+            "INSERT INTO products ("
+            "post_id, vk_product_id, vk_product_link, telegram_link, "
+            "name, price, category_id, category_name, collection_id, collection_name, "
+            "status, created_at, updated_at"
+            ") VALUES ("
+            ":post_id, :vk_product_id, :vk_product_link, :telegram_link, "
+            ":name, :price, :category_id, :category_name, :collection_id, :collection_name, "
+            ":status, NOW(), NOW()"
+            ") RETURNING id"
+        ),
+        {
+            "post_id": post_id,
+            "vk_product_id": vk_product_id,
+            "vk_product_link": vk_product_link,
+            "telegram_link": telegram_link,
+            "name": name,
+            "price": price,
+            "category_id": category_id,
+            "category_name": category_name,
+            "collection_id": collection_id,
+            "collection_name": collection_name,
+            "status": status or "active",
+        },
+    ).scalar_one()
+    return int(product_id)
+
+
+def ensure_missing_products_for_tg_posts(db: Session, *, days: int = 3) -> int:
+    """Создаёт строки products только для недавних TG-постов без товара.
+
+    Без окна по дате бэкап поднимал архивные/рекламные посты в каталог б/у.
+    Берём посты за последние `days` суток и только с распознанной ценой.
+    """
+    from app.utils.product_parser import parse_product_data
+
+    rows = db.execute(
+        text(
+            "SELECT po.id, po.text, po.telegram_link "
+            "FROM posts po "
+            "WHERE po.is_published_telegram IS TRUE "
+            "AND po.telegram_link IS NOT NULL AND po.telegram_link != '' "
+            "AND po.published_telegram_at >= NOW() - make_interval(days => :days) "
+            "AND NOT EXISTS (SELECT 1 FROM products p WHERE p.post_id = po.id) "
+            "ORDER BY po.published_telegram_at DESC NULLS LAST "
+            "LIMIT 50"
+        ),
+        {"days": int(days)},
+    ).mappings().all()
+
+    created = 0
+    for row in rows:
+        post_id = row["id"]
+        parsed = parse_product_data(row["text"] or "")
+        price = parsed.get("price")
+        if not price:
+            continue
+        name = (parsed.get("name") or "").strip()
+        if not name:
+            name = ((row["text"] or "").strip().split("\n")[0] or "Товар")[:120]
+        collection = parsed.get("collection")
+        if (collection or "").strip() in USED_EXCLUDED_COLLECTIONS:
+            continue
+        insert_product_row(
+            db,
+            post_id=post_id,
+            name=name,
+            price=price,
+            telegram_link=row["telegram_link"],
+            category_name=parsed.get("category"),
+            collection_name=collection,
+            status="active",
+        )
+        created += 1
+    if created:
+        db.commit()
+    return created
+
+
+def sync_telegram_links_to_products(db: Session) -> tuple[int, int, int, int]:
     """
     Копирует telegram_link из posts в products.
-    Returns: (posts_with_link_count, posts_with_products_count, updated_products_count).
+    Returns: (posts_with_link, posts_with_products, updated_products, created_missing).
     """
+    created_missing = ensure_missing_products_for_tg_posts(db)
     posts_with_link = db.execute(
         text(
             "SELECT COUNT(*) FROM posts "
@@ -64,7 +161,7 @@ def sync_telegram_links_to_products(db: Session) -> tuple[int, int, int]:
         )
     ).rowcount
     db.commit()
-    return int(posts_with_link), int(posts_with_products), int(updated or 0)
+    return int(posts_with_link), int(posts_with_products), int(updated or 0), int(created_missing)
 
 
 def fetch_used_products_for_list(db: Session) -> list[dict[str, Any]]:

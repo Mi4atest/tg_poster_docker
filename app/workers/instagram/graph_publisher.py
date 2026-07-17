@@ -2,17 +2,19 @@ import logging
 import os
 import ssl
 import asyncio
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, List, Optional
 
 import aiohttp
-from sqlalchemy import text
 
-from app.api.models.post import PublicationLog
 from app.config.settings import MEDIA_DIR
 from app.db.database import SessionLocal
-from app.db.post_queries import fetch_post, insert_publication_log
+from app.db.post_queries import (
+    fetch_post,
+    insert_publication_log,
+    mark_post_published_instagram,
+    sync_instagram_fields_to_products,
+)
 from app.services.admin_alert_service import send_admin_alert
 from app.utils.text_formatter import format_for_instagram
 from app.utils.vk_client import community_token
@@ -104,36 +106,31 @@ class InstagramGraphPublisher:
             graph_client = InstagramGraphClient()
             permalink, _shortcode = await graph_client.fetch_media_permalink(published_media_id)
 
-            now = datetime.now(timezone.utc)
-            db.execute(
-                text(
-                    "UPDATE posts SET is_published_instagram = true, published_instagram_at = :now, "
-                    "instagram_media_id = :media_id, "
-                    "instagram_link = COALESCE(:link, instagram_link), updated_at = NOW() "
-                    "WHERE id = :id"
-                ),
-                {
-                    "id": post_id,
-                    "now": now,
-                    "media_id": published_media_id,
-                    "link": permalink,
-                },
+            # Свежая сессия: параллельный VK Market INSERT мог убить соединение пула.
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            try:
+                db.close()
+            except Exception:
+                pass
+            db = SessionLocal()
+            mark_post_published_instagram(
+                db,
+                post_id,
+                media_id=published_media_id,
+                link=permalink,
             )
             db.commit()
 
             if permalink or published_media_id:
                 try:
-                    db.execute(
-                        text(
-                            "UPDATE products SET instagram_link = COALESCE(:link, instagram_link), "
-                            "instagram_media_id = COALESCE(:media_id, instagram_media_id) "
-                            "WHERE post_id = :post_id"
-                        ),
-                        {
-                            "post_id": post_id,
-                            "link": permalink,
-                            "media_id": published_media_id,
-                        },
+                    sync_instagram_fields_to_products(
+                        db,
+                        post_id,
+                        media_id=published_media_id,
+                        link=permalink,
                     )
                     db.commit()
                 except Exception as sync_err:
@@ -151,13 +148,24 @@ class InstagramGraphPublisher:
             return True
         except Exception as exc:
             logger.error(f"Ошибка Graph API при публикации поста {post_id}: {exc}")
-            self._log_error(db, post_id, f"Ошибка Graph API: {exc}")
+            try:
+                self._log_error(db, post_id, f"Ошибка Graph API: {exc}")
+            except Exception:
+                try:
+                    db2 = SessionLocal()
+                    self._log_error(db2, post_id, f"Ошибка Graph API: {exc}")
+                    db2.close()
+                except Exception:
+                    logger.exception("Failed to write IG error log for %s", post_id)
             return False
         finally:
-            db.close()
+            try:
+                db.close()
+            except Exception:
+                pass
 
     def _log_error(self, db, post_id: str, message: str) -> None:
-        db.add(PublicationLog(post_id=post_id, platform="instagram", status="error", message=message))
+        insert_publication_log(db, post_id, "instagram", "error", message)
         db.commit()
 
     async def _prepare_media_urls(self, post: Any) -> List[str]:

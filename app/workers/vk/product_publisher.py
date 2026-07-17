@@ -24,7 +24,6 @@ from app.config.settings import (
 from app.db.database import SessionLocal
 from app.db.post_queries import fetch_post, fetch_product_row_by_post_id
 from app.api.models.post import PublicationLog
-from app.api.models.product import Product
 from app.utils.product_parser import parse_product_data
 from app.utils.vk_client import (
     get_market_vk_session,
@@ -772,42 +771,49 @@ class VKProductPublisher:
                 logger.error(f"Failed to publish product for post {post_id}")
                 return False
 
-            # Сохраняем информацию о товаре в базу
-            from app.db import register_models  # noqa: F401
+            # Сохраняем информацию о товаре в базу (узкий raw INSERT — ORM рвёт PG).
+            from app.db.product_queries import insert_product_row
+            from app.db.post_queries import insert_publication_log
 
             vk_product_id = result.get('market_item_id') or result.get('item_id')
             vk_product_link = f"https://vk.com/market{self.group_id}?w=product-{self.group_id}_{vk_product_id}"
 
             # Получаем ссылку на Telegram пост, если пост опубликован в Telegram
             telegram_link = None
-            if post.is_published_telegram and post.telegram_link:
+            if getattr(post, "is_published_telegram", False) and getattr(post, "telegram_link", None):
                 telegram_link = post.telegram_link
 
-            product = Product(
+            t_ins = time.perf_counter()
+            product_id = insert_product_row(
+                db,
                 post_id=post_id,
+                name=product_data.get("name", "") or "",
+                price=product_data.get("price"),
                 vk_product_id=vk_product_id,
                 vk_product_link=vk_product_link,
                 telegram_link=telegram_link,
-                name=product_data.get('name', ''),
-                price=product_data.get('price'),
                 category_id=category_id,
                 category_name=category_name,
                 collection_id=collection_id,
                 collection_name=collection_name,
-                status='active'
+                status="active",
             )
-            db.add(product)
-            db.flush()
+            logger.info(
+                "product INSERT ok post_id=%s product_id=%s vk_id=%s insert_ms=%.0f",
+                post_id,
+                product_id,
+                vk_product_id,
+                (time.perf_counter() - t_ins) * 1000,
+            )
             from app.services.product_price_history_service import record_publication_price
-            from datetime import datetime, timezone
 
             pub_price = product_data.get('price') or ''
             if pub_price:
                 record_publication_price(
                     db,
-                    product.id,
+                    product_id,
                     pub_price,
-                    changed_at=product.created_at or datetime.now(timezone.utc),
+                    changed_at=datetime.now(timezone.utc),
                 )
             market_log = (
                 f"Published to VK Market (photos {len(photo_data_list)}/{expected_photos}, "
@@ -815,14 +821,7 @@ class VKProductPublisher:
             )
             if failed_photo_ids:
                 market_log += f"; failed_photo_ids={','.join(failed_photo_ids)}"
-            db.add(
-                PublicationLog(
-                    post_id=post_id,
-                    platform="vk_market",
-                    status="success",
-                    message=market_log,
-                )
-            )
+            insert_publication_log(db, post_id, "vk_market", "success", market_log)
             db.commit()
 
             logger.info(f"Product {vk_product_id} published successfully for post {post_id}")

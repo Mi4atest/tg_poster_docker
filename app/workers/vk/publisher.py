@@ -5,7 +5,6 @@ import aiohttp
 import requests
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from datetime import datetime, timezone
 
 from app.config.settings import (
     API_HOST,
@@ -15,8 +14,12 @@ from app.config.settings import (
 )
 from app.utils.vk_client import get_community_vk_session, resolved_vk_group_id_int
 from app.db.database import SessionLocal
-from app.db.post_queries import fetch_post, fetch_product_row_by_post_id, insert_publication_log
-from app.api.models.post import PublicationLog
+from app.db.post_queries import (
+    fetch_post,
+    fetch_product_row_by_post_id,
+    insert_publication_log,
+    mark_post_published_vk,
+)
 from app.utils.text_formatter import format_for_vk
 
 logger = logging.getLogger(__name__)
@@ -285,6 +288,16 @@ class VKPublisher:
                 if get_settings_service().is_vk_market_publish_allowed():
                     product_ok = await publish_product_to_vk(post_id)
                     if product_ok and VK_WALL_ATTACH_MARKET:
+                        # Свежая сессия: market INSERT мог испортить текущее соединение.
+                        try:
+                            db.rollback()
+                        except Exception:
+                            pass
+                        try:
+                            db.close()
+                        except Exception:
+                            pass
+                        db = SessionLocal()
                         product = fetch_product_row_by_post_id(db, post_id)
                         vk_product_id = product.get("vk_product_id") if product else None
                         if vk_product_id:
@@ -292,7 +305,14 @@ class VKPublisher:
                                 f"market-{self.group_id}_{vk_product_id}"
                             )
                             logger.info(
-                                f"Attaching market item to wall post {post_id}: {market_attachment}"
+                                "Attaching market item to wall post %s: %s",
+                                post_id,
+                                market_attachment,
+                            )
+                        else:
+                            logger.warning(
+                                "VK market published but vk_product_id missing in DB for %s",
+                                post_id,
                             )
             except Exception as e:
                 # Не блокируем публикацию поста, если товар не опубликовался
@@ -335,20 +355,21 @@ class VKPublisher:
                 vk_post_id_str = f"{owner_id}_{vk_post_id}"
                 vk_post_link = f"https://vk.com/wall{owner_id}_{vk_post_id}"
 
-            now = datetime.now(timezone.utc)
-            db.execute(
-                text(
-                    "UPDATE posts SET is_published_vk = true, published_vk_at = :now, "
-                    "vk_post_id = COALESCE(:vk_post_id, vk_post_id), "
-                    "vk_post_link = COALESCE(:vk_post_link, vk_post_link), "
-                    "updated_at = NOW() WHERE id = :id"
-                ),
-                {
-                    "id": post_id,
-                    "now": now,
-                    "vk_post_id": vk_post_id_str,
-                    "vk_post_link": vk_post_link,
-                },
+            # После market INSERT соединение могло умереть — сохраняем wall в свежей сессии.
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            try:
+                db.close()
+            except Exception:
+                pass
+            db = SessionLocal()
+            mark_post_published_vk(
+                db,
+                post_id,
+                vk_post_id=vk_post_id_str,
+                vk_post_link=vk_post_link,
             )
 
             log_message = (
@@ -372,9 +393,20 @@ class VKPublisher:
             return True
         except Exception as e:
             logger.error(f"Error publishing post {post_id} to VK: {str(e)}")
-
-            insert_publication_log(db, post_id, "vk", "error", str(e))
-            db.commit()
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            try:
+                db.close()
+            except Exception:
+                pass
+            try:
+                db = SessionLocal()
+                insert_publication_log(db, post_id, "vk", "error", str(e))
+                db.commit()
+            except Exception:
+                logger.exception("Failed to write VK error publication log for %s", post_id)
 
             return False
         finally:

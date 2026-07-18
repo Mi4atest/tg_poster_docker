@@ -213,6 +213,8 @@ def get_report_text_by_date(report_date: date) -> Optional[str]:
 
 
 # psycopg2 (вне пула SQLAlchemy): autocommit — нет окна idle in transaction между execute и commit.
+# extra_items передаём через psycopg2.extras.Json — сырой UTF-8 JSON-строкой + ::jsonb
+# вместе с кириллическим report_text зависает libpq/psycopg2 на execute (Connection timed out).
 _UPSERT_PG = """
 INSERT INTO evening_reports (
     report_date, notes_text, morning_cash, day_cash, bn,
@@ -222,7 +224,7 @@ INSERT INTO evening_reports (
 ) VALUES (
     %s, %s, %s, %s, %s,
     %s, %s, %s, %s, %s,
-    %s, %s, %s, %s::jsonb, %s,
+    %s, %s, %s, %s, %s,
     %s, %s, %s
 )
 ON CONFLICT (report_date) DO UPDATE SET
@@ -259,6 +261,10 @@ def _er_pg_connect():
         password=u.password,
         dbname=u.database,
         connect_timeout=5,
+        keepalives=1,
+        keepalives_idle=5,
+        keepalives_interval=2,
+        keepalives_count=3,
         options="-c statement_timeout=10000",
     )
 
@@ -270,6 +276,8 @@ def save_report(
     final_cash: float,
 ) -> int:
     """UPSERT через psycopg2 autocommit — обход зависаний Session/пула."""
+    from psycopg2.extras import Json
+
     report_date = date.fromisoformat(draft["report_date"])
     extra_items = list(draft.get("extra_items") or [])
     now = datetime.utcnow()
@@ -287,7 +295,7 @@ def save_report(
         draft.get("credit"),
         draft.get("nf_primary"),
         draft.get("nf_secondary"),
-        json.dumps(extra_items, ensure_ascii=False),
+        Json(extra_items),
         final_cash,
         report_text,
         now,
@@ -312,7 +320,7 @@ def save_report(
             row_id = int(row[0])
             elapsed_ms = int((time.monotonic() - t0) * 1000)
             logger.info(
-                "evening_report saved id=%s date=%s in %sms (connect=%s exec=%s via=psycopg2)",
+                "evening_report saved id=%s date=%s in %sms (connect=%s exec=%s via=psycopg2_Json)",
                 row_id,
                 report_date,
                 elapsed_ms,

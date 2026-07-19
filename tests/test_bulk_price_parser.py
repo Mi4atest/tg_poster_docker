@@ -172,3 +172,96 @@ def test_parse_new_item_line():
     assert not lines
     assert len(new_items) == 1
     assert new_items[0].new_rub == 8501
+
+
+def test_parse_label_memory_gb_suffix():
+    p = parse_label("17 256GB ⚫️ eSim")
+    assert p.model == "17"
+    assert p.memory == "256"
+    assert p.color == "⚫️"
+    assert p.storage == "esim"
+
+
+def test_parse_label_sim_esim_as_1plus1():
+    p = parse_label("17e 256GB ⚫️ Sim+eSim")
+    assert p.model == "17E"
+    assert p.memory == "256"
+    assert p.storage == "1+1"
+    assert p.color == "⚫️"
+
+
+def test_parse_label_air_gb():
+    p = parse_label("Air 256GB 🟡 eSim")
+    assert p.model == "Air"
+    assert p.memory == "256"
+    assert p.storage == "esim"
+    assert p.color == "🟡"
+
+
+def test_parse_label_ipad_new_format():
+    p = parse_label('iPad 11 (A16, 2025) 128GB, Blue')
+    assert p.category == "ipad"
+    assert p.model == "iPad 11"
+    assert p.memory == "128"
+    assert p.color == "🔵"
+
+
+def test_parse_label_ipad_air_new_format():
+    p = parse_label('iPad Air 11" M4 (2026) 128GB Wi-Fi, Gray')
+    assert p.category == "ipad"
+    assert p.model == "iPad Air M4"
+    assert p.memory == "128"
+    assert p.color == "🔘"
+
+
+def test_parse_label_airpods_max():
+    p = parse_label("AirPods Max 2")
+    assert p.category == "airpods"
+    assert p.model == "AirPods Max 2"
+
+
+def test_parse_label_pencil():
+    p = parse_label("Pencil USB-C")
+    assert p.category == "pencil"
+    assert p.model == "Pencil USB-C"
+    p2 = parse_label("Pencil Pro")
+    assert p2.model == "Pencil Pro"
+
+
+def test_parse_label_airtag():
+    p = parse_label("AirTag")
+    assert p.category == "airtag"
+    assert p.model == "AirTag"
+    p4 = parse_label("AirTag (4 шт.)")
+    assert p4.model == "AirTag 4"
+
+
+def test_parse_label_tradein():
+    p = parse_label("13 Pro 128GB (обменка)")
+    assert p.category == "tradein"
+    assert p.model == "13 Pro"
+    assert p.memory == "128"
+    assert p.condition == "tradein"
+
+
+def test_parse_label_rfb():
+    p = parse_label("13 Pro 128GB RFB")
+    assert p.category == "rfb"
+    assert p.model == "13 Pro"
+    assert p.memory == "128"
+
+
+def test_parse_label_watch_new_format():
+    p = parse_label("SE2 40 мм, Midnight")
+    assert p.category == "watch"
+    assert p.model == "AW SE 2"
+    assert p.size == "40mm"
+    assert p.color == "⚫️"
+
+
+def test_parse_label_junk_suffix():
+    p = parse_label("17 Pro Max 256GB ⚪️ Sim+eSim — 10911@")
+    assert p.model == "17 Pro Max"
+    assert p.memory == "256"
+    assert p.storage == "1+1"
+    assert p.color == "⚪️"

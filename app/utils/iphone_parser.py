@@ -511,7 +511,8 @@ def parse_iphone_color_key(name: str) -> Optional[str]:
     # Текстовые варианты (латиница)
     color_text_map = [
         ("purple", "🟣"), ("green", "🟢"), ("blue", "🔵"), ("white", "⚪️"),
-        ("black", "⚫️"), ("orange", "🟠"), ("yellow", "🟡"), ("gold", "🟡"),
+        ("black", "⚫️"), ("orange", "🟠"), ("rose gold", "🌸"), ("rose", "🌸"),
+        ("yellow", "🟡"), ("gold", "🟡"),
         ("pink", "🌸"), ("red", "🔴"), ("midnight", "⚫️"), ("starlight", "⭐"),
     ]
     name_lower = name.lower()

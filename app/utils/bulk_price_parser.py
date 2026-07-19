@@ -7,6 +7,8 @@ from typing import List, Optional, Tuple
 
 from app.utils.product_label import (
     _parse_airpods_model,
+    _parse_airtag_model,
+    _parse_pencil_model,
     _parse_watch_category,
     _parse_watch_size,
     resolve_color_emoji,
@@ -17,13 +19,25 @@ _NEW_ITEM_RE = re.compile(
     r"^(.+?):\s*Новый элемент,\s*цена:\s*(\d+)",
     re.IGNORECASE,
 )
-_MEMORY_RE = re.compile(r"\b(128|256|512|1\s*Tb)\b", re.IGNORECASE)
+_MEMORY_RE = re.compile(
+    r"\b(128|256|512|1\s*Tb)\s*(?:GB|Gb|gb)?\b",
+    re.IGNORECASE,
+)
 _WATCH_SIZE_RE = re.compile(r"\b(40|41|42|44|45|46)\b")
 _COLOR_EMOJI = ["🟣", "🟢", "🔵", "⚪️", "⚫️", "🟠", "🟡", "🌸", "🔴", "⭐", "🔘", "💛"]
 _STORAGE_ESIM_RE = re.compile(r"\(\s*esim\s*\)", re.IGNORECASE)
 _STORAGE_11_RE = re.compile(r"\(\s*1\s*\+\s*1\s*\)", re.IGNORECASE)
+_STORAGE_SIM_ESIM_RE = re.compile(r"\bsim\s*\+\s*esim\b", re.IGNORECASE)
 _WATCH_SE_RE = re.compile(r"^se\s*([23])\b", re.IGNORECASE)
 _WATCH_S11_RE = re.compile(r"^11\s+(40|41|42|44|45|46)\b")
+_CONDITION_TRADEIN_RE = re.compile(
+    r"\(\s*обменк[аa]\s*\)|\bобменк[аa]\b",
+    re.IGNORECASE,
+)
+_CONDITION_RFB_RE = re.compile(r"\brfb\b", re.IGNORECASE)
+_LABEL_TRAILING_JUNK_RE = re.compile(r"\s*[—–-]\s*\d+@?\s*$")
+_YEAR_PAREN_RE = re.compile(r"\(\s*(?:A16\s*,?\s*)?\d{4}\s*\)", re.IGNORECASE)
+_A16_PAREN_RE = re.compile(r"\(\s*A16\s*\)", re.IGNORECASE)
 
 # Кириллица, часто путаемая с латиницей в прайсах (17е → 17e).
 _HOMOGLYPHS = str.maketrans(
@@ -71,12 +85,13 @@ class BulkPriceNewItemLine:
 
 @dataclass(frozen=True)
 class ParsedLabel:
-    category: str  # iphone, ipad, airpods, watch, other
+    category: str  # iphone, ipad, airpods, watch, pencil, airtag, tradein, rfb, other
     model: str
     memory: Optional[str] = None
     color: Optional[str] = None
     storage: Optional[str] = None
     size: Optional[str] = None  # 40mm, 42mm — Apple Watch
+    condition: Optional[str] = None  # tradein | rfb
 
 
 def _normalize_homoglyphs(text: str) -> str:
@@ -118,17 +133,32 @@ def _extract_color(label: str) -> tuple[str, Optional[str]]:
 
 
 def _extract_storage(label: str) -> tuple[str, Optional[str]]:
-    if _STORAGE_ESIM_RE.search(label):
-        cleaned = _STORAGE_ESIM_RE.sub(" ", label)
-        return cleaned, "esim"
+    if _STORAGE_SIM_ESIM_RE.search(label):
+        cleaned = _STORAGE_SIM_ESIM_RE.sub(" ", label)
+        return cleaned, "1+1"
     if _STORAGE_11_RE.search(label):
         cleaned = _STORAGE_11_RE.sub(" ", label)
         return cleaned, "1+1"
+    if _STORAGE_ESIM_RE.search(label):
+        cleaned = _STORAGE_ESIM_RE.sub(" ", label)
+        return cleaned, "esim"
     low = label.lower()
-    if "esim" in low and "1+1" not in low:
-        return label, "esim"
     if "1+1" in label:
         return label, "1+1"
+    if re.search(r"\besim\b", low):
+        cleaned = re.sub(r"\besim\b", " ", label, flags=re.IGNORECASE)
+        return cleaned, "esim"
+    return label, None
+
+
+def _extract_condition(label: str) -> tuple[str, Optional[str]]:
+    """Выделяет обменку/RFB до гомоглифов, чтобы кириллица не ломалась."""
+    if _CONDITION_TRADEIN_RE.search(label):
+        cleaned = _CONDITION_TRADEIN_RE.sub(" ", label)
+        return re.sub(r"\s+", " ", cleaned).strip(" -,"), "tradein"
+    if _CONDITION_RFB_RE.search(label):
+        cleaned = _CONDITION_RFB_RE.sub(" ", label)
+        return re.sub(r"\s+", " ", cleaned).strip(" -,"), "rfb"
     return label, None
 
 
@@ -145,7 +175,7 @@ def _normalize_airpods_model(name: str) -> Optional[str]:
     low = name.lower()
     low = re.sub(r"\(usb-c\)", " ", low, flags=re.IGNORECASE)
     low = re.sub(r"\s+", " ", low).strip(" -")
-    if "airpod" not in low and not low.startswith("4") and "pro" not in low:
+    if "airpod" not in low and not low.startswith("4") and "pro" not in low and "max" not in low:
         low = f"airpods {low}"
     return _parse_airpods_model(low) or _parse_airpods_model(f"AirPods {low}")
 
@@ -154,12 +184,13 @@ def _parse_watch_label(raw: str) -> Optional[ParsedLabel]:
     norm = _normalize_homoglyphs(raw).strip()
     low = norm.lower()
     low = re.sub(r"\s+", " ", low).strip(" -")
+    low = re.sub(r"\bмм\b", " ", low).strip(" -,")
 
     size = None
     sz_m = _WATCH_SIZE_RE.search(low)
     if sz_m:
         size = f"{sz_m.group(1)}mm"
-        low = (low[: sz_m.start()] + low[sz_m.end() :]).strip(" -")
+        low = (low[: sz_m.start()] + low[sz_m.end() :]).strip(" -,")
 
     _, color = _extract_color(norm)
 
@@ -190,11 +221,15 @@ def _parse_watch_label(raw: str) -> Optional[ParsedLabel]:
 def _normalize_model_text(text: str) -> str:
     s = _normalize_homoglyphs(text.strip())
     s = re.sub(r"\s+", " ", s)
-    s = re.sub(r"\(A16\s*\)", " ", s, flags=re.IGNORECASE)
+    s = _YEAR_PAREN_RE.sub(" ", s)
+    s = _A16_PAREN_RE.sub(" ", s)
     s = re.sub(r"\(usb-c\)", " ", s, flags=re.IGNORECASE)
-    s = re.sub(r"\bwifi\b", " ", s, flags=re.IGNORECASE)
-    s = re.sub(r"\bот\b", " ", s, flags=re.IGNORECASE)
-    s = s.replace(" -", " ").replace("- ", " ").strip(" -")
+    s = re.sub(r"\bwi-?fi\b", " ", s, flags=re.IGNORECASE)
+    # «от» после гомоглифов становится «ot»
+    s = re.sub(r"\b(?:от|ot)\b", " ", s, flags=re.IGNORECASE)
+    s = s.replace('"', " ").replace("″", " ").replace("”", " ")
+    s = re.sub(r"\b\d+\s*(?:GB|Gb|gb)\b", " ", s)
+    s = s.replace(" -", " ").replace("- ", " ").strip(" -,")
     low = s.lower()
 
     em = re.match(r"^(\d+)e$", low)
@@ -216,6 +251,7 @@ def _normalize_model_text(text: str) -> str:
     s = re.sub(r"\bplus\b", "Plus", s, flags=re.IGNORECASE)
     s = re.sub(r"\bmini\b", "mini", s, flags=re.IGNORECASE)
     s = re.sub(r"\bair\b", "Air", s, flags=re.IGNORECASE)
+    s = re.sub(r"\s+", " ", s).strip(" -,")
 
     m = re.match(r"^(\d+)e\s+(.+)$", low)
     if m:
@@ -224,13 +260,41 @@ def _normalize_model_text(text: str) -> str:
     m = re.match(r"^(\d+)\s+(.+)$", s)
     if m:
         ver, rest = m.group(1), m.group(2).strip()
-        if rest.lower() in ("pro max", "pro", "plus", "mini", "air"):
-            return f"{ver} {rest.title().replace('Pro Max', 'Pro Max').replace('Pro', 'Pro')}"
-        if rest and not re.match(r"^\d", rest):
-            return f"{ver} {rest}"
+        rest_low = rest.lower()
+        if rest_low in ("pro max", "pro", "plus", "mini", "air"):
+            titled = {
+                "pro max": "Pro Max",
+                "pro": "Pro",
+                "plus": "Plus",
+                "mini": "mini",
+                "air": "Air",
+            }[rest_low]
+            return f"{ver} {titled}"
+        # Обрезаем хвост памяти/мусора: "Pro Max 256" → "Pro Max"
+        rest_clean = re.sub(
+            r"\s+(?:128|256|512|1\s*Tb)\b.*$",
+            "",
+            rest,
+            flags=re.IGNORECASE,
+        ).strip()
+        if rest_clean.lower() in ("pro max", "pro", "plus", "mini", "air"):
+            titled = {
+                "pro max": "Pro Max",
+                "pro": "Pro",
+                "plus": "Plus",
+                "mini": "mini",
+                "air": "Air",
+            }[rest_clean.lower()]
+            return f"{ver} {titled}"
+        if rest_clean and not re.match(r"^\d", rest_clean):
+            return f"{ver} {rest_clean}"
         return ver
 
     if s.lower() == "air":
+        return "Air"
+    # "Air 256" → Air
+    air_m = re.match(r"^air\s+(\d+)", s, flags=re.IGNORECASE)
+    if air_m:
         return "Air"
     return s.strip()
 
@@ -248,9 +312,26 @@ def _detect_category(raw_label: str, model: str) -> str:
     return "other"
 
 
+def _clean_raw_label(raw_label: str) -> str:
+    s = (raw_label or "").strip()
+    s = _LABEL_TRAILING_JUNK_RE.sub("", s)
+    return s.strip(" -,")
+
+
 def parse_label(raw_label: str) -> ParsedLabel:
-    raw = _normalize_homoglyphs(raw_label.strip())
+    raw = _clean_raw_label(raw_label)
+    # Условие (обменка/RFB) — до гомоглифов, чтобы «обменка» не ломалась.
+    raw_cond, condition = _extract_condition(raw)
+    raw = _normalize_homoglyphs(raw_cond.strip())
     low_raw = raw.lower()
+
+    pencil = _parse_pencil_model(raw)
+    if pencil:
+        return ParsedLabel(category="pencil", model=pencil, condition=condition)
+
+    airtag = _parse_airtag_model(raw)
+    if airtag:
+        return ParsedLabel(category="airtag", model=airtag, condition=condition)
 
     if "ipad" in low_raw:
         label = raw
@@ -268,15 +349,24 @@ def parse_label(raw_label: str) -> ParsedLabel:
             memory=memory,
             color=color,
             storage=storage,
+            condition=condition,
         )
 
     if "airpod" in low_raw:
         model = _normalize_airpods_model(raw) or "AirPods"
-        return ParsedLabel(category="airpods", model=model)
+        return ParsedLabel(category="airpods", model=model, condition=condition)
 
     watch = _parse_watch_label(raw)
     if watch is not None:
-        return watch
+        return ParsedLabel(
+            category=watch.category,
+            model=watch.model,
+            memory=watch.memory,
+            color=watch.color,
+            storage=watch.storage,
+            size=watch.size,
+            condition=condition,
+        )
 
     label = raw
     label, storage = _extract_storage(label)
@@ -290,12 +380,17 @@ def parse_label(raw_label: str) -> ParsedLabel:
 
     model = _normalize_model_text(label)
     category = _detect_category(raw_label, model)
+    if condition == "tradein":
+        category = "tradein"
+    elif condition == "rfb":
+        category = "rfb"
     return ParsedLabel(
         category=category,
         model=model,
         memory=memory,
         color=color,
         storage=storage,
+        condition=condition,
     )
 
 
@@ -321,7 +416,7 @@ def parse_bulk_price_input(
         if m_new:
             new_items.append(
                 BulkPriceNewItemLine(
-                    raw_label=m_new.group(1).strip(),
+                    raw_label=_clean_raw_label(m_new.group(1)),
                     new_rub=int(m_new.group(2)),
                     line_no=i,
                 )
@@ -332,7 +427,7 @@ def parse_bulk_price_input(
         if m:
             lines.append(
                 BulkPriceLine(
-                    raw_label=m.group(1).strip(),
+                    raw_label=_clean_raw_label(m.group(1)),
                     old_rub=int(m.group(2)),
                     new_rub=int(m.group(3)),
                     line_no=i,

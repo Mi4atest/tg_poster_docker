@@ -171,3 +171,52 @@ def test_match_16e():
     results = match_bulk_lines([line], catalog)
     assert results[0].status == MatchStatus.MATCHED
     assert results[0].product_id == 40
+
+
+def test_match_new_format_gb_and_sim_esim():
+    catalog = [
+        _iphone_product(50, "iPhone 17 256Gb Black eSim", "67900₽"),
+        _iphone_product(51, "iPhone 17E 256Gb Black (1+1)", "53500₽"),
+        _iphone_product(52, "iPhone Air 256Gb Black eSim", "70900₽"),
+    ]
+    r1 = match_bulk_lines(
+        [BulkPriceLine("17 256GB ⚫️ eSim", 67900, 71530, 1)], catalog
+    )[0]
+    assert r1.status == MatchStatus.MATCHED
+    assert r1.product_id == 50
+
+    r2 = match_bulk_lines(
+        [BulkPriceLine("17e 256GB ⚫️ Sim+eSim", 53500, 54510, 1)], catalog
+    )[0]
+    assert r2.status == MatchStatus.MATCHED
+    assert r2.product_id == 51
+
+    r3 = match_bulk_lines(
+        [BulkPriceLine("Air 256GB ⚫️ eSim", 70900, 73930, 1)], catalog
+    )[0]
+    assert r3.status == MatchStatus.MATCHED
+    assert r3.product_id == 52
+
+
+def test_match_tradein_never_hits_new_iphone():
+    catalog = [_iphone_product(60, "iPhone 13 Pro 128Gb Graphite", "37910₽")]
+    line = BulkPriceLine("13 Pro 128GB (обменка)", 37910, 36900, 1)
+    results = match_bulk_lines([line], catalog)
+    assert results[0].status == MatchStatus.NOT_FOUND
+
+
+def test_match_watch_rose_as_rose_gold():
+    catalog = [
+        {
+            "id": 31,
+            "name": "Apple Watch Series 11 42mm Rose Gold Новые",
+            "display_label": None,
+            "price": "27900₽",
+            "collection_name": "Apple Watch",
+            "custom_button_id": None,
+        },
+    ]
+    line = BulkPriceLine("11 42 мм, Rose", 27900, 27991, 1)
+    results = match_bulk_lines([line], catalog)
+    assert results[0].status == MatchStatus.MATCHED
+    assert results[0].product_id == 31

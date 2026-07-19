@@ -185,6 +185,9 @@ def _normalize_model_for_match(model: str) -> str:
 
 
 def _keys_match(want: ProductMatchKey, have: ProductMatchKey) -> bool:
+    # Обменки / RFB / аксессуары вне каталога «новых» не матчим с обычными iPhone.
+    if want.category in ("tradein", "rfb", "pencil", "airtag", "other"):
+        return False
     if want.category != have.category:
         return False
     if _normalize_model_for_match(want.model) != _normalize_model_for_match(have.model):

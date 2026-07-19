@@ -109,6 +109,8 @@ def _compact_generic_name(name: str) -> str:
 
 def _parse_airpods_model(name: str) -> Optional[str]:
     nl = name.lower()
+    if "max" in nl:
+        return "AirPods Max 2"
     if "airpods pro 3" in nl or "pro 3" in nl:
         return "AirPods Pro 3"
     if "airpods pro 2" in nl or "pro 2" in nl:
@@ -122,6 +124,28 @@ def _parse_airpods_model(name: str) -> Optional[str]:
     if "airpods 3" in nl:
         return "AirPods 3"
     return None
+
+
+def _parse_pencil_model(name: str) -> Optional[str]:
+    nl = name.lower()
+    if "pencil" not in nl:
+        return None
+    if "usb-c" in nl or "usb c" in nl:
+        return "Pencil USB-C"
+    if "pro" in nl:
+        return "Pencil Pro"
+    if re.search(r"\b2\b", nl):
+        return "Pencil 2"
+    return "Pencil"
+
+
+def _parse_airtag_model(name: str) -> Optional[str]:
+    nl = name.lower()
+    if "airtag" not in nl and "air tag" not in nl:
+        return None
+    if re.search(r"\b4\b", nl) or "шт" in nl or "4x" in nl or "pack" in nl:
+        return "AirTag 4"
+    return "AirTag"
 
 
 def _parse_watch_category(name: str) -> Optional[str]:

@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from aiogram import Router, F
-from aiogram.types import CallbackQuery, Message, LinkPreviewOptions
+from aiogram.types import CallbackQuery, Message, LinkPreviewOptions, BufferedInputFile
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.enums import ChatAction
@@ -713,6 +713,14 @@ def _build_root_new_products_keyboard(db) -> "InlineKeyboardMarkup":
     rows.append(
         [InlineKeyboardButton(text="⚡ Пакетное обновление цен", callback_data="bulk_price_start")]
     )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="📄 Прайс A4 (PDF)",
+                callback_data="iphone_print_price_pdf",
+            )
+        ]
+    )
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="products_menu")])
     rows.append(
         [InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")]
@@ -785,6 +793,45 @@ async def new_products_menu(callback: CallbackQuery):
     except Exception as e:
         await callback.answer("Ошибка отображения меню", show_alert=True)
         return
+
+
+@router.callback_query(F.data == "iphone_print_price_pdf")
+async def iphone_print_price_pdf(callback: CallbackQuery):
+    """Собрать и отправить PDF-прайс iPhone для печати A4."""
+    try:
+        await callback.answer()
+    except Exception:
+        pass
+    try:
+        await callback.message.bot.send_chat_action(
+            callback.message.chat.id, ChatAction.UPLOAD_DOCUMENT
+        )
+    except Exception:
+        pass
+
+    def _build_pdf():
+        from app.utils.iphone_print_pdf import build_iphone_price_pdf_bytes
+
+        return build_iphone_price_pdf_bytes()
+
+    try:
+        pdf_bytes = await run_db(_build_pdf)
+    except FileNotFoundError as e:
+        await callback.message.answer(f"Не удалось создать PDF: {e}")
+        return
+    except Exception:
+        logging.exception("iphone_print_price_pdf failed")
+        await callback.message.answer("Ошибка при формировании PDF-прайса.")
+        return
+
+    from datetime import date
+
+    filename = f"iphone_prices_{date.today().isoformat()}.pdf"
+    doc = BufferedInputFile(pdf_bytes, filename=filename)
+    await callback.message.answer_document(
+        document=doc,
+        caption="📄 Актуальные цены на Новые iPhone (A4)",
+    )
 
 
 async def _show_new_product_card(

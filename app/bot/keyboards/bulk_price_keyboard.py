@@ -124,6 +124,12 @@ def get_bulk_price_continue_keyboard(action: str, count: int) -> InlineKeyboardM
 def get_bulk_price_done_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📄 Прайс A4 (PDF)",
+                    callback_data="iphone_print_price_pdf",
+                )
+            ],
             [InlineKeyboardButton(text="🆕 Список новых", callback_data="new_products_menu")],
             [InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")],
         ]

@@ -23,7 +23,6 @@ from app.config.settings import (
 )
 from app.db.database import SessionLocal
 from app.db.post_queries import fetch_post, fetch_product_row_by_post_id
-from app.api.models.post import PublicationLog
 from app.utils.product_parser import parse_product_data
 from app.utils.vk_client import (
     get_market_vk_session,
@@ -676,6 +675,15 @@ class VKProductPublisher:
             logger.info("VK Market publishing disabled (env or app settings)")
             return False
 
+        # Короткое чтение из БД, затем сразу закрываем сессию.
+        # Иначе idle_in_transaction_session_timeout=15s рвёт соединение во время
+        # загрузки фото / market.add (часто >30с), INSERT не проходит, товар остаётся
+        # только в VK Market без строки products и без market-вложения на стене.
+        post = None
+        telegram_link = None
+        post_photos: List[str] = []
+        post_videos: List[str] = []
+        product_data: Dict[str, Any] = {}
         db = SessionLocal()
         try:
             post = fetch_post(db, post_id)
@@ -688,73 +696,97 @@ class VKProductPublisher:
                 logger.info(f"Product already published for post {post_id}")
                 return True
 
-            # Парсим данные товара из текста поста
             product_data = parse_product_data(post.text)
-            if not product_data.get('name'):
+            if not product_data.get("name"):
                 logger.warning(f"Could not extract product name from post {post_id}")
                 return False
 
+            post_photos = list(post.photos or [])
+            post_videos = list(post.videos or [])
+            if getattr(post, "is_published_telegram", False) and getattr(
+                post, "telegram_link", None
+            ):
+                telegram_link = post.telegram_link
+        finally:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            try:
+                db.close()
+            except Exception:
+                pass
+
+        try:
             # Определяем категорию
             category_id = None
             category_name = None
-            if VK_MARKET_AUTO_CATEGORY and product_data.get('category'):
-                category_name = product_data['category']
+            if VK_MARKET_AUTO_CATEGORY and product_data.get("category"):
+                category_name = product_data["category"]
                 category_id = self.find_category_id(category_name)
                 if not category_id:
-                    logger.warning(f"Category '{category_name}' not found via API, will use group default category")
-                    # Не устанавливаем category_id, чтобы ВК использовал категорию по умолчанию группы
-                    category_name = "Смартфоны"  # Для отображения в БД
+                    logger.warning(
+                        f"Category '{category_name}' not found via API, will use group default category"
+                    )
+                    category_name = "Смартфоны"
             else:
-                # Не устанавливаем category_id, чтобы ВК использовал категорию по умолчанию группы
-                category_name = "Смартфоны"  # Для отображения в БД
+                category_name = "Смартфоны"
 
             # Определяем подборку
             collection_id = None
             collection_name = None
-            if VK_MARKET_AUTO_COLLECTION and product_data.get('collection'):
-                collection_name = product_data['collection']
+            if VK_MARKET_AUTO_COLLECTION and product_data.get("collection"):
+                collection_name = product_data["collection"]
                 collection_id = await self.find_collection_id(collection_name)
                 if not collection_id:
-                    logger.warning(f"Collection '{collection_name}' not found, will create without collection")
+                    logger.warning(
+                        f"Collection '{collection_name}' not found, will create without collection"
+                    )
 
             # Загружаем фотографии (первые 5)
             photo_data_list: List[Dict] = []
             failed_photo_ids: List[str] = []
-            expected_photos = min(len(post.photos or []), 5)
-            if post.photos:
-                photo_data_list, failed_photo_ids = await self.upload_product_photos(post.photos, post)
+            expected_photos = min(len(post_photos), 5)
+            if post_photos:
+                photo_data_list, failed_photo_ids = await self.upload_product_photos(
+                    post_photos, post
+                )
                 if VK_UPLOAD_STRICT_MODE and failed_photo_ids:
                     msg = (
                         f"VK Market upload strict mode: failed_photo_ids={','.join(failed_photo_ids)}"
                     )
                     logger.error(msg)
-                    db.add(
-                        PublicationLog(
-                            post_id=post_id,
-                            platform="vk_market",
-                            status="error",
-                            message=msg,
-                        )
-                    )
-                    db.commit()
+                    from app.db.post_queries import insert_publication_log
+
+                    db_err = SessionLocal()
+                    try:
+                        insert_publication_log(db_err, post_id, "vk_market", "error", msg)
+                        db_err.commit()
+                    finally:
+                        db_err.close()
                     return False
                 if not photo_data_list:
                     logger.error(f"No photos uploaded for post {post_id}")
-                    db.add(
-                        PublicationLog(
-                            post_id=post_id,
-                            platform="vk_market",
-                            status="error",
-                            message="No photos uploaded to VK Market",
+                    from app.db.post_queries import insert_publication_log
+
+                    db_err = SessionLocal()
+                    try:
+                        insert_publication_log(
+                            db_err,
+                            post_id,
+                            "vk_market",
+                            "error",
+                            "No photos uploaded to VK Market",
                         )
-                    )
-                    db.commit()
+                        db_err.commit()
+                    finally:
+                        db_err.close()
                     return False
 
             # Загружаем видео, если есть
             video_id = None
-            if post.videos and len(post.videos) > 0:
-                video_id = await self.upload_product_video(post.videos[0], post)
+            if post_videos:
+                video_id = await self.upload_product_video(post_videos[0], post)
 
             # Публикуем товар
             result = await self.publish_product(
@@ -764,75 +796,73 @@ class VKProductPublisher:
                 category_name=category_name,
                 collection_id=collection_id,
                 photo_data_list=photo_data_list,
-                video_id=video_id
+                video_id=video_id,
             )
 
             if not result:
                 logger.error(f"Failed to publish product for post {post_id}")
                 return False
 
-            # Сохраняем информацию о товаре в базу (узкий raw INSERT — ORM рвёт PG).
+            # Свежая сессия только для INSERT (после долгого VK API).
             from app.db.product_queries import insert_product_row
             from app.db.post_queries import insert_publication_log
 
-            vk_product_id = result.get('market_item_id') or result.get('item_id')
-            vk_product_link = f"https://vk.com/market{self.group_id}?w=product-{self.group_id}_{vk_product_id}"
-
-            # Получаем ссылку на Telegram пост, если пост опубликован в Telegram
-            telegram_link = None
-            if getattr(post, "is_published_telegram", False) and getattr(post, "telegram_link", None):
-                telegram_link = post.telegram_link
-
-            t_ins = time.perf_counter()
-            product_id = insert_product_row(
-                db,
-                post_id=post_id,
-                name=product_data.get("name", "") or "",
-                price=product_data.get("price"),
-                vk_product_id=vk_product_id,
-                vk_product_link=vk_product_link,
-                telegram_link=telegram_link,
-                category_id=category_id,
-                category_name=category_name,
-                collection_id=collection_id,
-                collection_name=collection_name,
-                status="active",
+            vk_product_id = result.get("market_item_id") or result.get("item_id")
+            vk_product_link = (
+                f"https://vk.com/market{self.group_id}?w=product-{self.group_id}_{vk_product_id}"
             )
-            logger.info(
-                "product INSERT ok post_id=%s product_id=%s vk_id=%s insert_ms=%.0f",
-                post_id,
-                product_id,
-                vk_product_id,
-                (time.perf_counter() - t_ins) * 1000,
-            )
-            from app.services.product_price_history_service import record_publication_price
 
-            pub_price = product_data.get('price') or ''
-            if pub_price:
-                record_publication_price(
+            db = SessionLocal()
+            try:
+                t_ins = time.perf_counter()
+                product_id = insert_product_row(
                     db,
-                    product_id,
-                    pub_price,
-                    changed_at=datetime.now(timezone.utc),
+                    post_id=post_id,
+                    name=product_data.get("name", "") or "",
+                    price=product_data.get("price"),
+                    vk_product_id=vk_product_id,
+                    vk_product_link=vk_product_link,
+                    telegram_link=telegram_link,
+                    category_id=category_id,
+                    category_name=category_name,
+                    collection_id=collection_id,
+                    collection_name=collection_name,
+                    status="active",
                 )
-            market_log = (
-                f"Published to VK Market (photos {len(photo_data_list)}/{expected_photos}, "
-                f"strict={VK_UPLOAD_STRICT_MODE})"
-            )
-            if failed_photo_ids:
-                market_log += f"; failed_photo_ids={','.join(failed_photo_ids)}"
-            insert_publication_log(db, post_id, "vk_market", "success", market_log)
-            db.commit()
+                logger.info(
+                    "product INSERT ok post_id=%s product_id=%s vk_id=%s insert_ms=%.0f",
+                    post_id,
+                    product_id,
+                    vk_product_id,
+                    (time.perf_counter() - t_ins) * 1000,
+                )
+                from app.services.product_price_history_service import record_publication_price
+
+                pub_price = product_data.get("price") or ""
+                if pub_price:
+                    record_publication_price(
+                        db,
+                        product_id,
+                        pub_price,
+                        changed_at=datetime.now(timezone.utc),
+                    )
+                market_log = (
+                    f"Published to VK Market (photos {len(photo_data_list)}/{expected_photos}, "
+                    f"strict={VK_UPLOAD_STRICT_MODE})"
+                )
+                if failed_photo_ids:
+                    market_log += f"; failed_photo_ids={','.join(failed_photo_ids)}"
+                insert_publication_log(db, post_id, "vk_market", "success", market_log)
+                db.commit()
+            finally:
+                db.close()
 
             logger.info(f"Product {vk_product_id} published successfully for post {post_id}")
             return True
 
         except Exception as e:
             logger.error(f"Error publishing product to VK for post {post_id}: {str(e)}")
-            db.rollback()
             return False
-        finally:
-            db.close()
 
 
 async def publish_product_to_vk(post_id: str) -> bool:

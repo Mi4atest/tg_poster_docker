@@ -33,18 +33,22 @@ MODEL_SORT_ORDER: tuple[str, ...] = (
     "17 Pro Max",
 )
 
-# Модели левой колонки (включительно до этой точки по порядку MODEL_SORT_ORDER
-# для новых). Правая колонка: начиная с RIGHT_COLUMN_START_MODEL.
+# Модели левой колонки. Правая колонка: начиная с RIGHT_COLUMN_START_MODEL.
 RIGHT_COLUMN_START_MODEL = "17 Pro"
 
-# Вёрстка A4 (пункты reportlab)
-PAGE_MARGIN_MM = 12.0
+# Вёрстка A4 — читаемо, но строки не обрезаются по ширине колонки.
+PAGE_MARGIN_MM = 8.0
 TITLE_FONT_SIZE = 14
 SUBTITLE_FONT_SIZE = 10
-BODY_FONT_SIZE = 8.5
-BODY_LEADING = 10.5
+BODY_FONT_SIZE = 9.5
+BODY_LEADING = 11.2
 SECTION_FONT_SIZE = 10
-COLUMN_GAP_MM = 8.0
+COLUMN_GAP_MM = 6.0
+BLANK_LINE_FACTOR = 0.35
 
-# Минимальный кегль при автоподгонке под одну страницу
-MIN_BODY_FONT_SIZE = 7.0
+MIN_BODY_FONT_SIZE = 8.0
+MAX_BODY_FONT_SIZE = 10.5
+
+# Маркер «в наличии» справа от цены (ч/б, едва заметно).
+STOCK_MARKER = "•"
+STOCK_LEGEND = "• — в наличии"

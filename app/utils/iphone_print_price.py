@@ -19,6 +19,7 @@ from app.utils.iphone_parser import (
 from app.utils.iphone_print_price_config import (
     MODEL_SORT_ORDER,
     RIGHT_COLUMN_START_MODEL,
+    STOCK_MARKER,
     TRADEIN_PRODUCT_CODES,
 )
 from app.utils.price_change import price_string_to_int_rub
@@ -48,8 +49,56 @@ class PrintPriceLine:
     sort_model: str
     memory: str
     price_rub: int
+    storage: str = ""
+    in_stock: bool = False
     is_blank: bool = False
     is_section: bool = False
+
+
+# Короткие цвета в БД → маркетинговые имена для печати (линейка 17 / Air).
+_MODEL_COLOR_PRINT_ALIASES: Dict[str, Dict[str, str]] = {
+    "Air": {
+        "Black": "Space Black",
+        "White": "Cloud White",
+        "Blue": "Sky Blue",
+    },
+    "17": {
+        "Blue": "Mist Blue",
+    },
+    "17E": {
+        "Pink": "Soft Pink",
+    },
+    "17 Pro": {
+        "Blue": "Deep Blue",
+        "Orange": "Cosmic Orange",
+    },
+    "17 Pro Max": {
+        "Blue": "Deep Blue",
+        "Orange": "Cosmic Orange",
+    },
+}
+
+_STORAGE_SORT = {"eSim": 0, "Sim+eSim": 1, "2sim": 2}
+
+
+def _storage_sort_key(storage: str) -> int:
+    return _STORAGE_SORT.get(storage or "", 9)
+
+
+def resolve_print_color(sort_model: str, color: str) -> str:
+    """Подставляет маркетинговое имя цвета для печати, если в БД короткое."""
+    aliases = _MODEL_COLOR_PRINT_ALIASES.get(sort_model) or {}
+    return aliases.get(color, color)
+
+
+def product_in_stock(product: dict) -> bool:
+    return (product.get("availability_status") or "").strip() == "available"
+
+
+def _with_stock_marker(text: str, in_stock: bool) -> str:
+    if in_stock:
+        return f"{text}{STOCK_MARKER}"
+    return text
 
 
 def _model_sort_index(model: str) -> int:
@@ -172,20 +221,27 @@ def format_new_iphone_line(product: dict) -> Optional[PrintPriceLine]:
     if not memory:
         return None
     mem_print = memory  # без Gb
-    color = extract_color_name_en(name)
-    if not color:
+    color_raw = extract_color_name_en(name)
+    if not color_raw:
         return None
+    color = resolve_print_color(sort_model, color_raw)
     storage = print_storage_label(name, sort_model)
     price = price_string_to_int_rub(product.get("price"))
     if price is None:
         return None
+    in_stock = product_in_stock(product)
     model_disp = print_model_display(sort_model)
-    text = f"{model_disp} {mem_print} {color} {storage} - {price}"
+    text = _with_stock_marker(
+        f"{model_disp} {mem_print} {color} {storage} - {price}",
+        in_stock,
+    )
     return PrintPriceLine(
         text=text,
         sort_model=sort_model,
         memory=mem_print,
         price_rub=price,
+        storage=storage,
+        in_stock=in_stock,
     )
 
 
@@ -213,32 +269,44 @@ def format_tradein_line(product: dict) -> Optional[PrintPriceLine]:
     price = price_string_to_int_rub(product.get("price"))
     if price is None:
         return None
+    in_stock = product_in_stock(product)
     model_disp = print_model_display(sort_model)
-    text = f"{model_disp} {memory} {storage} - {price}"
+    text = _with_stock_marker(
+        f"{model_disp} {memory} {storage} - {price}",
+        in_stock,
+    )
     return PrintPriceLine(
         text=text,
         sort_model=sort_model,
         memory=memory,
         price_rub=price,
+        storage=storage,
+        in_stock=in_stock,
     )
 
 
 def _blank() -> PrintPriceLine:
-    return PrintPriceLine(text="", sort_model="", memory="", price_rub=0, is_blank=True)
+    return PrintPriceLine(text="", sort_model="", memory="", price_rub=0, storage="", is_blank=True)
 
 
 def group_lines_with_blanks(lines: Sequence[PrintPriceLine]) -> List[PrintPriceLine]:
-    """Пустая строка между группами (модель + память)."""
+    """Пустая строка между группами (модель + память + тип SIM)."""
     if not lines:
         return []
     sorted_lines = sorted(
         lines,
-        key=lambda L: (_model_sort_index(L.sort_model), L.memory, L.price_rub, L.text),
+        key=lambda L: (
+            _model_sort_index(L.sort_model),
+            L.memory,
+            _storage_sort_key(L.storage),
+            L.price_rub,
+            L.text,
+        ),
     )
     out: List[PrintPriceLine] = []
-    prev_key: Optional[Tuple[str, str]] = None
+    prev_key: Optional[Tuple[str, str, str]] = None
     for L in sorted_lines:
-        key = (L.sort_model, L.memory)
+        key = (L.sort_model, L.memory, L.storage)
         if prev_key is not None and key != prev_key:
             out.append(_blank())
         out.append(L)
@@ -259,12 +327,16 @@ def dedupe_tradein_lines(lines: Sequence[PrintPriceLine]) -> List[PrintPriceLine
 
 
 def fetch_new_iphones() -> List[dict]:
+    """Активные iPhone новые + custom с кнопкой меню (туда же попадают 17e и т.п.)."""
     sql = text(
         """
-        SELECT id, name, price, collection_name
+        SELECT id, name, price, collection_name, custom_button_id, availability_status
         FROM products
         WHERE status = 'active'
-          AND collection_name = 'iPhone новые'
+          AND (
+            collection_name = 'iPhone новые'
+            OR (collection_name = 'custom' AND custom_button_id IS NOT NULL)
+          )
         ORDER BY id
         """
     )
@@ -279,7 +351,7 @@ def fetch_tradein_iphones(
     code_set = codes if codes is not None else TRADEIN_PRODUCT_CODES
     sql = text(
         """
-        SELECT id, name, price, collection_name
+        SELECT id, name, price, collection_name, availability_status
         FROM products
         WHERE status = 'active'
           AND (

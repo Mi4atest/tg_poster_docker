@@ -48,6 +48,72 @@ def test_format_new_line_esim():
     assert "17 PRO 256 Silver eSim - 91500" == line.text
 
 
+def test_stock_marker_when_available():
+    p = {
+        "name": "Apple iPhone 17 Pro 256Gb Silver eSim Новый (без RuStore)",
+        "price": "91500₽",
+        "availability_status": "available",
+    }
+    line = format_new_iphone_line(p)
+    assert line is not None
+    assert line.in_stock is True
+    assert line.text.endswith("91500•")
+    assert "•" == line.text[-1]
+
+
+def test_no_stock_marker_on_order():
+    p = {
+        "name": "Apple iPhone 17 Pro 256Gb Silver eSim Новый (без RuStore)",
+        "price": "91500₽",
+        "availability_status": "on_order",
+    }
+    line = format_new_iphone_line(p)
+    assert line is not None
+    assert line.in_stock is False
+    assert "•" not in line.text
+    assert line.text.endswith("91500")
+
+
+def test_color_alias_air_and_pro():
+    air = format_new_iphone_line(
+        {"name": "Apple iPhone Air 256Gb Black eSim Новый", "price": "74900₽"}
+    )
+    assert air is not None
+    assert "Space Black" in air.text
+
+    pro = format_new_iphone_line(
+        {"name": "Apple iPhone 17 Pro 256Gb Blue eSim Новый", "price": "90100₽"}
+    )
+    assert pro is not None
+    assert "Deep Blue" in pro.text
+
+    base = format_new_iphone_line(
+        {"name": "Apple iPhone 17 256Gb Blue eSim Новый", "price": "70500₽"}
+    )
+    assert base is not None
+    assert "Mist Blue" in base.text
+
+
+def test_group_blank_between_esim_and_sim():
+    from app.utils.iphone_print_price import PrintPriceLine
+
+    lines = [
+        PrintPriceLine("17 256 Black eSim - 1", "17", "256", 1, storage="eSim"),
+        PrintPriceLine("17 256 White eSim - 2", "17", "256", 2, storage="eSim"),
+        PrintPriceLine("17 256 Black Sim+eSim - 3", "17", "256", 3, storage="Sim+eSim"),
+        PrintPriceLine("17 256 White Sim+eSim - 4", "17", "256", 4, storage="Sim+eSim"),
+    ]
+    grouped = group_lines_with_blanks(lines)
+    texts = [L.text if not L.is_blank else "<blank>" for L in grouped]
+    assert texts == [
+        "17 256 Black eSim - 1",
+        "17 256 White eSim - 2",
+        "<blank>",
+        "17 256 Black Sim+eSim - 3",
+        "17 256 White Sim+eSim - 4",
+    ]
+
+
 def test_format_tradein_no_code_no_color():
     p = {
         "name": "iPhone 13 Pro 128Gb Green 2614",

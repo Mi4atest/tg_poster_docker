@@ -95,6 +95,27 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
         "hidden_keys": [],
         "label_overrides": {},
     },
+    "price_tags": {
+        "strike_markup_percent": 5,
+        "default_subtitle": "",
+        "default_descriptions": {
+            "iPhone новые": (
+                "Товар бывший в употреблении, оригинал, комплект полный, "
+                "не активирован, гарантия 14 дней"
+            ),
+            "iPad": (
+                "Товар бывший в употреблении, оригинал, комплект полный, "
+                "не активирован, гарантия 14 дней"
+            ),
+            "Airpods": "",
+            "Apple Watch": "",
+            "custom": "",
+        },
+        "fixed_footer_text": (
+            "Товар бывший в употреблении, оригинал, комплект полный, "
+            "не активирован, без RuStore, гарантия 14 дней"
+        ),
+    },
     "integrations": {
         "instagram_mode": "graph",
         "instagram_graph_access_token": "",
@@ -493,6 +514,17 @@ class SettingsService:
         if not parts:
             return "проверьте интеграцию Авито в настройках"
         return "; ".join(parts)
+
+    def get_price_tags_settings(self) -> Dict[str, Any]:
+        return dict(self.get_all().get("price_tags") or DEFAULT_SETTINGS["price_tags"])
+
+    def get_price_tag_strike_markup_percent(self) -> int:
+        raw = self.get_price_tags_settings().get("strike_markup_percent", 5)
+        try:
+            v = int(raw)
+        except (TypeError, ValueError):
+            v = 5
+        return v if v in (5, 10) else 5
 
     def get_publication_status_lines(self) -> list[str]:
         data = self.get_all()

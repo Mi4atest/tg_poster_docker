@@ -14,6 +14,7 @@ from app.bot.handlers import (
     evening_report,
     new_products_management,
     bulk_price_update,
+    price_tags,
     settings,
     menu_constructor,
 )
@@ -52,6 +53,7 @@ dp.include_router(product_management.router)  # Перемещено выше д
 dp.include_router(evening_report.router)
 dp.include_router(new_products_management.router)
 dp.include_router(bulk_price_update.router)
+dp.include_router(price_tags.router)
 dp.include_router(settings.router)
 dp.include_router(post_management.router)
 dp.include_router(scheduler.router)

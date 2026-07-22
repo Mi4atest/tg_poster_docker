@@ -262,6 +262,35 @@ def ensure_post_vk_and_queue_columns_if_missing() -> bool:
         return False
 
 
+def ensure_price_tag_columns() -> bool:
+    """Колонки описания для печати ценников."""
+    try:
+        inspector = inspect(engine)
+        if "products" not in inspector.get_table_names():
+            return False
+        prod_cols = {col["name"] for col in inspector.get_columns("products")}
+        statements = []
+        if "price_tag_subtitle" not in prod_cols:
+            statements.append(
+                "ALTER TABLE products ADD COLUMN price_tag_subtitle VARCHAR(64)"
+            )
+        if "price_tag_description" not in prod_cols:
+            statements.append(
+                "ALTER TABLE products ADD COLUMN price_tag_description VARCHAR(512)"
+            )
+        if statements:
+            with engine.connect() as conn:
+                for stmt in statements:
+                    conn.execute(text(stmt))
+                conn.commit()
+            logger.info("Колонки ценников добавлены: %s", ", ".join(statements))
+            return True
+        return False
+    except Exception as e:
+        logger.error("Ошибка ensure_price_tag_columns: %s", e)
+        return False
+
+
 def ensure_new_menu_constructor_columns() -> bool:
     """Колонки конструктора меню: is_service на кнопках, display_label на товарах."""
     try:
@@ -457,6 +486,7 @@ def ensure_database_schema():
     ensure_avito_item_id_bigint()
 
     ensure_new_menu_constructor_columns()
+    ensure_price_tag_columns()
     ensure_posts_created_at_index()
     ensure_product_price_history_schema()
     ensure_evening_reports_table()

@@ -8,6 +8,7 @@ def get_settings_root_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="⏱ Публикация и интервалы", callback_data="settings_intervals")],
         [InlineKeyboardButton(text="🔐 Интеграции и токены", callback_data="settings_integrations")],
         [InlineKeyboardButton(text="🗂 Отчёты и списки", callback_data="settings_reports")],
+        [InlineKeyboardButton(text="🏷️ Ценники", callback_data="settings_price_tags")],
         [InlineKeyboardButton(text="💾 Резервное копирование", callback_data="settings_backup")],
         [InlineKeyboardButton(text="🔄 Обновить с GitHub", callback_data="settings_update_project")],
         [InlineKeyboardButton(text="🧩 Меню новые", callback_data="mc_open")],
@@ -302,3 +303,35 @@ def get_integration_platform_keyboard(platform: str) -> InlineKeyboardMarkup:
 
     buttons.append([InlineKeyboardButton(text="⬅️ Назад к соцсетям", callback_data="settings_integrations")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_settings_price_tags_keyboard(markup_percent: int) -> InlineKeyboardMarkup:
+    pct5 = "✅ +5%" if markup_percent == 5 else "+5%"
+    pct10 = "✅ +10%" if markup_percent == 10 else "+10%"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text=pct5, callback_data="settings_price_tags_pct_5"),
+                InlineKeyboardButton(text=pct10, callback_data="settings_price_tags_pct_10"),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📝 Текст по умолчанию (iPhone)",
+                    callback_data="settings_price_tags_edit_iphone",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📝 Текст по умолчанию (iPad)",
+                    callback_data="settings_price_tags_edit_ipad",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📝 Общий fallback-текст",
+                    callback_data="settings_price_tags_edit_footer",
+                )
+            ],
+            [InlineKeyboardButton(text="⬅️ Назад к настройкам", callback_data="settings_root")],
+        ]
+    )

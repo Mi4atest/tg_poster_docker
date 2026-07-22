@@ -11,6 +11,7 @@ from app.bot.keyboards.settings_keyboard import (
     get_input_cancel_keyboard,
     get_integration_platform_keyboard,
     get_settings_backup_keyboard,
+    get_settings_price_tags_keyboard,
     get_settings_channels_keyboard,
     get_settings_integrations_keyboard,
     get_settings_intervals_keyboard,
@@ -58,6 +59,7 @@ class SettingsState(StatesGroup):
     waiting_for_report_value = State()
     waiting_for_backup_value = State()
     waiting_for_backup_schedule = State()
+    waiting_for_price_tag_value = State()
 
 
 def _status_text() -> str:
@@ -722,6 +724,8 @@ async def cancel_input(callback: CallbackQuery, state: FSMContext):
         await open_reports(callback)
     elif return_callback == "settings_backup":
         await open_backup(callback)
+    elif return_callback == "settings_price_tags":
+        await open_price_tags(callback)
     elif return_callback == "settings_edit_signatures_menu":
         await open_signatures_edit(callback)
     elif return_callback.startswith("settings_platform_"):
@@ -1149,4 +1153,93 @@ async def settings_update_project_status(callback: CallbackQuery):
         if "message is not modified" not in str(e).lower():
             raise
     await callback.answer()
+
+
+def _build_price_tags_text() -> str:
+    cfg = get_settings_service().get_price_tags_settings()
+    pct = cfg.get("strike_markup_percent", 5)
+    defs = cfg.get("default_descriptions") or {}
+    iphone = (defs.get("iPhone новые") or "")[:80]
+    ipad = (defs.get("iPad") or "")[:80]
+    footer = (cfg.get("fixed_footer_text") or "")[:80]
+    return (
+        "🏷️ <b>Ценники</b>\n\n"
+        f"Наценка «цена без скидки»: <b>+{pct}%</b> (округление до 100₽ вверх)\n\n"
+        f"iPhone (по умолчанию): {iphone or '—'}{'…' if len(defs.get('iPhone новые') or '') > 80 else ''}\n"
+        f"iPad (по умолчанию): {ipad or '—'}{'…' if len(defs.get('iPad') or '') > 80 else ''}\n"
+        f"Fallback: {footer or '—'}{'…' if len(cfg.get('fixed_footer_text') or '') > 80 else ''}"
+    )
+
+
+async def _refresh_price_tags_screen(callback: CallbackQuery):
+    pct = get_settings_service().get_price_tag_strike_markup_percent()
+    await callback.message.edit_text(
+        _build_price_tags_text(),
+        reply_markup=get_settings_price_tags_keyboard(pct),
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data == "settings_price_tags")
+async def open_price_tags(callback: CallbackQuery):
+    await _refresh_price_tags_screen(callback)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "settings_price_tags_pct_5")
+async def price_tags_set_pct_5(callback: CallbackQuery):
+    get_settings_service().update({"price_tags": {"strike_markup_percent": 5}})
+    await _refresh_price_tags_screen(callback)
+    await callback.answer("Наценка: +5%")
+
+
+@router.callback_query(F.data == "settings_price_tags_pct_10")
+async def price_tags_set_pct_10(callback: CallbackQuery):
+    get_settings_service().update({"price_tags": {"strike_markup_percent": 10}})
+    await _refresh_price_tags_screen(callback)
+    await callback.answer("Наценка: +10%")
+
+
+@router.callback_query(F.data.startswith("settings_price_tags_edit_"))
+async def price_tags_edit_field(callback: CallbackQuery, state: FSMContext):
+    field = callback.data.replace("settings_price_tags_edit_", "")
+    prompts = {
+        "iphone": ("iPhone новые", "текст описания для iPhone"),
+        "ipad": ("iPad", "текст описания для iPad"),
+        "footer": ("fixed_footer_text", "общий fallback-текст"),
+    }
+    if field not in prompts:
+        await callback.answer("Ошибка", show_alert=True)
+        return
+    key, label = prompts[field]
+    await state.set_state(SettingsState.waiting_for_price_tag_value)
+    await state.update_data(price_tag_field=key, input_return_callback="settings_price_tags")
+    await callback.message.edit_text(
+        f"📝 Введите {label}.\nОтправьте <code>-</code> чтобы очистить.",
+        parse_mode="HTML",
+        reply_markup=get_input_cancel_keyboard("settings_price_tags"),
+    )
+    await callback.answer()
+
+
+@router.message(SettingsState.waiting_for_price_tag_value)
+async def save_price_tag_value(message: Message, state: FSMContext):
+    data = await state.get_data()
+    field = data.get("price_tag_field")
+    raw = (message.text or "").strip()
+    val = "" if raw == "-" else raw
+    svc = get_settings_service()
+    if field == "fixed_footer_text":
+        svc.update({"price_tags": {"fixed_footer_text": val}})
+    elif field in ("iPhone новые", "iPad"):
+        cur = svc.get_price_tags_settings()
+        defs = dict(cur.get("default_descriptions") or {})
+        defs[field] = val
+        svc.update({"price_tags": {"default_descriptions": defs}})
+    else:
+        await state.clear()
+        await message.answer("❌ Не удалось определить поле.")
+        return
+    await state.clear()
+    await message.answer("✅ Сохранено.")
 

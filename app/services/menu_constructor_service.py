@@ -258,6 +258,8 @@ def _product_to_dict(p: Product) -> Dict[str, Any]:
         "vk_product_id": p.vk_product_id,
         "availability_status": p.availability_status,
         "custom_button_id": p.custom_button_id,
+        "price_tag_subtitle": (p.price_tag_subtitle or "").strip() or None,
+        "price_tag_description": (p.price_tag_description or "").strip() or None,
     }
 
 
@@ -1126,6 +1128,8 @@ def attach_custom_product(
     price: str,
     user_id: int,
     display_label: Optional[str] = None,
+    price_tag_subtitle: Optional[str] = None,
+    price_tag_description: Optional[str] = None,
 ) -> Product:
     vk_link = _normalize_vk_link(vk_link)
     if not vk_link or "product-" not in vk_link:
@@ -1180,12 +1184,16 @@ def attach_custom_product(
         dl = button_label_for_product(
             {"name": name, "price": price_str, "collection_name": CUSTOM_COLLECTION}
         )[:128] or None
+    pt_sub = (price_tag_subtitle or "").strip()[:64] or None
+    pt_desc = (price_tag_description or "").strip()[:512] or None
     product = Product(
         post_id=post_id,
         vk_product_id=vk_product_id,
         vk_product_link=vk_link,
         name=name,
         display_label=dl,
+        price_tag_subtitle=pt_sub,
+        price_tag_description=pt_desc,
         price=price_str,
         collection_name=CUSTOM_COLLECTION,
         custom_button_id=target_button_id,

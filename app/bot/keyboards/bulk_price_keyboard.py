@@ -121,16 +121,29 @@ def get_bulk_price_continue_keyboard(action: str, count: int) -> InlineKeyboardM
     )
 
 
-def get_bulk_price_done_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
+def get_bulk_price_done_keyboard(*, changed_in_stock_count: int = 0) -> InlineKeyboardMarkup:
+    rows: list = []
+    if changed_in_stock_count > 0:
+        rows.append(
             [
                 InlineKeyboardButton(
-                    text="📄 Прайс A4 (PDF)",
-                    callback_data="iphone_print_price_pdf",
+                    text=f"🏷️ Ценники изменённых ({changed_in_stock_count})",
+                    callback_data="price_tags_bulk_print",
                 )
-            ],
-            [InlineKeyboardButton(text="🆕 Список новых", callback_data="new_products_menu")],
-            [InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")],
+            ]
+        )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="📄 Прайс A4 (PDF)",
+                callback_data="iphone_print_price_pdf",
+            ),
+            InlineKeyboardButton(
+                text="🏷️ Ценники A4 (PDF)",
+                callback_data="price_tags_select",
+            ),
         ]
     )
+    rows.append([InlineKeyboardButton(text="🆕 Список новых", callback_data="new_products_menu")])
+    rows.append([InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)

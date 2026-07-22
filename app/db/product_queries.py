@@ -276,7 +276,49 @@ def _fetch_product_row_core(conn, product_id: int) -> Optional[dict[str, Any]]:
         {"id": product_id},
     ).scalar()
     data["display_label"] = dl
+    pt_sub = conn.execute(
+        text("SELECT price_tag_subtitle FROM products WHERE id = :id LIMIT 1"),
+        {"id": product_id},
+    ).scalar()
+    pt_desc = conn.execute(
+        text("SELECT price_tag_description FROM products WHERE id = :id LIMIT 1"),
+        {"id": product_id},
+    ).scalar()
+    data["price_tag_subtitle"] = pt_sub
+    data["price_tag_description"] = pt_desc
     return data
+
+
+def update_product_price_tag_fields(
+    db: Session,
+    product_id: int,
+    *,
+    price_tag_subtitle: Optional[str] = None,
+    price_tag_description: Optional[str] = None,
+    clear_subtitle: bool = False,
+    clear_description: bool = False,
+) -> bool:
+    """Обновить поля описания ценника."""
+    sets = ["updated_at = NOW()"]
+    params: dict[str, Any] = {"id": product_id}
+    if clear_subtitle:
+        sets.append("price_tag_subtitle = NULL")
+    elif price_tag_subtitle is not None:
+        sets.append("price_tag_subtitle = :subtitle")
+        params["subtitle"] = (price_tag_subtitle or "").strip()[:64] or None
+    if clear_description:
+        sets.append("price_tag_description = NULL")
+    elif price_tag_description is not None:
+        sets.append("price_tag_description = :description")
+        params["description"] = (price_tag_description or "").strip()[:512] or None
+    if len(sets) == 1:
+        return False
+    n = db.execute(
+        text(f"UPDATE products SET {', '.join(sets)} WHERE id = :id"),
+        params,
+    ).rowcount
+    db.commit()
+    return n > 0
 
 
 def fetch_product_detail_row(db: Session, product_id: int) -> Optional[dict[str, Any]]:

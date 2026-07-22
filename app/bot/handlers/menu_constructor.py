@@ -39,6 +39,10 @@ class MenuConstructorState(StatesGroup):
     waiting_for_product_name = State()
     waiting_for_product_price = State()
     waiting_for_product_short_label = State()
+    waiting_for_product_tag_subtitle = State()
+    waiting_for_product_tag_description = State()
+    waiting_for_edit_tag_subtitle = State()
+    waiting_for_edit_tag_description = State()
     waiting_for_hardcoded_label = State()
 
 
@@ -66,8 +70,13 @@ def _editor_markup_with_products(db, path: str, nodes: List[mcs.MenuNode]) -> In
         pid = p.get("id")
         if pid is None:
             continue
-        nm = button_label_for_product(p).replace("\n", " ")[:34]
-        extra.append([InlineKeyboardButton(text=f"🗑 {nm}", callback_data=f"mc_rmp_{int(pid)}")])
+        nm = button_label_for_product(p).replace("\n", " ")[:28]
+        extra.append(
+            [
+                InlineKeyboardButton(text=f"📝 {nm}", callback_data=f"mc_edtag_{int(pid)}"),
+                InlineKeyboardButton(text="🗑", callback_data=f"mc_rmp_{int(pid)}"),
+            ]
+        )
     return _insert_unlink_product_rows(kb, extra)
 
 
@@ -218,9 +227,12 @@ async def mc_manage(callback: CallbackQuery, state: FSMContext):
             pid = p.get("id")
             if pid is None:
                 continue
-            nm = button_label_for_product(p).replace("\n", " ")[:40]
+            nm = button_label_for_product(p).replace("\n", " ")[:36]
             prod_rows.append(
-                [InlineKeyboardButton(text=f"🗑 {nm}", callback_data=f"mc_rmp_{int(pid)}")]
+                [
+                    InlineKeyboardButton(text=f"📝 {nm}", callback_data=f"mc_edtag_{int(pid)}"),
+                    InlineKeyboardButton(text="🗑", callback_data=f"mc_rmp_{int(pid)}"),
+                ]
             )
     finally:
         db.close()
@@ -571,23 +583,65 @@ async def mc_save_product_price(message: Message, state: FSMContext):
 @router.message(MenuConstructorState.waiting_for_product_short_label)
 async def mc_save_product_short_label(message: Message, state: FSMContext):
     raw = (message.text or "").strip()
+    display_label = None if raw.lower() in ("-", "пропустить", "авто") else raw[:128]
+    await state.update_data(mc_prod_display_label=display_label)
+    await state.set_state(MenuConstructorState.waiting_for_product_tag_subtitle)
+    await message.answer(
+        "Введите <b>подзаголовок ценника</b> (например: <code>не_активирован</code>).\n"
+        "Отправьте <code>-</code> — пропустить.",
+        parse_mode="HTML",
+        reply_markup=get_constructor_input_cancel_keyboard(),
+    )
+
+
+@router.message(MenuConstructorState.waiting_for_product_tag_subtitle)
+async def mc_save_product_tag_subtitle(message: Message, state: FSMContext):
+    raw = (message.text or "").strip()
+    subtitle = None if raw in ("-", "пропустить") else raw[:64]
+    await state.update_data(mc_prod_tag_subtitle=subtitle)
+    await state.set_state(MenuConstructorState.waiting_for_product_tag_description)
+    await message.answer(
+        "Введите <b>описание для ценника</b> (несколько строк текста).\n"
+        "Отправьте <code>-</code> — использовать шаблон из настроек.",
+        parse_mode="HTML",
+        reply_markup=get_constructor_input_cancel_keyboard(),
+    )
+
+
+@router.message(MenuConstructorState.waiting_for_product_tag_description)
+async def mc_save_product_tag_description(message: Message, state: FSMContext):
+    raw = (message.text or "").strip()
+    description = None if raw in ("-", "пропустить") else raw[:512]
     data = await state.get_data()
     parent = data.get("mc_prod_parent", "root")
     link = data.get("mc_prod_link", "")
     name = data.get("mc_prod_name", "")
     price = data.get("mc_prod_price", "")
-    display_label = None if raw.lower() in ("-", "пропустить", "авто") else raw[:128]
+    display_label = data.get("mc_prod_display_label")
+    subtitle = data.get("mc_prod_tag_subtitle")
     await state.set_state(None)
     await state.update_data(
         mc_prod_link=None,
         mc_prod_name=None,
         mc_prod_parent=None,
         mc_prod_price=None,
+        mc_prod_display_label=None,
+        mc_prod_tag_subtitle=None,
     )
     db = SessionLocal()
     try:
         uid = message.from_user.id if message.from_user else 0
-        mcs.attach_custom_product(db, parent, link, name, price, uid, display_label=display_label)
+        mcs.attach_custom_product(
+            db,
+            parent,
+            link,
+            name,
+            price,
+            uid,
+            display_label=display_label,
+            price_tag_subtitle=subtitle,
+            price_tag_description=description,
+        )
     except ValueError as e:
         if hasattr(message.bot, "user_data"):
             message.bot.user_data.setdefault(message.from_user.id, {})["in_menu_constructor_mode"] = False
@@ -617,3 +671,64 @@ async def mc_save_product_short_label(message: Message, state: FSMContext):
         )
     finally:
         db.close()
+
+
+@router.callback_query(F.data.startswith("mc_edtag_"))
+async def mc_edit_tag_start(callback: CallbackQuery, state: FSMContext):
+    try:
+        pid = int(callback.data.replace("mc_edtag_", ""))
+    except ValueError:
+        await callback.answer("Ошибка", show_alert=True)
+        return
+    if callback.from_user:
+        _set_constructor_input_mode(callback.bot, callback.from_user.id, True)
+    await state.set_state(MenuConstructorState.waiting_for_edit_tag_subtitle)
+    await state.update_data(mc_edit_tag_product_id=pid)
+    await callback.message.answer(
+        f"📝 Товар #{pid}: введите <b>подзаголовок ценника</b>.\n"
+        "Отправьте <code>-</code> чтобы очистить поле.",
+        parse_mode="HTML",
+        reply_markup=get_constructor_input_cancel_keyboard(),
+    )
+    await callback.answer()
+
+
+@router.message(MenuConstructorState.waiting_for_edit_tag_subtitle)
+async def mc_edit_tag_subtitle(message: Message, state: FSMContext):
+    raw = (message.text or "").strip()
+    subtitle = "" if raw == "-" else raw[:64]
+    await state.update_data(mc_edit_tag_subtitle=subtitle)
+    await state.set_state(MenuConstructorState.waiting_for_edit_tag_description)
+    await message.answer(
+        "Введите <b>описание для ценника</b>.\n"
+        "Отправьте <code>-</code> чтобы очистить поле.",
+        parse_mode="HTML",
+        reply_markup=get_constructor_input_cancel_keyboard(),
+    )
+
+
+@router.message(MenuConstructorState.waiting_for_edit_tag_description)
+async def mc_edit_tag_description(message: Message, state: FSMContext):
+    from app.db.product_queries import update_product_price_tag_fields
+
+    raw = (message.text or "").strip()
+    data = await state.get_data()
+    pid = int(data.get("mc_edit_tag_product_id") or 0)
+    subtitle = data.get("mc_edit_tag_subtitle")
+    description = "" if raw == "-" else raw[:512]
+    await state.set_state(None)
+    if message.from_user:
+        _set_constructor_input_mode(message.bot, message.from_user.id, False)
+    db = SessionLocal()
+    try:
+        update_product_price_tag_fields(
+            db,
+            pid,
+            price_tag_subtitle=subtitle if subtitle is not None else None,
+            clear_subtitle=subtitle == "",
+            price_tag_description=description if description is not None else None,
+            clear_description=description == "",
+        )
+    finally:
+        db.close()
+    await message.answer("✅ Описание ценника сохранено.")

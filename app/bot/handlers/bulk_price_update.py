@@ -285,6 +285,7 @@ async def _save_results(state: FSMContext, results: List[BulkMatchResult]) -> No
         bulk_applied=0,
         bulk_skipped_critical=0,
         bulk_skipped_mismatch=0,
+        bulk_changed_ids=[],
         bulk_critical_ids=[
             r.product_id for r in results if r.is_ready and r.is_critical and r.product_id
         ],
@@ -315,6 +316,14 @@ def _pending_mismatch(data: dict) -> List[int]:
     return ids[index:]
 
 
+async def _record_bulk_price_change(state: FSMContext, product_id: int) -> None:
+    data = await state.get_data()
+    changed: List[int] = list(data.get("bulk_changed_ids") or [])
+    if product_id not in changed:
+        changed.append(product_id)
+    await state.update_data(bulk_changed_ids=changed)
+
+
 async def _finish_bulk_session(
     callback: CallbackQuery,
     state: FSMContext,
@@ -325,6 +334,18 @@ async def _finish_bulk_session(
     applied = int(data.get("bulk_applied") or 0)
     skipped_critical = int(data.get("bulk_skipped_critical") or 0)
     skipped_mismatch = int(data.get("bulk_skipped_mismatch") or 0)
+    changed_ids: List[int] = list(data.get("bulk_changed_ids") or [])
+
+    def _filter_in_stock():
+        from app.utils.price_tag_data import filter_in_stock_product_ids
+
+        return filter_in_stock_product_ids(changed_ids)
+
+    in_stock_changed = await run_db(_filter_in_stock)
+    user_id = callback.from_user.id if callback.from_user else None
+    if user_id is not None and hasattr(callback.message.bot, "user_data"):
+        callback.message.bot.user_data.setdefault(user_id, {})["bulk_price_tag_ids"] = in_stock_changed
+
     await state.clear()
     await callback.message.answer(
         _summary_text(
@@ -334,7 +355,7 @@ async def _finish_bulk_session(
             cancelled=cancelled,
         ),
         parse_mode="HTML",
-        reply_markup=get_bulk_price_done_keyboard(),
+        reply_markup=get_bulk_price_done_keyboard(changed_in_stock_count=len(in_stock_changed)),
     )
 
 
@@ -496,6 +517,7 @@ async def bulk_price_apply(callback: CallbackQuery, state: FSMContext) -> None:
         )
         if summary:
             applied += 1
+            await _record_bulk_price_change(state, r.product_id)
         await asyncio.sleep(0.3)
 
     await state.update_data(bulk_applied=applied)
@@ -614,6 +636,7 @@ async def bulk_price_critical_confirm(callback: CallbackQuery, state: FSMContext
     applied = int(data.get("bulk_applied") or 0)
     if summary:
         applied += 1
+        await _record_bulk_price_change(state, product_id)
     index = int(data.get("bulk_critical_index") or 0) + 1
     await state.update_data(bulk_applied=applied, bulk_critical_index=index)
     await state.set_state(None)
@@ -666,6 +689,7 @@ async def bulk_price_mismatch_confirm(callback: CallbackQuery, state: FSMContext
     applied = int(data.get("bulk_applied") or 0)
     if summary:
         applied += 1
+        await _record_bulk_price_change(state, product_id)
     index = int(data.get("bulk_mismatch_index") or 0) + 1
     await state.update_data(bulk_applied=applied, bulk_mismatch_index=index)
     await state.set_state(None)

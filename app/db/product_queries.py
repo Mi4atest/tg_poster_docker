@@ -321,6 +321,57 @@ def update_product_price_tag_fields(
     return n > 0
 
 
+def update_custom_product_fields(
+    db: Session,
+    product_id: int,
+    *,
+    name: Optional[str] = None,
+    display_label: Optional[str] = None,
+    clear_display_label: bool = False,
+    price_tag_subtitle: Optional[str] = None,
+    price_tag_description: Optional[str] = None,
+    clear_subtitle: bool = False,
+    clear_description: bool = False,
+) -> bool:
+    """Обновить название / подпись / поля ценника у товара меню «новые»."""
+    # iPhone/Airpods/Watch/iPad + custom — без импорта menu_constructor_service (цикл).
+    allowed = ("iPhone новые", "Airpods", "Apple Watch", "iPad", "custom")
+    sets = ["updated_at = NOW()"]
+    params: dict[str, Any] = {"id": product_id, "cols": list(allowed)}
+    if name is not None:
+        nm = (name or "").strip()[:512]
+        if not nm:
+            return False
+        sets.append("name = :name")
+        params["name"] = nm
+    if clear_display_label:
+        sets.append("display_label = NULL")
+    elif display_label is not None:
+        sets.append("display_label = :display_label")
+        params["display_label"] = (display_label or "").strip()[:128] or None
+    if clear_subtitle:
+        sets.append("price_tag_subtitle = NULL")
+    elif price_tag_subtitle is not None:
+        sets.append("price_tag_subtitle = :subtitle")
+        params["subtitle"] = (price_tag_subtitle or "").strip()[:64] or None
+    if clear_description:
+        sets.append("price_tag_description = NULL")
+    elif price_tag_description is not None:
+        sets.append("price_tag_description = :description")
+        params["description"] = (price_tag_description or "").strip()[:512] or None
+    if len(sets) == 1:
+        return False
+    n = db.execute(
+        text(
+            f"UPDATE products SET {', '.join(sets)} "
+            "WHERE id = :id AND collection_name = ANY(:cols)"
+        ),
+        params,
+    ).rowcount
+    db.commit()
+    return n > 0
+
+
 def fetch_product_detail_row(db: Session, product_id: int) -> Optional[dict[str, Any]]:
     """Товар + поля поста для карточки (без ORM, без SELECT *)."""
     row = _fetch_product_row_core(db.connection(), product_id)

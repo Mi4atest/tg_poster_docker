@@ -74,10 +74,25 @@ def get_constructor_manage_keyboard(
         )
     if can_delete_custom:
         rows.append(
+            [InlineKeyboardButton(text="✏️ Переименовать кнопку…", callback_data="mc_btn_rename")]
+        )
+        rows.append(
             [InlineKeyboardButton(text="🗑 Удалить кнопку…", callback_data="mc_del_confirm")]
         )
     rows.append([InlineKeyboardButton(text="⬅️ Отмена", callback_data="mc_manage_cancel")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def get_constructor_product_card_keyboard(product_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🏷 Название для ценника", callback_data=f"mc_pf_name_{product_id}")],
+            [InlineKeyboardButton(text="🔘 Подпись кнопки", callback_data=f"mc_pf_label_{product_id}")],
+            [InlineKeyboardButton(text="📄 Подзаголовок", callback_data=f"mc_pf_sub_{product_id}")],
+            [InlineKeyboardButton(text="📝 Описание ценника", callback_data=f"mc_pf_desc_{product_id}")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="mc_pf_back")],
+        ]
+    )
 
 
 def get_constructor_delete_confirm_keyboard() -> InlineKeyboardMarkup:

@@ -25,7 +25,6 @@ from app.bot.keyboards.new_products_keyboard import (
     get_new_iphone_products_keyboard,
     get_new_product_detail_keyboard,
     get_new_product_price_edit_keyboard,
-    get_new_product_tag_desc_keyboard,
     get_payment_method_keyboard_new_product,
     get_airpods_models_keyboard,
     get_apple_watch_categories_keyboard,
@@ -607,11 +606,6 @@ class NewProductAvitoLink(StatesGroup):
     waiting_for_ref = State()
 
 
-class NewProductTagDesc(StatesGroup):
-    waiting_for_subtitle = State()
-    waiting_for_description = State()
-
-
 def _merge_custom_into_markup(markup, db, parent_path: str):
     """Вставляет пользовательские кнопки перед последними двумя рядами (Назад / Главная)."""
     from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -861,15 +855,6 @@ async def _show_new_product_card(
     text += f"📁 Подборка: {product.get('collection_name', '—')}\n"
     av = product.get("availability_status")
     text += f"Наличие: {'🟢 В наличии' if av == 'available' else '🔴 На заказ' if av == 'on_order' else '—'}\n"
-    pt_sub = (product.get("price_tag_subtitle") or "").strip()
-    pt_desc = (product.get("price_tag_description") or "").strip()
-    if pt_sub or pt_desc:
-        text += "\n🏷️ <b>Ценник:</b>\n"
-        if pt_sub:
-            text += f"Подзаголовок: {escape(pt_sub)}\n"
-        if pt_desc:
-            preview = pt_desc if len(pt_desc) <= 120 else pt_desc[:117] + "…"
-            text += f"Описание: {escape(preview)}\n"
     if product.get("vk_product_link"):
         text += f"\n🔗 <a href=\"{product['vk_product_link']}\">Ссылка на товар в ВК</a>"
     if product.get("avito_url"):
@@ -2519,123 +2504,3 @@ async def new_product_toggle_availability(callback: CallbackQuery, state: FSMCon
     )
 
 
-@router.callback_query(F.data.startswith("new_product_tag_desc_"))
-async def new_product_tag_desc_start(callback: CallbackQuery, state: FSMContext):
-    try:
-        product_id = int(callback.data.replace("new_product_tag_desc_", ""))
-    except ValueError:
-        await callback.answer("Ошибка", show_alert=True)
-        return
-    product = await get_product_api(product_id)
-    if not product:
-        await callback.answer("Товар не найден", show_alert=True)
-        return
-    sdata = await state.get_data()
-    back_data = sdata.get("new_products_back", "new_products_menu")
-    await state.update_data(
-        new_product_tag_id=product_id,
-        new_products_back=back_data,
-    )
-    await state.set_state(NewProductTagDesc.waiting_for_subtitle)
-    cur_sub = (product.get("price_tag_subtitle") or "").strip()
-    hint = f"\n\nТекущий: {escape(cur_sub)}" if cur_sub else ""
-    await safe_edit_message(
-        callback.message,
-        f"📝 <b>Описание ценника</b> — товар #{product_id}{hint}\n\n"
-        "Введите <b>подзаголовок</b> (например: <code>не_активирован</code>).\n"
-        "Отправьте <code>-</code> чтобы очистить.",
-        reply_markup=get_new_product_tag_desc_keyboard(product_id, back_data),
-        parse_mode="HTML",
-    )
-    await callback.answer()
-
-
-@router.callback_query(F.data.startswith("new_product_tag_back_"))
-async def new_product_tag_desc_back(callback: CallbackQuery, state: FSMContext):
-    try:
-        product_id = int(callback.data.replace("new_product_tag_back_", ""))
-    except ValueError:
-        await callback.answer("Ошибка", show_alert=True)
-        return
-    sdata = await state.get_data()
-    back_data = sdata.get("new_products_back", "new_products_menu")
-    await state.clear()
-    ok = await _show_new_product_card(callback, state, product_id, back_data)
-    if ok:
-        await callback.answer()
-    else:
-        await callback.answer("Товар не найден", show_alert=True)
-
-
-@router.message(NewProductTagDesc.waiting_for_subtitle)
-async def new_product_tag_subtitle(message: Message, state: FSMContext):
-    raw = (message.text or "").strip()
-    subtitle = "" if raw == "-" else raw[:64]
-    await state.update_data(new_product_tag_subtitle=subtitle)
-    await state.set_state(NewProductTagDesc.waiting_for_description)
-    await message.answer(
-        "Введите <b>описание для ценника</b>.\n"
-        "Отправьте <code>-</code> чтобы очистить (будет использован шаблон из настроек).",
-        parse_mode="HTML",
-    )
-
-
-@router.message(NewProductTagDesc.waiting_for_description)
-async def new_product_tag_description_save(message: Message, state: FSMContext):
-    from app.db.database import SessionLocal
-    from app.db.product_queries import update_product_price_tag_fields
-    from app.services.menu_constructor_service import invalidate_new_products_cache
-
-    raw = (message.text or "").strip()
-    data = await state.get_data()
-    product_id = int(data.get("new_product_tag_id") or 0)
-    subtitle = data.get("new_product_tag_subtitle")
-    description = "" if raw == "-" else raw[:512]
-    back_data = data.get("new_products_back", "new_products_menu")
-
-    def _save():
-        with SessionLocal() as db:
-            update_product_price_tag_fields(
-                db,
-                product_id,
-                price_tag_subtitle=subtitle if subtitle is not None else None,
-                clear_subtitle=subtitle == "",
-                price_tag_description=description if description is not None else None,
-                clear_description=description == "",
-            )
-        invalidate_new_products_cache()
-
-    try:
-        await run_db(_save)
-    except Exception:
-        logger.exception("new_product_tag_description save")
-        await message.answer("❌ Ошибка сохранения.")
-        return
-
-    await state.clear()
-    await message.answer("✅ Описание ценника сохранено.")
-    product = await get_product_api(product_id)
-    if product:
-        price_display = _normalize_price_display(product.get("price"))
-        av = product.get("availability_status")
-        text = f"📦 <b>{product.get('name', 'Без названия')}</b>\n\n💵 Цена: {price_display}\n"
-        text += f"Наличие: {'🟢 В наличии' if av == 'available' else '🔴 На заказ' if av == 'on_order' else '—'}\n"
-        pt_sub = (product.get("price_tag_subtitle") or "").strip()
-        pt_desc = (product.get("price_tag_description") or "").strip()
-        if pt_sub or pt_desc:
-            text += "\n🏷️ <b>Ценник:</b>\n"
-            if pt_sub:
-                text += f"Подзаголовок: {escape(pt_sub)}\n"
-            if pt_desc:
-                preview = pt_desc if len(pt_desc) <= 120 else pt_desc[:117] + "…"
-                text += f"Описание: {escape(preview)}\n"
-        await message.answer(
-            text,
-            reply_markup=get_new_product_detail_keyboard(
-                product_id,
-                status=product.get("status", "active"),
-                availability_status=av,
-                back_data=back_data,
-            ),
-            parse_mode="HTML",
-        )

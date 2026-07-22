@@ -419,31 +419,12 @@ def get_new_product_detail_keyboard(
         InlineKeyboardButton(text=avail_text, callback_data=f"new_product_toggle_avail_{product_id}")
     ])
     buttons.append([
-        InlineKeyboardButton(
-            text="📝 Описание ценника",
-            callback_data=f"new_product_tag_desc_{product_id}",
-        )
-    ])
-    buttons.append([
         InlineKeyboardButton(text="⬅️ Назад к списку", callback_data=back_data)
     ])
     buttons.append([
         InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")
     ])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-
-def get_new_product_tag_desc_keyboard(product_id: int, back_data: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="⬅️ Назад",
-                    callback_data=f"new_product_tag_back_{product_id}",
-                )
-            ],
-        ]
-    )
 
 
 def get_new_product_price_edit_keyboard(product_id: int) -> InlineKeyboardMarkup:

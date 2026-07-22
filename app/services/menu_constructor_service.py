@@ -1022,6 +1022,112 @@ def add_custom_button(db: Session, parent_path: str, label: str, user_id: int) -
     return row
 
 
+def rename_custom_button(db: Session, button_id: int, label: str) -> bool:
+    """Переименовать пользовательскую кнопку (не служебную)."""
+    label = (label or "").strip()[:128]
+    if not label:
+        raise ValueError("Пустое название")
+    btn = db.query(NewMenuButton).filter(NewMenuButton.id == int(button_id)).first()
+    if not btn or btn.is_service:
+        return False
+    btn.label = label
+    db.commit()
+    invalidate_new_products_cache()
+    logger.info("menu_constructor: rename button %s -> %r", button_id, label)
+    return True
+
+
+def get_custom_product_for_edit(db: Session, product_id: int) -> Optional[Dict[str, Any]]:
+    """Товар меню «новые» (custom или стандартная коллекция) для карточки редактирования."""
+    p = db.query(Product).filter(Product.id == int(product_id)).first()
+    if not p:
+        return None
+    cn = (p.collection_name or "").strip()
+    if cn != CUSTOM_COLLECTION and cn not in NEW_COLLECTION_VALUES:
+        return None
+    return _product_to_dict(p)
+
+
+def list_editable_products_at_node(db: Session, path: str, limit: int = 12) -> List[Dict[str, Any]]:
+    """Товары узла для 📝 в конструкторе: на hardcoded-листе — все (стандарт + custom)."""
+    path = (path or "").strip()
+    if path.startswith("custom:"):
+        return list_custom_products_at_node(db, path, limit)
+    if is_hardcoded_leaf_with_products(path):
+        return collect_leaf_products(db, path)[:limit]
+    return list_custom_products_at_node(db, path, limit)
+
+
+def is_constructor_deletable_product(product: Dict[str, Any]) -> bool:
+    return (product.get("collection_name") or "").strip() == CUSTOM_COLLECTION
+
+
+def update_constructor_product_fields(
+    db: Session,
+    product_id: int,
+    *,
+    name: Optional[str] = None,
+    display_label: Optional[str] = None,
+    auto_display_label: bool = False,
+    price_tag_subtitle: Optional[str] = None,
+    price_tag_description: Optional[str] = None,
+    clear_subtitle: bool = False,
+    clear_description: bool = False,
+) -> Optional[Dict[str, Any]]:
+    """Обновить поля товара меню «новые»; вернуть актуальный dict или None при ошибке."""
+    from app.db.product_queries import update_custom_product_fields
+
+    p = db.query(Product).filter(Product.id == int(product_id)).first()
+    if not p:
+        return None
+    cn = (p.collection_name or "").strip()
+    if cn != CUSTOM_COLLECTION and cn not in NEW_COLLECTION_VALUES:
+        return None
+
+    if name is not None:
+        name = (name or "").strip()[:512]
+        if not name:
+            raise ValueError("Пустое название")
+
+    dl_arg: Optional[str] = None
+    set_display = False
+    clear_display = False
+    if auto_display_label or display_label is not None:
+        set_display = True
+        raw = "" if auto_display_label else (display_label or "").strip()
+        if auto_display_label or raw.lower() in ("", "-", "авто", "пропустить"):
+            base_name = name if name is not None else (p.name or "")
+            dl_arg = button_label_for_product(
+                {
+                    "name": base_name,
+                    "price": p.price,
+                    "collection_name": cn,
+                    "display_label": None,
+                }
+            )[:128] or None
+            if not dl_arg:
+                clear_display = True
+        else:
+            dl_arg = raw[:128]
+
+    ok = update_custom_product_fields(
+        db,
+        int(product_id),
+        name=name,
+        display_label=dl_arg if set_display and not clear_display else None,
+        clear_display_label=clear_display,
+        price_tag_subtitle=price_tag_subtitle,
+        price_tag_description=price_tag_description,
+        clear_subtitle=clear_subtitle,
+        clear_description=clear_description,
+    )
+    if not ok:
+        return None
+    db.expire_all()
+    invalidate_new_products_cache()
+    return get_custom_product_for_edit(db, product_id)
+
+
 def _descendant_button_ids(db: Session, root_id: int) -> Set[int]:
     buttons = _load_buttons(db)
     idx = {b.id: b for b in buttons}

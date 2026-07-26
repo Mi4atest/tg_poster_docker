@@ -198,6 +198,88 @@ def test_match_new_format_gb_and_sim_esim():
     assert r3.product_id == 52
 
 
+def test_match_sim_esim_in_product_name_not_ambiguous():
+    """После переименования (1+1) → Sim+eSim в name оба типа должны матчиться однозначно."""
+    catalog = [
+        _iphone_product(70, "iPhone 17e 256Gb Black eSim", "53500₽"),
+        _iphone_product(71, "iPhone 17e 256Gb Black Sim+eSim", "54500₽"),
+        _iphone_product(72, "iPhone 17 256Gb Blue eSim", "72900₽"),
+        _iphone_product(73, "iPhone 17 256Gb Blue Sim+eSim", "73900₽"),
+        _iphone_product(74, "iPhone 17 Pro 256Gb Silver eSim", "88900₽"),
+        _iphone_product(75, "iPhone 17 Pro 256Gb Silver Sim+eSim", "89900₽"),
+        _iphone_product(76, "iPhone 17 Pro Max 512Gb Cosmic Orange Sim+eSim", "119900₽"),
+        _iphone_product(77, "iPhone 17e 256Gb Pink Sim+eSim", "55500₽"),
+    ]
+
+    cases = [
+        ("17e 256GB ⚫️ eSim", 53500, 53000, 70),
+        ("17e 256GB ⚫️ Sim+eSim", 54500, 54000, 71),
+        ("17 256GB 🔵 eSim", 72900, 72500, 72),
+        ("17 256GB 🔵 Sim+eSim", 73900, 73500, 73),
+        ("17 Pro 256GB ⚪️ eSim", 88900, 88500, 74),
+        ("17 Pro 256GB ⚪️ Sim+eSim", 89900, 89500, 75),
+        ("17 Pro Max 512GB 🟠 Sim+eSim", 119900, 119500, 76),
+        ("17e 256GB 🌸 Sim+eSim", 55500, 55000, 77),
+    ]
+    for label, old, new, expected_id in cases:
+        r = match_bulk_lines([BulkPriceLine(label, old, new, 1)], catalog)[0]
+        assert r.status == MatchStatus.MATCHED, (
+            f"{label}: expected MATCHED, got {r.status}"
+            + (f" candidates={[c.get('name') for c in r.candidates]}" if r.candidates else "")
+        )
+        assert r.product_id == expected_id, f"{label}: expected id={expected_id}, got {r.product_id}"
+
+
+def test_match_batch_like_user_report_sim_esim_rename():
+    """Сценарий из отчёта: прайс с eSim/Sim+eSim при именах товаров с Sim+eSim."""
+    catalog = [
+        _iphone_product(1, "iPhone Air 256Gb Black eSim", "73500₽"),
+        _iphone_product(2, "iPhone Air 256Gb Yellow eSim", "73500₽"),
+        _iphone_product(3, "iPhone Air 256Gb Blue eSim", "72900₽"),
+        _iphone_product(10, "iPhone 17e 256Gb Black eSim", "50000₽"),
+        _iphone_product(11, "iPhone 17e 256Gb Black Sim+eSim", "51000₽"),
+        _iphone_product(12, "iPhone 17e 256Gb White eSim", "50000₽"),
+        _iphone_product(13, "iPhone 17e 256Gb White Sim+eSim", "51000₽"),
+        _iphone_product(14, "iPhone 17e 256Gb Pink Sim+eSim", "52000₽"),
+        _iphone_product(20, "iPhone 17 256Gb Black Sim+eSim", "70000₽"),
+        _iphone_product(21, "iPhone 17 256Gb White Sim+eSim", "70000₽"),
+        _iphone_product(22, "iPhone 17 256Gb Blue eSim", "72900₽"),
+        _iphone_product(23, "iPhone 17 256Gb Blue Sim+eSim", "73900₽"),
+        _iphone_product(24, "iPhone 17 256Gb Sage eSim", "72900₽"),
+        _iphone_product(25, "iPhone 17 256Gb Sage Sim+eSim", "73900₽"),
+        _iphone_product(26, "iPhone 17 256Gb Lavander eSim", "72900₽"),
+        _iphone_product(27, "iPhone 17 256Gb Lavander Sim+eSim", "73900₽"),
+    ]
+    text = """
+Air 256GB ⚫️ eSim: 73500 → 72900
+Air 256GB 🟡 eSim: 73500 → 72900
+Air 256GB 🔵 eSim: 72900 → 72500
+17e 256GB ⚫️ eSim: 50000 → 49500
+17e 256GB ⚪️ eSim: 50000 → 49500
+17e 256GB ⚫️ Sim+eSim: 51000 → 50500
+17e 256GB ⚪️ Sim+eSim: 51000 → 50500
+17e 256GB 🌸 Sim+eSim: 52000 → 51500
+17 256GB ⚫️ Sim+eSim: 70000 → 69500
+17 256GB ⚪️ Sim+eSim: 70000 → 69500
+17 256GB 🔵 eSim: 72900 → 72500
+17 256GB 🔵 Sim+eSim: 73900 → 73500
+17 256GB 🟢 eSim: 72900 → 72500
+17 256GB 🟢 Sim+eSim: 73900 → 73500
+17 256GB 🟣 eSim: 72900 → 72500
+17 256GB 🟣 Sim+eSim: 73900 → 73500
+"""
+    lines = parse_bulk_price_text(text)
+    results = match_bulk_lines(lines, catalog)
+    assert len(results) == 16
+    ambiguous = [r for r in results if r.status == MatchStatus.AMBIGUOUS]
+    not_found = [r for r in results if r.status == MatchStatus.NOT_FOUND]
+    matched = [r for r in results if r.status == MatchStatus.MATCHED]
+    assert not ambiguous, f"ambiguous: {[r.display_label for r in ambiguous]}"
+    assert not not_found, f"not_found: {[r.display_label for r in not_found]}"
+    assert len(matched) == 16
+    assert {r.product_id for r in matched} == set(range(1, 4)) | set(range(10, 15)) | set(range(20, 28))
+
+
 def test_match_tradein_never_hits_new_iphone():
     catalog = [_iphone_product(60, "iPhone 13 Pro 128Gb Graphite", "37910₽")]
     line = BulkPriceLine("13 Pro 128GB (обменка)", 37910, 36900, 1)

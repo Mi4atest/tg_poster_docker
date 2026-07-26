@@ -485,16 +485,20 @@ def parse_iphone_memory(name: str) -> Optional[str]:
 def parse_iphone_storage_type(name: str) -> Optional[str]:
     """
     Извлекает тип сим-карты/хранилища: esim, 1+1, 2sim.
+
+    «Sim+eSim» / «Sim + eSim» — синоним 1+1; проверяется раньше голого «esim»,
+    иначе подстрока esim внутри Sim+eSim ложно даёт esim.
     """
     if not name:
         return None
     name_lower = name.lower()
-    if "esim" in name_lower and "1+1" not in name_lower and "2sim" not in name_lower:
-        return "esim"
-    if "1+1" in name or "1+1" in name_lower:
+    # Sim+eSim / 1+1 — до проверки esim (Sim+eSim содержит «esim»)
+    if re.search(r"sim\s*\+\s*esim", name_lower) or "1+1" in name_lower:
         return "1+1"
     if "2sim" in name_lower or "2 sim" in name_lower:
         return "2sim"
+    if "esim" in name_lower:
+        return "esim"
     return None
 
 

@@ -179,7 +179,27 @@ info "Сборка образа app..."
 info "Пересоздание только контейнера app (db/nginx не трогаем)..."
 docker rm -f tg_poster_app 2>/dev/null || true
 docker start tg_poster_db 2>/dev/null || "${DC[@]}" up -d --no-recreate db
-"${DC[@]}" up -d --no-deps app
+
+# docker-compose падает, если опции сети изменились (например MTU), а db/nginx ещё на старой сети.
+# Тогда app уже удалён — без fallback бот остаётся мёртвым.
+set +e
+UP_OUT="$("${DC[@]}" up -d --no-deps app 2>&1)"
+UP_RC=$?
+set -e
+printf '%s\n' "$UP_OUT"
+
+if [ "$UP_RC" -ne 0 ]; then
+    if echo "$UP_OUT" | grep -qiE 'network .* needs to be recreated|option .* has changed'; then
+        warn "Сеть Docker изменилась (MTU/опции) — пересоздаём сеть и сервисы (volume БД сохраняется)..."
+        # down без -v: контейнеры+сеть уходят, postgres_data и bind-mounts (.env, media) остаются
+        "${DC[@]}" down --remove-orphans
+        "${DC[@]}" up -d
+    else
+        error "Не удалось поднять контейнер app"
+        write_meta "failed" false
+        exit 1
+    fi
+fi
 
 if [ -f "$PROJECT_DIR/scripts/sync_db_password.sh" ]; then
     bash "$PROJECT_DIR/scripts/sync_db_password.sh" --restart-app \

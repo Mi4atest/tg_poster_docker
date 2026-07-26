@@ -160,6 +160,15 @@ if [ "$SKIP_GIT" != "1" ]; then
             exit 1
         fi
         info "Коммит: $(git log -1 --oneline)"
+        # После pull на диске новый update.sh, а этот процесс всё ещё выполняет
+        # старый inode (без свежего fallback) — перезапускаем себя.
+        info "Перезапуск update.sh с диска (после git pull)…"
+        exec env TG_POSTER_SKIP_GIT=1 \
+            TG_POSTER_DIR="$PROJECT_DIR" \
+            TG_POSTER_BRANCH="$BRANCH" \
+            TG_POSTER_FORCE_UPDATE="${FORCE_UPDATE}" \
+            COMPOSE_PROJECT_NAME="$COMPOSE_PROJECT_NAME" \
+            bash "$PROJECT_DIR/scripts/update.sh"
     fi
 else
     info "Пропуск git (TG_POSTER_SKIP_GIT=1)"
@@ -189,11 +198,31 @@ set -e
 printf '%s\n' "$UP_OUT"
 
 if [ "$UP_RC" -ne 0 ]; then
-    if echo "$UP_OUT" | grep -qiE 'network .* needs to be recreated|option .* has changed'; then
+    # compose v1: Network "…" needs to be recreated - option "…mtu" has changed
+    # compose v2/v5: tries to remove network → "has active endpoints" (db/nginx still attached)
+    if echo "$UP_OUT" | grep -qiE 'needs to be recreated|option .* has changed|active endpoints|removing network'; then
         warn "Сеть Docker изменилась (MTU/опции) — пересоздаём сеть и сервисы (volume БД сохраняется)..."
         # down без -v: контейнеры+сеть уходят, postgres_data и bind-mounts (.env, media) остаются
-        "${DC[@]}" down --remove-orphans
-        "${DC[@]}" up -d
+        set +e
+        DOWN_OUT="$("${DC[@]}" down --remove-orphans 2>&1)"
+        DOWN_RC=$?
+        set -e
+        printf '%s\n' "$DOWN_OUT"
+        if [ "$DOWN_RC" -ne 0 ]; then
+            error "Не удалось пересоздать стек (down failed)"
+            write_meta "failed" false
+            exit 1
+        fi
+        set +e
+        UPALL_OUT="$("${DC[@]}" up -d 2>&1)"
+        UPALL_RC=$?
+        set -e
+        printf '%s\n' "$UPALL_OUT"
+        if [ "$UPALL_RC" -ne 0 ]; then
+            error "Не удалось поднять стек после пересоздания сети"
+            write_meta "failed" false
+            exit 1
+        fi
     else
         error "Не удалось поднять контейнер app"
         write_meta "failed" false

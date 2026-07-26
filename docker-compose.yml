@@ -70,6 +70,10 @@ services:
 networks:
   tg_poster_network:
     driver: bridge
+    # Хост VPN (mtu 1420): иначе у контейнеров eth0=1500 при bridge=1420 —
+    # ответы Postgres определённого размера зависают (idle-in-transaction / EOF).
+    driver_opts:
+      com.docker.network.driver.mtu: "1420"
     ipam:
       config:
         - subnet: 172.20.0.0/16

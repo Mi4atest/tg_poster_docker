@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import List, Optional, Sequence
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 
 from app.db.database import SessionLocal
 from app.services.settings_service import get_settings_service
@@ -99,18 +99,22 @@ def fetch_available_products_for_tags() -> List[dict]:
 def fetch_products_for_tag_pdf(product_ids: Sequence[int]) -> List[dict]:
     if not product_ids:
         return []
+    ids = [int(x) for x in product_ids]
+    # Тот же набор колонок, что у fetch_available_products_for_tags: узкий SELECT
+    # на части хостов зависает на чтении ответа (MTU Docker bridge vs eth0 контейнера).
     sql = text(
         """
-        SELECT id, name, price, collection_name, price_tag_subtitle, price_tag_description
+        SELECT id, name, display_label, price, collection_name, custom_button_id,
+               availability_status, price_tag_subtitle, price_tag_description
         FROM products
-        WHERE id = ANY(:ids)
+        WHERE id IN :ids
           AND availability_status = 'available'
           AND status = 'active'
         ORDER BY collection_name, price, id
         """
-    )
+    ).bindparams(bindparam("ids", expanding=True))
     with SessionLocal() as db:
-        rows = db.execute(sql, {"ids": list(product_ids)}).mappings().all()
+        rows = db.execute(sql, {"ids": ids}).mappings().all()
     return [dict(r) for r in rows]
 
 
@@ -129,15 +133,16 @@ def filter_in_stock_product_ids(product_ids: Sequence[int]) -> List[int]:
     """Оставить только id товаров «В наличии»."""
     if not product_ids:
         return []
+    ids = [int(x) for x in product_ids]
     sql = text(
         """
         SELECT id FROM products
-        WHERE id = ANY(:ids)
+        WHERE id IN :ids
           AND availability_status = 'available'
           AND status = 'active'
         ORDER BY id
         """
-    )
+    ).bindparams(bindparam("ids", expanding=True))
     with SessionLocal() as db:
-        rows = db.execute(sql, {"ids": list(product_ids)}).scalars().all()
+        rows = db.execute(sql, {"ids": ids}).scalars().all()
     return [int(r) for r in rows]

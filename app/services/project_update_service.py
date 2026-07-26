@@ -350,9 +350,15 @@ async def build_update_screen(*, refresh: bool = True) -> Tuple[str, UpdateCheck
         )
         lines.append(disk_line)
         if disk.get("critical"):
-            lines.append("⚠️ Места критически мало — перед сборкой будет очистка Docker-кэша.")
+            lines.append(
+                "⚠️ Места критически мало — нажмите «Освободить место» "
+                "или дождитесь автоочистки перед сборкой."
+            )
         elif disk.get("low"):
-            lines.append("⚠️ Мало места (&lt; 3 ГБ). Перед полной сборкой лучше очистить образы.")
+            lines.append(
+                "⚠️ Мало места (&lt; 3 ГБ) — лучше нажать «Освободить место» "
+                "перед обновлением."
+            )
     lines.append(
         "<b>Не затрагивается:</b> база, токены, настройки, ссылки, медиа."
     )
@@ -535,6 +541,91 @@ async def get_update_details_message() -> str:
     parts.append("<b>Хвост лога:</b>")
     parts.append(f"<pre>{_escape(_read_update_log_tail())}</pre>")
     return "\n".join(parts)
+
+
+async def free_docker_disk_space() -> Tuple[bool, str]:
+    """Очистка неиспользуемых Docker-образов/кэша (без volumes).
+
+    Не трогает postgres_data, media, backups, .env. Работающие контейнеры
+    и их текущие образы остаются.
+    """
+    if not _docker_available():
+        return (
+            False,
+            "Docker socket недоступен в контейнере app.\n"
+            "Очистите через SSH:\n"
+            "<code>docker system prune -af</code>",
+        )
+
+    if await is_update_running():
+        return False, (
+            "Сейчас идёт обновление — дождитесь окончания, "
+            "затем повторите «Освободить место»."
+        )
+
+    before = get_disk_space_info()
+    free_before = before.get("free_gb", 0)
+    docker_bin = str(_docker_binaries()[0])
+    logger.info("Освобождение места: docker system prune -af (без volumes)")
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            docker_bin, "system", "prune", "-af",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=300.0)
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            return False, "Очистка превысила 5 минут и была прервана. Попробуйте через SSH."
+    except Exception as exc:
+        logger.exception("free_docker_disk_space")
+        return False, f"Ошибка запуска очистки: {_escape(str(exc))}"
+
+    out = (stdout or b"").decode(errors="replace").strip()
+    err = (stderr or b"").decode(errors="replace").strip()
+    if proc.returncode != 0:
+        logger.error("docker system prune failed: %s", err or out)
+        return False, (
+            f"Не удалось очистить Docker:\n"
+            f"<pre>{_escape((err or out)[:500])}</pre>"
+        )
+
+    reclaimed = ""
+    for line in reversed(out.splitlines()):
+        if "reclaimed" in line.lower() or "освобождено" in line.lower() or "Total" in line:
+            reclaimed = line.strip()
+            break
+
+    after = get_disk_space_info()
+    free_after = after.get("free_gb", 0)
+    try:
+        freed = round(float(free_after) - float(free_before), 1)
+    except (TypeError, ValueError):
+        freed = 0.0
+
+    lines = [
+        "🧹 <b>Освобождение места</b>",
+        "",
+        "Выполнено: <code>docker system prune -af</code>",
+        "(старые образы и кэш сборки; volumes / БД / медиа / бэкапы не трогались)",
+        "",
+        f"Свободно было: <b>{_escape(str(free_before))} ГБ</b>",
+        f"Свободно сейчас: <b>{_escape(str(free_after))} ГБ</b>",
+    ]
+    if freed > 0:
+        lines.append(f"Прирост: <b>+{freed} ГБ</b>")
+    elif freed == 0:
+        lines.append("Лишнего Docker-кэша почти не было — освобождать было нечего.")
+    if reclaimed:
+        lines.append("")
+        lines.append(f"Docker: <code>{_escape(reclaimed)}</code>")
+
+    return True, "\n".join(lines)
 
 
 # Обратная совместимость имени

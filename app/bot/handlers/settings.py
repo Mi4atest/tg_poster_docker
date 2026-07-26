@@ -1155,6 +1155,33 @@ async def settings_update_project_status(callback: CallbackQuery):
     await callback.answer()
 
 
+@router.callback_query(F.data == "settings_update_project_prune")
+async def settings_update_project_prune(callback: CallbackQuery):
+    """Очистка неиспользуемых Docker-образов (без volumes / медиа / бэкапов)."""
+    from app.services.project_update_service import (
+        build_update_screen,
+        free_docker_disk_space,
+    )
+
+    await callback.answer("Очищаю Docker-кэш…")
+    _, msg = await free_docker_disk_space()
+    _, check, running = await build_update_screen(refresh=False)
+    try:
+        await callback.message.edit_text(
+            msg,
+            reply_markup=get_settings_update_keyboard(
+                running=running,
+                up_to_date=bool(check.fetch_ok and check.up_to_date),
+                has_update=bool(check.fetch_ok and not check.up_to_date and check.behind > 0),
+                fetch_ok=check.fetch_ok,
+            ),
+            parse_mode="HTML",
+        )
+    except TelegramBadRequest as e:
+        if "message is not modified" not in str(e).lower():
+            raise
+
+
 def _build_price_tags_text() -> str:
     cfg = get_settings_service().get_price_tags_settings()
     pct = cfg.get("strike_markup_percent", 5)

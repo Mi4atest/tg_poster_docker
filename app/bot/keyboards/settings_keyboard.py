@@ -60,6 +60,13 @@ def get_settings_update_keyboard(
             buttons.append([
                 InlineKeyboardButton(text="✅ Обновить", callback_data="settings_update_project_confirm"),
             ])
+    if not running:
+        buttons.append([
+            InlineKeyboardButton(
+                text="🧹 Освободить место",
+                callback_data="settings_update_project_prune",
+            ),
+        ])
     buttons.append([
         InlineKeyboardButton(text="📋 Подробности / лог", callback_data="settings_update_project_status"),
     ])

@@ -81,6 +81,15 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
         "availability_message_ids": list(env_settings.AVAILABILITY_MESSAGE_IDS or []),
         "used_products_list_message_ids": list(env_settings.USED_PRODUCTS_LIST_MESSAGE_IDS or []),
     },
+    # Прайс в VK-канале (edit одного/нескольких сообщений по шаблону слотов).
+    "vk_channel_price": {
+        "peer_id": None,
+        "message_cmids": [],
+        "marker_in_stock": "●",
+        "marker_on_order": "○",
+        "links_enabled": True,
+        "template": None,
+    },
     "backup": {
         # enabled управляет автоматическим бэкапом внутри приложения (без хостового cron)
         "enabled": bool(getattr(env_settings, "BACKUP_BOT_TOKEN", "")) and bool(getattr(env_settings, "BACKUP_CHAT_ID", "")),
@@ -334,6 +343,63 @@ class SettingsService:
     def get_used_products_list_message_ids(self) -> list:
         ids = _normalize_int_list(self.get_all().get("reports", {}).get("used_products_list_message_ids"))
         return ids or list(env_settings.USED_PRODUCTS_LIST_MESSAGE_IDS or [])
+
+    def get_vk_channel_price_config(self) -> Dict[str, Any]:
+        data = dict(self.get_all().get("vk_channel_price") or {})
+        defaults = DEFAULT_SETTINGS["vk_channel_price"]
+        peer_raw = data.get("peer_id", defaults.get("peer_id"))
+        try:
+            peer_id = int(peer_raw) if peer_raw is not None and str(peer_raw).strip() != "" else None
+        except (TypeError, ValueError):
+            peer_id = None
+        cmids = _normalize_int_list(data.get("message_cmids"))
+        marker_in = str(data.get("marker_in_stock") or defaults["marker_in_stock"]).strip() or "●"
+        marker_on = str(data.get("marker_on_order") or defaults["marker_on_order"]).strip() or "○"
+        # Ограничение длины маркера (emoji могут быть >1 codepoint)
+        if len(marker_in) > 8:
+            marker_in = marker_in[:8]
+        if len(marker_on) > 8:
+            marker_on = marker_on[:8]
+        template = data.get("template")
+        if template is not None and not isinstance(template, dict):
+            template = None
+        return {
+            "peer_id": peer_id,
+            "message_cmids": cmids,
+            "marker_in_stock": marker_in,
+            "marker_on_order": marker_on,
+            "links_enabled": bool(data.get("links_enabled", defaults["links_enabled"])),
+            "template": template,
+        }
+
+    def set_vk_channel_price_binding(self, peer_id: int, cmids: list) -> None:
+        self.update(
+            {
+                "vk_channel_price": {
+                    "peer_id": int(peer_id),
+                    "message_cmids": [int(x) for x in cmids],
+                }
+            }
+        )
+
+    def clear_vk_channel_price_binding(self) -> None:
+        self.update({"vk_channel_price": {"peer_id": None, "message_cmids": []}})
+
+    def set_vk_channel_price_markers(self, in_stock: str, on_order: str) -> None:
+        self.update(
+            {
+                "vk_channel_price": {
+                    "marker_in_stock": (in_stock or "●").strip()[:8] or "●",
+                    "marker_on_order": (on_order or "○").strip()[:8] or "○",
+                }
+            }
+        )
+
+    def set_vk_channel_price_template(self, template: Optional[Dict[str, Any]]) -> None:
+        self.update({"vk_channel_price": {"template": template}})
+
+    def set_vk_channel_price_links_enabled(self, enabled: bool) -> None:
+        self.update({"vk_channel_price": {"links_enabled": bool(enabled)}})
 
     # --- Контакты (единый источник телефона) ---
     def get_contact_phone(self) -> str:

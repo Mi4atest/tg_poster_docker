@@ -5,6 +5,7 @@ from aiogram.types import CallbackQuery, Message
 from aiogram.exceptions import TelegramBadRequest
 from html import escape
 from datetime import datetime, timezone
+import re
 
 from app.bot.keyboards.settings_keyboard import (
     get_platform_interval_keyboard,
@@ -21,6 +22,7 @@ from app.bot.keyboards.settings_keyboard import (
     get_signature_platform_fields_keyboard,
     get_settings_signatures_edit_keyboard,
     get_settings_signatures_keyboard,
+    get_vk_channel_price_keyboard,
 )
 from app.services.settings_service import get_settings_service
 from app.utils.signatures import get_instagram_signature, get_telegram_signature, get_vk_signature
@@ -60,6 +62,9 @@ class SettingsState(StatesGroup):
     waiting_for_backup_value = State()
     waiting_for_backup_schedule = State()
     waiting_for_price_tag_value = State()
+    waiting_for_vk_price_link = State()
+    waiting_for_vk_price_markers = State()
+    waiting_for_vk_price_template = State()
 
 
 def _status_text() -> str:
@@ -855,9 +860,11 @@ def _build_reports_text() -> str:
     return (
         "🗂 Отчёты и списки\n\n"
         f"VK получатели отчёта: {vk_ids}\n"
-        f"ID сообщений «Наличие»: {avail}\n"
+        f"ID сообщений «Наличие» (полный прайс ТГ): {avail}\n"
         f"ID сообщений «Список б/у»: {used}\n\n"
-        "Значения вводятся числами через запятую (например: 100,101,102)."
+        "«Наличие» — несколько ID через запятую (например 11728,11729,11730,11731).\n"
+        "Бот только редактирует эти сообщения, новые посты не создаёт.\n"
+        "Значения — целые числа через запятую."
     )
 
 
@@ -913,6 +920,195 @@ async def save_report_value(message: Message, state: FSMContext):
     get_settings_service().update({"reports": {field: ids}})
     await state.clear()
     await message.answer("✅ Сохранено.")
+
+
+# ===================== Прайс VK-канала =====================
+
+def _build_vk_channel_price_text() -> str:
+    cfg = get_settings_service().get_vk_channel_price_config()
+    avail = get_settings_service().get_availability_message_ids()
+    avail_s = ", ".join(str(x) for x in avail) or "не заданы"
+    has_tpl = bool(cfg.get("template"))
+    return (
+        "📣 Прайс (Telegram)\n\n"
+        "Полный прайс с наличием публикуется в ТГ-канал через "
+        "ID сообщений «Наличие» (только edit, без новых постов).\n\n"
+        f"ID сообщений прайса ТГ: {avail_s}\n"
+        f"Маркеры: {cfg.get('marker_in_stock')} / {cfg.get('marker_on_order')}\n"
+        f"Ссылки на Market: {'вкл' if cfg.get('links_enabled') else 'выкл'}\n"
+        f"Шаблон: {'свой (из настроек)' if has_tpl else 'файловый/канонический'}\n\n"
+        "Задайте ID в «Отчёты и списки» → ID сообщений «Наличие» "
+        "(например 11728,11729,11730,11731).\n"
+        "VK Channel через API редактировать нельзя — прайс там вручную."
+    )
+
+
+async def _show_vk_channel_price(callback: CallbackQuery) -> None:
+    cfg = get_settings_service().get_vk_channel_price_config()
+    await callback.message.edit_text(
+        _build_vk_channel_price_text(),
+        reply_markup=get_vk_channel_price_keyboard(links_enabled=bool(cfg.get("links_enabled"))),
+    )
+
+
+@router.callback_query(F.data == "settings_vk_channel_price")
+async def open_vk_channel_price(callback: CallbackQuery):
+    await _show_vk_channel_price(callback)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "settings_vk_price_link")
+async def request_vk_price_link(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(SettingsState.waiting_for_vk_price_link)
+    await callback.message.edit_text(
+        "Пришлите ссылку на сообщение прайса в VK-канале, например:\n"
+        "`https://vk.ru/im/channels/-235526445?cmid=1`\n\n"
+        "Несколько сообщений — по одной ссылке на строку "
+        "(или `peer,cmid1,cmid2`).\n"
+        "«-» — сбросить привязку.",
+        reply_markup=get_input_cancel_keyboard("settings_vk_channel_price"),
+    )
+    await callback.answer()
+
+
+@router.message(SettingsState.waiting_for_vk_price_link)
+async def save_vk_price_link(message: Message, state: FSMContext):
+    from app.utils.vk_channel_link import parse_vk_channel_message_links
+
+    raw = (message.text or "").strip()
+    svc = get_settings_service()
+    if raw in ("-", "none", "нет", "сброс"):
+        svc.clear_vk_channel_price_binding()
+        await state.clear()
+        await message.answer("✅ Привязка сброшена.")
+        return
+    refs = parse_vk_channel_message_links(raw)
+    if not refs:
+        await message.answer("❌ Не удалось разобрать ссылку. Пример: https://vk.ru/im/channels/-235526445?cmid=1")
+        return
+    peer_ids = {r.peer_id for r in refs}
+    if len(peer_ids) > 1:
+        await message.answer("❌ Все сообщения должны быть из одного канала (один peer_id).")
+        return
+    peer_id = refs[0].peer_id
+    cmids = [r.cmid for r in refs]
+    svc.set_vk_channel_price_binding(peer_id, cmids)
+    await state.clear()
+    await message.answer(f"✅ Привязка сохранена: peer={peer_id}, cmid={', '.join(map(str, cmids))}")
+
+
+@router.callback_query(F.data == "settings_vk_price_markers")
+async def request_vk_price_markers(callback: CallbackQuery, state: FSMContext):
+    cfg = get_settings_service().get_vk_channel_price_config()
+    await state.set_state(SettingsState.waiting_for_vk_price_markers)
+    await callback.message.edit_text(
+        "Введите два маркера через пробел или запятую:\n"
+        "1) в наличии  2) на заказ\n\n"
+        f"Сейчас: `{cfg.get('marker_in_stock')}` / `{cfg.get('marker_on_order')}`\n\n"
+        "Примеры: `● ○`  или  `✓ ↻`  или  `◆ ◇`",
+        reply_markup=get_input_cancel_keyboard("settings_vk_channel_price"),
+    )
+    await callback.answer()
+
+
+@router.message(SettingsState.waiting_for_vk_price_markers)
+async def save_vk_price_markers(message: Message, state: FSMContext):
+    raw = (message.text or "").strip()
+    parts = [p for p in re.split(r"[\s,;]+", raw) if p]
+    if len(parts) < 2:
+        await message.answer("❌ Нужно два символа: наличие и заказ, например: ◆ ◇")
+        return
+    get_settings_service().set_vk_channel_price_markers(parts[0], parts[1])
+    await state.clear()
+    await message.answer(f"✅ Маркеры: {parts[0]} / {parts[1]}")
+    # Триггерим обновление прайса
+    try:
+        from app.services.price_sync_service import get_price_sync_service
+
+        get_price_sync_service().schedule_vk_channel_price_refresh()
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data == "settings_vk_price_template")
+async def request_vk_price_template(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(SettingsState.waiting_for_vk_price_template)
+    await callback.message.edit_text(
+        "Пришлите полный текст прайса в каноническом формате "
+        "(с секциями и строками ●/○ … — цена).\n\n"
+        "«-» — сбросить свой шаблон и вернуться к файловому/каноническому.",
+        reply_markup=get_input_cancel_keyboard("settings_vk_channel_price"),
+    )
+    await callback.answer()
+
+
+@router.message(SettingsState.waiting_for_vk_price_template)
+async def save_vk_price_template(message: Message, state: FSMContext):
+    from app.utils.vk_channel_price_template import parse_price_list_template
+
+    raw = (message.text or "").strip()
+    svc = get_settings_service()
+    if raw in ("-", "none", "нет", "сброс"):
+        svc.set_vk_channel_price_template(None)
+        await state.clear()
+        await message.answer("✅ Свой шаблон сброшен.")
+        return
+    tpl = parse_price_list_template(raw)
+    if not tpl.sections or not tpl.all_slots():
+        await message.answer("❌ Не удалось разобрать шаблон: нет секций/слотов.")
+        return
+    svc.set_vk_channel_price_template(tpl.to_dict())
+    await state.clear()
+    await message.answer(
+        f"✅ Шаблон сохранён: секций {len(tpl.sections)}, слотов {len(tpl.all_slots())}."
+    )
+    try:
+        from app.services.price_sync_service import get_price_sync_service
+
+        get_price_sync_service().schedule_vk_channel_price_refresh()
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data == "settings_vk_price_toggle_links")
+async def toggle_vk_price_links(callback: CallbackQuery):
+    svc = get_settings_service()
+    cfg = svc.get_vk_channel_price_config()
+    new_val = not bool(cfg.get("links_enabled"))
+    svc.set_vk_channel_price_links_enabled(new_val)
+    await _show_vk_channel_price(callback)
+    await callback.answer("Ссылки " + ("вкл" if new_val else "выкл"))
+    try:
+        from app.services.price_sync_service import get_price_sync_service
+
+        get_price_sync_service().schedule_vk_channel_price_refresh()
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data == "settings_vk_price_clear")
+async def clear_vk_price_binding(callback: CallbackQuery):
+    get_settings_service().clear_vk_channel_price_binding()
+    await _show_vk_channel_price(callback)
+    await callback.answer("Привязка сброшена")
+
+
+@router.callback_query(F.data == "settings_vk_price_refresh")
+async def refresh_vk_price_now(callback: CallbackQuery):
+    await callback.answer("Обновляю…")
+    try:
+        from app.bot.utils.channel_updater import update_availability_message
+
+        ok = await update_availability_message(callback.bot)
+        if ok:
+            await callback.message.answer("✅ Прайс в ТГ-канале обновлён (edit сообщений «Наличие»).")
+        else:
+            await callback.message.answer(
+                "❌ Не удалось обновить. Проверьте TELEGRAM_CHANNEL_ID и "
+                "ID сообщений «Наличие» (11728,11729,…)."
+            )
+    except Exception as exc:
+        await callback.message.answer(f"❌ Ошибка обновления: {exc}")
 
 
 # ===================== Резервное копирование =====================

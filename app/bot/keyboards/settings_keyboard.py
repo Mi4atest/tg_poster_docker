@@ -29,9 +29,22 @@ def get_settings_channels_keyboard() -> InlineKeyboardMarkup:
 def get_settings_reports_keyboard() -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton(text="📊 VK: получатели отчёта", callback_data="settings_edit_report_vk_report_user_ids")],
-        [InlineKeyboardButton(text="🆕 ID сообщений «Наличие»", callback_data="settings_edit_report_availability_message_ids")],
+        [InlineKeyboardButton(text="🆕 ID сообщений «Наличие» (прайс ТГ)", callback_data="settings_edit_report_availability_message_ids")],
         [InlineKeyboardButton(text="♻️ ID сообщений «Список б/у»", callback_data="settings_edit_report_used_products_list_message_ids")],
+        [InlineKeyboardButton(text="📣 Прайс (шаблон / маркеры ТГ)", callback_data="settings_vk_channel_price")],
         [InlineKeyboardButton(text="⬅️ Назад к настройкам", callback_data="settings_root")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_vk_channel_price_keyboard(*, links_enabled: bool = True) -> InlineKeyboardMarkup:
+    link_label = "🔗 Ссылки на Market: вкл" if links_enabled else "🔗 Ссылки на Market: выкл"
+    # Ручное «Обновить сейчас» не нужно: прайс сам edit'ится после смены цены/наличия.
+    buttons = [
+        [InlineKeyboardButton(text="●○ Маркеры прайса (ТГ)", callback_data="settings_vk_price_markers")],
+        [InlineKeyboardButton(text="📋 Загрузить шаблон прайса", callback_data="settings_vk_price_template")],
+        [InlineKeyboardButton(text=link_label, callback_data="settings_vk_price_toggle_links")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="settings_reports")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 

@@ -2452,7 +2452,7 @@ async def new_product_avito_apply(message: Message, state: FSMContext):
 
 @router.callback_query(F.data.startswith("new_product_toggle_avail_"))
 async def new_product_toggle_availability(callback: CallbackQuery, state: FSMContext):
-    """Переключить наличие: available <-> on_order."""
+    """Переключить наличие: available <-> on_order. Прайс в канале — в фоне."""
     pid = callback.data.replace("new_product_toggle_avail_", "")
     try:
         product_id = int(pid)
@@ -2476,11 +2476,8 @@ async def new_product_toggle_availability(callback: CallbackQuery, state: FSMCon
         logger.error("Error updating availability: %s", e)
         await callback.answer("Ошибка обновления наличия", show_alert=True)
         return
-    try:
-        from app.bot.utils.channel_updater import update_availability_message
-        await update_availability_message(callback.bot)
-    except Exception as e:
-        logger.warning("Could not update channel availability message: %s", e)
+
+    # UI сразу — не ждём edit 4 сообщений прайса в канале
     product = await get_product_api(product_id)
     if not product:
         await callback.answer("Ошибка")
@@ -2497,10 +2494,19 @@ async def new_product_toggle_availability(callback: CallbackQuery, state: FSMCon
         reply_markup=get_new_product_detail_keyboard(
             product_id,
             status=product.get("status", "active"),
-            availability_status=product.get("availability_status"),
+            availability_status=product.get("availability_status") or next_val,
             back_data=back_data,
         ),
         parse_mode="HTML",
     )
+
+    # Прайс в ТГ — debounce в фоне, без сообщений об ошибках пользователю
+    try:
+        from app.services.price_sync_service import get_price_sync_service
+
+        get_price_sync_service().start(callback.bot)
+        get_price_sync_service().schedule_availability_list_refresh()
+    except Exception as e:
+        logger.warning("Could not schedule availability/price refresh: %s", e)
 
 

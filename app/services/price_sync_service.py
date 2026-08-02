@@ -59,6 +59,7 @@ class PlatformSyncJob:
     mark_telegram_enabled: bool = True
     refresh_used_list: bool = False
     refresh_availability_list: bool = False
+    refresh_vk_channel_price: bool = False
     status: JobStatus = JobStatus.QUEUED
     platforms: PlatformResult = field(default_factory=PlatformResult)
     attempt: int = 0
@@ -100,6 +101,7 @@ class PriceSyncService:
         self._list_debounce_task: Optional[asyncio.Task] = None
         self._list_debounce_used = False
         self._list_debounce_availability = False
+        self._list_debounce_vk_price = False
 
     def start(self, bot: Bot) -> None:
         self._bot = bot
@@ -141,6 +143,7 @@ class PriceSyncService:
         price_value: int,
         refresh_used_list: bool = True,
         refresh_availability_list: bool = False,
+        refresh_vk_channel_price: bool = False,
     ) -> PlatformSyncJob:
         job = PlatformSyncJob(
             job_id=uuid.uuid4().hex[:10],
@@ -152,6 +155,7 @@ class PriceSyncService:
             price_value=price_value,
             refresh_used_list=refresh_used_list,
             refresh_availability_list=refresh_availability_list,
+            refresh_vk_channel_price=refresh_vk_channel_price,
         )
         return await self._enqueue(bot, job)
 
@@ -165,6 +169,7 @@ class PriceSyncService:
         mark_telegram_enabled: bool = True,
         refresh_used_list: bool = True,
         refresh_availability_list: bool = False,
+        refresh_vk_channel_price: bool = False,
     ) -> PlatformSyncJob:
         job = PlatformSyncJob(
             job_id=uuid.uuid4().hex[:10],
@@ -175,6 +180,7 @@ class PriceSyncService:
             mark_telegram_enabled=mark_telegram_enabled,
             refresh_used_list=refresh_used_list,
             refresh_availability_list=refresh_availability_list,
+            refresh_vk_channel_price=refresh_vk_channel_price,
         )
         return await self._enqueue(bot, job)
 
@@ -208,10 +214,11 @@ class PriceSyncService:
                     dash.error_count += 1
                 job.finished_at = datetime.now(timezone.utc)
                 await self._refresh_dashboard(bot, job.chat_id)
-                if job.refresh_used_list or job.refresh_availability_list:
+                if job.refresh_used_list or job.refresh_availability_list or job.refresh_vk_channel_price:
                     self._schedule_list_refresh(
                         used=job.refresh_used_list,
                         availability=job.refresh_availability_list,
+                        vk_price=job.refresh_vk_channel_price,
                     )
                 self._queue.task_done()
 
@@ -461,37 +468,65 @@ class PriceSyncService:
         else:
             job.status = JobStatus.OK
 
-    def _schedule_list_refresh(self, *, used: bool, availability: bool) -> None:
+    def schedule_vk_channel_price_refresh(self) -> None:
+        """Публичный триггер (маркеры/шаблон) — сейчас ведёт в ТГ-прайс (availability)."""
+        self._schedule_list_refresh(used=False, availability=True, vk_price=False)
+
+    def schedule_availability_list_refresh(self) -> None:
+        self._schedule_list_refresh(used=False, availability=True, vk_price=False)
+
+    def _schedule_list_refresh(
+        self, *, used: bool, availability: bool, vk_price: bool = False
+    ) -> None:
         if used:
             self._list_debounce_used = True
         if availability:
             self._list_debounce_availability = True
+        if vk_price:
+            self._list_debounce_vk_price = True
         if self._list_debounce_task and not self._list_debounce_task.done():
             self._list_debounce_task.cancel()
 
         async def _run() -> None:
             try:
                 await asyncio.sleep(LIST_REFRESH_DEBOUNCE_SEC)
+                # Снимок флагов после паузы. Нельзя чистить их в finally при CancelledError:
+                # отмена старого debounce (повторный toggle) иначе обнуляет флаги нового таска.
+                do_used = self._list_debounce_used
+                do_avail = self._list_debounce_availability
+                do_vk = self._list_debounce_vk_price
+                self._list_debounce_used = False
+                self._list_debounce_availability = False
+                self._list_debounce_vk_price = False
+
                 bot = self._bot
-                if bot is None:
+                if bot is None and not do_vk:
                     return
-                if self._list_debounce_used:
+                if do_used and bot is not None:
                     from app.bot.utils.used_products_channel_updater import (
                         update_used_products_list_in_channel,
                     )
 
                     await update_used_products_list_in_channel(bot)
-                if self._list_debounce_availability:
+                if do_avail and bot is not None:
                     from app.bot.utils.channel_updater import update_availability_message
 
                     await update_availability_message(bot)
+                if do_vk:
+                    from app.workers.vk.channel_price_updater import (
+                        update_vk_channel_price_message,
+                    )
+
+                    ok, detail = await update_vk_channel_price_message()
+                    if ok:
+                        logger.info("Debounced VK channel price refresh: %s", detail)
+                    else:
+                        logger.warning("Debounced VK channel price refresh: %s", detail)
             except asyncio.CancelledError:
+                # Флаги не трогаем — их владеет новый schedule.
                 raise
             except Exception:
                 logger.exception("Debounced list refresh failed")
-            finally:
-                self._list_debounce_used = False
-                self._list_debounce_availability = False
 
         self._list_debounce_task = asyncio.create_task(_run(), name="platform_list_debounce")
 
@@ -602,8 +637,14 @@ def is_used_product_branch(product: dict) -> bool:
 
 
 def is_new_product_branch(product: dict) -> bool:
+    """Товары, попадающие в ТГ-прайс «Наличие» (новые коллекции + custom с кнопкой меню)."""
     coll = (product.get("collection_name") or "").strip()
-    return coll in {"iPhone новые", "Airpods", "Apple Watch", "iPad"}
+    if coll in {"iPhone новые", "Airpods", "Apple Watch", "iPad"}:
+        return True
+    # «Список новых» включает custom с кнопкой — их смена цены тоже должна обновлять прайс.
+    if coll == "custom" and product.get("custom_button_id"):
+        return True
+    return False
 
 
 def format_price_saved_immediate_message(

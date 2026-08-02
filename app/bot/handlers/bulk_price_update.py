@@ -346,6 +346,18 @@ async def _finish_bulk_session(
     if user_id is not None and hasattr(callback.message.bot, "user_data"):
         callback.message.bot.user_data.setdefault(user_id, {})["bulk_price_tag_ids"] = in_stock_changed
 
+    # Гарантированно обновляем ТГ-прайс после пакетного применения (debounce ~20с),
+    # даже если отдельные sync-job'ы ещё в очереди или custom не попал в флаг refresh.
+    if applied > 0 and not cancelled:
+        try:
+            from app.services.price_sync_service import get_price_sync_service
+
+            svc = get_price_sync_service()
+            svc.start(callback.message.bot)
+            svc.schedule_availability_list_refresh()
+        except Exception:
+            logger.exception("Failed to schedule availability list refresh after bulk")
+
     await state.clear()
     await callback.message.answer(
         _summary_text(

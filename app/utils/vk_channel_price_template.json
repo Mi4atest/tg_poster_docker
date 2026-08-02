@@ -1,0 +1,1207 @@
+{
+  "sections": [
+    {
+      "id": "airpods",
+      "title": "🎧 AirPods",
+      "category": "airpods",
+      "slots": [
+        {
+          "label": "AirPods 4",
+          "category": "airpods",
+          "model": "AirPods 4",
+          "memory": null,
+          "color": null,
+          "storage": null,
+          "size": null,
+          "condition": null,
+          "subgroup_title": null
+        },
+        {
+          "label": "AirPods 4 ANC",
+          "category": "airpods",
+          "model": "AirPods 4 ANC",
+          "memory": null,
+          "color": null,
+          "storage": null,
+          "size": null,
+          "condition": null,
+          "subgroup_title": null
+        },
+        {
+          "label": "AirPods Pro 2 (USB-C)",
+          "category": "airpods",
+          "model": "AirPods Pro 2",
+          "memory": null,
+          "color": null,
+          "storage": null,
+          "size": null,
+          "condition": null,
+          "subgroup_title": null
+        },
+        {
+          "label": "AirPods Pro 3",
+          "category": "airpods",
+          "model": "AirPods Pro 3",
+          "memory": null,
+          "color": null,
+          "storage": null,
+          "size": null,
+          "condition": null,
+          "subgroup_title": null
+        },
+        {
+          "label": "AirPods Max 2",
+          "category": "airpods",
+          "model": "AirPods Max 2",
+          "memory": null,
+          "color": null,
+          "storage": null,
+          "size": null,
+          "condition": null,
+          "subgroup_title": null
+        }
+      ]
+    },
+    {
+      "id": "pencil",
+      "title": "✏️ Apple Pencil",
+      "category": "pencil",
+      "slots": [
+        {
+          "label": "Pencil USB-C",
+          "category": "pencil",
+          "model": "Pencil USB-C",
+          "memory": null,
+          "color": null,
+          "storage": null,
+          "size": null,
+          "condition": null,
+          "subgroup_title": null
+        },
+        {
+          "label": "Pencil 2",
+          "category": "pencil",
+          "model": "Pencil 2",
+          "memory": null,
+          "color": null,
+          "storage": null,
+          "size": null,
+          "condition": null,
+          "subgroup_title": null
+        },
+        {
+          "label": "Pencil Pro",
+          "category": "pencil",
+          "model": "Pencil Pro",
+          "memory": null,
+          "color": null,
+          "storage": null,
+          "size": null,
+          "condition": null,
+          "subgroup_title": null
+        }
+      ]
+    },
+    {
+      "id": "airtag",
+      "title": "🗺 AirTag",
+      "category": "airtag",
+      "slots": [
+        {
+          "label": "AirTag",
+          "category": "airtag",
+          "model": "AirTag",
+          "memory": null,
+          "color": null,
+          "storage": null,
+          "size": null,
+          "condition": null,
+          "subgroup_title": null
+        },
+        {
+          "label": "AirTag (4 шт.)",
+          "category": "airtag",
+          "model": "AirTag 4",
+          "memory": null,
+          "color": null,
+          "storage": null,
+          "size": null,
+          "condition": null,
+          "subgroup_title": null
+        }
+      ]
+    },
+    {
+      "id": "watch_se",
+      "title": "⌚️ Apple Watch SE",
+      "category": "watch",
+      "slots": [
+        {
+          "label": "SE2 40 мм, Midnight",
+          "category": "watch",
+          "model": "AW SE 2",
+          "memory": null,
+          "color": "⚫️",
+          "storage": null,
+          "size": "40mm",
+          "condition": null,
+          "subgroup_title": null
+        },
+        {
+          "label": "SE2 44 мм, Midnight",
+          "category": "watch",
+          "model": "AW SE 2",
+          "memory": null,
+          "color": "⚫️",
+          "storage": null,
+          "size": "44mm",
+          "condition": null,
+          "subgroup_title": null
+        },
+        {
+          "label": "SE3 40 мм, Midnight",
+          "category": "watch",
+          "model": "AW SE 3",
+          "memory": null,
+          "color": "⚫️",
+          "storage": null,
+          "size": "40mm",
+          "condition": null,
+          "subgroup_title": null
+        },
+        {
+          "label": "SE3 40 мм, Starlight",
+          "category": "watch",
+          "model": "AW SE 3",
+          "memory": null,
+          "color": "⭐",
+          "storage": null,
+          "size": "40mm",
+          "condition": null,
+          "subgroup_title": null
+        },
+        {
+          "label": "SE3 44 мм, Midnight",
+          "category": "watch",
+          "model": "AW SE 3",
+          "memory": null,
+          "color": "⚫️",
+          "storage": null,
+          "size": "44mm",
+          "condition": null,
+          "subgroup_title": null
+        },
+        {
+          "label": "SE3 44 мм, Starlight",
+          "category": "watch",
+          "model": "AW SE 3",
+          "memory": null,
+          "color": "⭐",
+          "storage": null,
+          "size": "44mm",
+          "condition": null,
+          "subgroup_title": null
+        }
+      ]
+    },
+    {
+      "id": "watch_11",
+      "title": "⌚️ Apple Watch 11",
+      "category": "watch",
+      "slots": [
+        {
+          "label": "42 мм, Black",
+          "category": "watch",
+          "model": "AW 11",
+          "memory": null,
+          "color": "⚫️",
+          "storage": null,
+          "size": "42mm",
+          "condition": null,
+          "subgroup_title": null
+        },
+        {
+          "label": "42 мм, Space Gray",
+          "category": "watch",
+          "model": "AW 11",
+          "memory": null,
+          "color": "🔘",
+          "storage": null,
+          "size": "42mm",
+          "condition": null,
+          "subgroup_title": null
+        },
+        {
+          "label": "42 мм, Rose",
+          "category": "watch",
+          "model": "AW 11",
+          "memory": null,
+          "color": "🌸",
+          "storage": null,
+          "size": "42mm",
+          "condition": null,
+          "subgroup_title": null
+        },
+        {
+          "label": "42 мм, Silver",
+          "category": "watch",
+          "model": "AW 11",
+          "memory": null,
+          "color": "⚪️",
+          "storage": null,
+          "size": "42mm",
+          "condition": null,
+          "subgroup_title": null
+        },
+        {
+          "label": "46 мм, Black",
+          "category": "watch",
+          "model": "AW 11",
+          "memory": null,
+          "color": "⚫️",
+          "storage": null,
+          "size": "46mm",
+          "condition": null,
+          "subgroup_title": null
+        },
+        {
+          "label": "46 мм, Space Gray",
+          "category": "watch",
+          "model": "AW 11",
+          "memory": null,
+          "color": "🔘",
+          "storage": null,
+          "size": "46mm",
+          "condition": null,
+          "subgroup_title": null
+        },
+        {
+          "label": "46 мм, Rose",
+          "category": "watch",
+          "model": "AW 11",
+          "memory": null,
+          "color": "🌸",
+          "storage": null,
+          "size": "46mm",
+          "condition": null,
+          "subgroup_title": null
+        },
+        {
+          "label": "46 мм, Silver",
+          "category": "watch",
+          "model": "AW 11",
+          "memory": null,
+          "color": "⚪️",
+          "storage": null,
+          "size": "46mm",
+          "condition": null,
+          "subgroup_title": null
+        }
+      ]
+    },
+    {
+      "id": "ipad",
+      "title": "📋 iPad",
+      "category": "ipad",
+      "slots": [
+        {
+          "label": "iPad 11 (A16, 2025) 128GB, Blue",
+          "category": "ipad",
+          "model": "iPad 11",
+          "memory": "128",
+          "color": "🔵",
+          "storage": null,
+          "size": null,
+          "condition": null,
+          "subgroup_title": null
+        },
+        {
+          "label": "iPad 11 (A16, 2025) 128GB, White",
+          "category": "ipad",
+          "model": "iPad 11",
+          "memory": "128",
+          "color": "⚪️",
+          "storage": null,
+          "size": null,
+          "condition": null,
+          "subgroup_title": null
+        },
+        {
+          "label": "iPad 11 (A16, 2025) 128GB, Pink",
+          "category": "ipad",
+          "model": "iPad 11",
+          "memory": "128",
+          "color": "🌸",
+          "storage": null,
+          "size": null,
+          "condition": null,
+          "subgroup_title": null
+        },
+        {
+          "label": "iPad 11 (A16, 2025) 128GB, Yellow",
+          "category": "ipad",
+          "model": "iPad 11",
+          "memory": "128",
+          "color": "🟡",
+          "storage": null,
+          "size": null,
+          "condition": null,
+          "subgroup_title": null
+        }
+      ]
+    },
+    {
+      "id": "ipad_air",
+      "title": "📋 iPad Air",
+      "category": "ipad",
+      "slots": [
+        {
+          "label": "iPad Air 11\" M4 (2026) 128GB Wi-Fi, Blue",
+          "category": "ipad",
+          "model": "iPad Air M4",
+          "memory": "128",
+          "color": "🔵",
+          "storage": null,
+          "size": null,
+          "condition": null,
+          "subgroup_title": null
+        },
+        {
+          "label": "iPad Air 11\" M4 (2026) 128GB Wi-Fi, Starlight",
+          "category": "ipad",
+          "model": "iPad Air M4",
+          "memory": "128",
+          "color": "⭐",
+          "storage": null,
+          "size": null,
+          "condition": null,
+          "subgroup_title": null
+        },
+        {
+          "label": "iPad Air 11\" M4 (2026) 128GB Wi-Fi, Purple",
+          "category": "ipad",
+          "model": "iPad Air M4",
+          "memory": "128",
+          "color": "🟣",
+          "storage": null,
+          "size": null,
+          "condition": null,
+          "subgroup_title": null
+        },
+        {
+          "label": "iPad Air 11\" M4 (2026) 128GB Wi-Fi, Gray",
+          "category": "ipad",
+          "model": "iPad Air M4",
+          "memory": "128",
+          "color": "🔘",
+          "storage": null,
+          "size": null,
+          "condition": null,
+          "subgroup_title": null
+        }
+      ]
+    },
+    {
+      "id": "tradein",
+      "title": "🔄 iPhone (обменки)",
+      "category": "tradein",
+      "slots": [
+        {
+          "label": "iPhone 13 Pro 128GB",
+          "category": "tradein",
+          "model": "13 Pro",
+          "memory": "128",
+          "color": null,
+          "storage": null,
+          "size": null,
+          "condition": "tradein",
+          "subgroup_title": null
+        },
+        {
+          "label": "iPhone 14 Pro 128GB eSim",
+          "category": "tradein",
+          "model": "14 Pro",
+          "memory": "128",
+          "color": null,
+          "storage": "esim",
+          "size": null,
+          "condition": "tradein",
+          "subgroup_title": null
+        },
+        {
+          "label": "iPhone 15 128GB",
+          "category": "tradein",
+          "model": "15",
+          "memory": "128",
+          "color": null,
+          "storage": null,
+          "size": null,
+          "condition": "tradein",
+          "subgroup_title": null
+        },
+        {
+          "label": "iPhone 16 256GB",
+          "category": "tradein",
+          "model": "16",
+          "memory": "256",
+          "color": null,
+          "storage": null,
+          "size": null,
+          "condition": "tradein",
+          "subgroup_title": null
+        },
+        {
+          "label": "iPhone 16 Pro 128GB",
+          "category": "tradein",
+          "model": "16 Pro",
+          "memory": "128",
+          "color": null,
+          "storage": null,
+          "size": null,
+          "condition": "tradein",
+          "subgroup_title": null
+        },
+        {
+          "label": "iPhone 16 Pro 256GB eSim",
+          "category": "tradein",
+          "model": "16 Pro",
+          "memory": "256",
+          "color": null,
+          "storage": "esim",
+          "size": null,
+          "condition": "tradein",
+          "subgroup_title": null
+        },
+        {
+          "label": "iPhone 16 Pro Max 256GB eSim",
+          "category": "tradein",
+          "model": "16 Pro Max",
+          "memory": "256",
+          "color": null,
+          "storage": "esim",
+          "size": null,
+          "condition": "tradein",
+          "subgroup_title": null
+        },
+        {
+          "label": "iPhone 17 Pro 256GB eSim",
+          "category": "tradein",
+          "model": "17 Pro",
+          "memory": "256",
+          "color": null,
+          "storage": "esim",
+          "size": null,
+          "condition": "tradein",
+          "subgroup_title": null
+        },
+        {
+          "label": "iPhone 17 Pro 512GB eSim",
+          "category": "tradein",
+          "model": "17 Pro",
+          "memory": "512",
+          "color": null,
+          "storage": "esim",
+          "size": null,
+          "condition": "tradein",
+          "subgroup_title": null
+        },
+        {
+          "label": "iPhone 17 Pro Max 512GB eSim",
+          "category": "tradein",
+          "model": "17 Pro Max",
+          "memory": "512",
+          "color": null,
+          "storage": "esim",
+          "size": null,
+          "condition": "tradein",
+          "subgroup_title": null
+        }
+      ]
+    },
+    {
+      "id": "rfb",
+      "title": "♻️ Восстановленные (RFB)",
+      "category": "rfb",
+      "slots": [
+        {
+          "label": "iPhone 13 Pro 128GB",
+          "category": "rfb",
+          "model": "13 Pro",
+          "memory": "128",
+          "color": null,
+          "storage": null,
+          "size": null,
+          "condition": "rfb",
+          "subgroup_title": null
+        }
+      ]
+    },
+    {
+      "id": "iphone_new",
+      "title": "📱 iPhone (новые)",
+      "category": "iphone",
+      "slots": [
+        {
+          "label": "128GB ⚫️",
+          "category": "iphone",
+          "model": "14",
+          "memory": "128",
+          "color": "⚫️",
+          "storage": "1+1",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 14 Sim+eSim"
+        },
+        {
+          "label": "128GB 🔵",
+          "category": "iphone",
+          "model": "14",
+          "memory": "128",
+          "color": "🔵",
+          "storage": "1+1",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 14 Sim+eSim"
+        },
+        {
+          "label": "128GB 🟡",
+          "category": "iphone",
+          "model": "14",
+          "memory": "128",
+          "color": "🟡",
+          "storage": "1+1",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 14 Sim+eSim"
+        },
+        {
+          "label": "128GB ⚫️",
+          "category": "iphone",
+          "model": "15",
+          "memory": "128",
+          "color": "⚫️",
+          "storage": "1+1",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 15 Sim+eSim"
+        },
+        {
+          "label": "128GB 🔵",
+          "category": "iphone",
+          "model": "15",
+          "memory": "128",
+          "color": "🔵",
+          "storage": "1+1",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 15 Sim+eSim"
+        },
+        {
+          "label": "128GB",
+          "category": "iphone",
+          "model": "15 Plus",
+          "memory": "128",
+          "color": null,
+          "storage": "1+1",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 15 Plus Sim+eSim"
+        },
+        {
+          "label": "128GB ⚫️",
+          "category": "iphone",
+          "model": "16",
+          "memory": "128",
+          "color": "⚫️",
+          "storage": "1+1",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 16 Sim+eSim"
+        },
+        {
+          "label": "128GB ⚪️",
+          "category": "iphone",
+          "model": "16",
+          "memory": "128",
+          "color": "⚪️",
+          "storage": "1+1",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 16 Sim+eSim"
+        },
+        {
+          "label": "128GB 🌸",
+          "category": "iphone",
+          "model": "16",
+          "memory": "128",
+          "color": "🌸",
+          "storage": "1+1",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 16 Sim+eSim"
+        },
+        {
+          "label": "128GB 🟢",
+          "category": "iphone",
+          "model": "16",
+          "memory": "128",
+          "color": "🟢",
+          "storage": "1+1",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 16 Sim+eSim"
+        },
+        {
+          "label": "128GB 🔵",
+          "category": "iphone",
+          "model": "16",
+          "memory": "128",
+          "color": "🔵",
+          "storage": "1+1",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 16 Sim+eSim"
+        },
+        {
+          "label": "256GB",
+          "category": "iphone",
+          "model": "16",
+          "memory": "256",
+          "color": null,
+          "storage": "1+1",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 16 Sim+eSim"
+        },
+        {
+          "label": "128GB",
+          "category": "iphone",
+          "model": "16 Plus",
+          "memory": "128",
+          "color": null,
+          "storage": "1+1",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 16 Plus Sim+eSim"
+        },
+        {
+          "label": "128GB ⚫️",
+          "category": "iphone",
+          "model": "16E",
+          "memory": "128",
+          "color": "⚫️",
+          "storage": "1+1",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 16e Sim+eSim"
+        },
+        {
+          "label": "128GB ⚪️",
+          "category": "iphone",
+          "model": "16E",
+          "memory": "128",
+          "color": "⚪️",
+          "storage": "1+1",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 16e Sim+eSim"
+        },
+        {
+          "label": "256GB ⚫️ eSim",
+          "category": "iphone",
+          "model": "17E",
+          "memory": "256",
+          "color": "⚫️",
+          "storage": "esim",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 17e"
+        },
+        {
+          "label": "256GB ⚪️ eSim",
+          "category": "iphone",
+          "model": "17E",
+          "memory": "256",
+          "color": "⚪️",
+          "storage": "esim",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 17e"
+        },
+        {
+          "label": "256GB 🌸 eSim",
+          "category": "iphone",
+          "model": "17E",
+          "memory": "256",
+          "color": "🌸",
+          "storage": "esim",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 17e"
+        },
+        {
+          "label": "256GB ⚫️ Sim+eSim",
+          "category": "iphone",
+          "model": "17E",
+          "memory": "256",
+          "color": "⚫️",
+          "storage": "1+1",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 17e"
+        },
+        {
+          "label": "256GB ⚪️ Sim+eSim",
+          "category": "iphone",
+          "model": "17E",
+          "memory": "256",
+          "color": "⚪️",
+          "storage": "1+1",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 17e"
+        },
+        {
+          "label": "256GB 🌸 Sim+eSim",
+          "category": "iphone",
+          "model": "17E",
+          "memory": "256",
+          "color": "🌸",
+          "storage": "1+1",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 17e"
+        },
+        {
+          "label": "256GB ⚫️ eSim",
+          "category": "iphone",
+          "model": "17",
+          "memory": "256",
+          "color": "⚫️",
+          "storage": "esim",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 17"
+        },
+        {
+          "label": "256GB ⚪️ eSim",
+          "category": "iphone",
+          "model": "17",
+          "memory": "256",
+          "color": "⚪️",
+          "storage": "esim",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 17"
+        },
+        {
+          "label": "256GB 🔵 eSim",
+          "category": "iphone",
+          "model": "17",
+          "memory": "256",
+          "color": "🔵",
+          "storage": "esim",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 17"
+        },
+        {
+          "label": "256GB 🟢 eSim",
+          "category": "iphone",
+          "model": "17",
+          "memory": "256",
+          "color": "🟢",
+          "storage": "esim",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 17"
+        },
+        {
+          "label": "256GB 🟣 eSim",
+          "category": "iphone",
+          "model": "17",
+          "memory": "256",
+          "color": "🟣",
+          "storage": "esim",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 17"
+        },
+        {
+          "label": "256GB ⚫️ Sim+eSim",
+          "category": "iphone",
+          "model": "17",
+          "memory": "256",
+          "color": "⚫️",
+          "storage": "1+1",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 17"
+        },
+        {
+          "label": "256GB ⚪️ Sim+eSim",
+          "category": "iphone",
+          "model": "17",
+          "memory": "256",
+          "color": "⚪️",
+          "storage": "1+1",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 17"
+        },
+        {
+          "label": "256GB 🔵 Sim+eSim",
+          "category": "iphone",
+          "model": "17",
+          "memory": "256",
+          "color": "🔵",
+          "storage": "1+1",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 17"
+        },
+        {
+          "label": "256GB 🟢 Sim+eSim",
+          "category": "iphone",
+          "model": "17",
+          "memory": "256",
+          "color": "🟢",
+          "storage": "1+1",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 17"
+        },
+        {
+          "label": "256GB 🟣 Sim+eSim",
+          "category": "iphone",
+          "model": "17",
+          "memory": "256",
+          "color": "🟣",
+          "storage": "1+1",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 17"
+        },
+        {
+          "label": "256GB ⚫️ eSim",
+          "category": "iphone",
+          "model": "Air",
+          "memory": "256",
+          "color": "⚫️",
+          "storage": "esim",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone Air"
+        },
+        {
+          "label": "256GB ⚪️ eSim",
+          "category": "iphone",
+          "model": "Air",
+          "memory": "256",
+          "color": "⚪️",
+          "storage": "esim",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone Air"
+        },
+        {
+          "label": "256GB 🟡 eSim",
+          "category": "iphone",
+          "model": "Air",
+          "memory": "256",
+          "color": "🟡",
+          "storage": "esim",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone Air"
+        },
+        {
+          "label": "256GB 🔵 eSim",
+          "category": "iphone",
+          "model": "Air",
+          "memory": "256",
+          "color": "🔵",
+          "storage": "esim",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone Air"
+        },
+        {
+          "label": "512GB eSim",
+          "category": "iphone",
+          "model": "Air",
+          "memory": "512",
+          "color": null,
+          "storage": "esim",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone Air"
+        },
+        {
+          "label": "256GB ⚪️ eSim",
+          "category": "iphone",
+          "model": "17 Pro",
+          "memory": "256",
+          "color": "⚪️",
+          "storage": "esim",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 17 Pro"
+        },
+        {
+          "label": "256GB 🔵 eSim",
+          "category": "iphone",
+          "model": "17 Pro",
+          "memory": "256",
+          "color": "🔵",
+          "storage": "esim",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 17 Pro"
+        },
+        {
+          "label": "256GB 🟠 eSim",
+          "category": "iphone",
+          "model": "17 Pro",
+          "memory": "256",
+          "color": "🟠",
+          "storage": "esim",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 17 Pro"
+        },
+        {
+          "label": "256GB ⚪️ Sim+eSim",
+          "category": "iphone",
+          "model": "17 Pro",
+          "memory": "256",
+          "color": "⚪️",
+          "storage": "1+1",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 17 Pro"
+        },
+        {
+          "label": "256GB 🔵 Sim+eSim",
+          "category": "iphone",
+          "model": "17 Pro",
+          "memory": "256",
+          "color": "🔵",
+          "storage": "1+1",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 17 Pro"
+        },
+        {
+          "label": "256GB 🟠 Sim+eSim",
+          "category": "iphone",
+          "model": "17 Pro",
+          "memory": "256",
+          "color": "🟠",
+          "storage": "1+1",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 17 Pro"
+        },
+        {
+          "label": "512GB ⚪️ eSim",
+          "category": "iphone",
+          "model": "17 Pro",
+          "memory": "512",
+          "color": "⚪️",
+          "storage": "esim",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 17 Pro"
+        },
+        {
+          "label": "512GB 🔵 eSim",
+          "category": "iphone",
+          "model": "17 Pro",
+          "memory": "512",
+          "color": "🔵",
+          "storage": "esim",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 17 Pro"
+        },
+        {
+          "label": "512GB 🟠 eSim",
+          "category": "iphone",
+          "model": "17 Pro",
+          "memory": "512",
+          "color": "🟠",
+          "storage": "esim",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 17 Pro"
+        },
+        {
+          "label": "512GB ⚪️ Sim+eSim",
+          "category": "iphone",
+          "model": "17 Pro",
+          "memory": "512",
+          "color": "⚪️",
+          "storage": "1+1",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 17 Pro"
+        },
+        {
+          "label": "512GB 🔵 Sim+eSim",
+          "category": "iphone",
+          "model": "17 Pro",
+          "memory": "512",
+          "color": "🔵",
+          "storage": "1+1",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 17 Pro"
+        },
+        {
+          "label": "512GB 🟠 Sim+eSim",
+          "category": "iphone",
+          "model": "17 Pro",
+          "memory": "512",
+          "color": "🟠",
+          "storage": "1+1",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 17 Pro"
+        },
+        {
+          "label": "256GB ⚪️ eSim",
+          "category": "iphone",
+          "model": "17 Pro Max",
+          "memory": "256",
+          "color": "⚪️",
+          "storage": "esim",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 17 Pro Max"
+        },
+        {
+          "label": "256GB 🔵 eSim",
+          "category": "iphone",
+          "model": "17 Pro Max",
+          "memory": "256",
+          "color": "🔵",
+          "storage": "esim",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 17 Pro Max"
+        },
+        {
+          "label": "256GB 🟠 eSim",
+          "category": "iphone",
+          "model": "17 Pro Max",
+          "memory": "256",
+          "color": "🟠",
+          "storage": "esim",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 17 Pro Max"
+        },
+        {
+          "label": "256GB ⚪️ Sim+eSim",
+          "category": "iphone",
+          "model": "17 Pro Max",
+          "memory": "256",
+          "color": "⚪️",
+          "storage": "1+1",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 17 Pro Max"
+        },
+        {
+          "label": "256GB 🔵 Sim+eSim",
+          "category": "iphone",
+          "model": "17 Pro Max",
+          "memory": "256",
+          "color": "🔵",
+          "storage": "1+1",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 17 Pro Max"
+        },
+        {
+          "label": "256GB 🟠 Sim+eSim",
+          "category": "iphone",
+          "model": "17 Pro Max",
+          "memory": "256",
+          "color": "🟠",
+          "storage": "1+1",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 17 Pro Max"
+        },
+        {
+          "label": "512GB ⚪️ eSim",
+          "category": "iphone",
+          "model": "17 Pro Max",
+          "memory": "512",
+          "color": "⚪️",
+          "storage": "esim",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 17 Pro Max"
+        },
+        {
+          "label": "512GB 🔵 eSim",
+          "category": "iphone",
+          "model": "17 Pro Max",
+          "memory": "512",
+          "color": "🔵",
+          "storage": "esim",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 17 Pro Max"
+        },
+        {
+          "label": "512GB 🟠 eSim",
+          "category": "iphone",
+          "model": "17 Pro Max",
+          "memory": "512",
+          "color": "🟠",
+          "storage": "esim",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 17 Pro Max"
+        },
+        {
+          "label": "512GB ⚪️ Sim+eSim",
+          "category": "iphone",
+          "model": "17 Pro Max",
+          "memory": "512",
+          "color": "⚪️",
+          "storage": "1+1",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 17 Pro Max"
+        },
+        {
+          "label": "512GB 🔵 Sim+eSim",
+          "category": "iphone",
+          "model": "17 Pro Max",
+          "memory": "512",
+          "color": "🔵",
+          "storage": "1+1",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 17 Pro Max"
+        },
+        {
+          "label": "512GB 🟠 Sim+eSim",
+          "category": "iphone",
+          "model": "17 Pro Max",
+          "memory": "512",
+          "color": "🟠",
+          "storage": "1+1",
+          "size": null,
+          "condition": null,
+          "subgroup_title": "iPhone 17 Pro Max"
+        }
+      ]
+    }
+  ]
+}

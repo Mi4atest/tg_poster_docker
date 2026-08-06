@@ -136,6 +136,16 @@ def _kind_params(kind: str) -> dict[str, str]:
     return {f"core{i}": v for i, v in enumerate(_NEW_CORE)}
 
 
+def _public_availability(kind: str, raw: Any) -> Optional[str]:
+    """Для новых: null/пусто → on_order (как кнопка в боте; не путать с «в наличии»)."""
+    val = _nz(raw)
+    if kind == "new":
+        if val in ("available", "on_order"):
+            return val
+        return "on_order"
+    return val
+
+
 def _row_to_public(row: dict, kind: str) -> PublicProduct:
     telegram = _nz(row.get("telegram_link"))
     vk_market = _nz(row.get("vk_product_link"))
@@ -162,7 +172,7 @@ def _row_to_public(row: dict, kind: str) -> PublicProduct:
         collection_name=_nz(row.get("collection_name")),
         kind=kind,  # type: ignore[arg-type]
         status=_nz(row.get("status")) or "active",
-        availability_status=_nz(row.get("availability_status")),
+        availability_status=_public_availability(kind, row.get("availability_status")),
         image_urls=_file_urls(row.get("photos")),
         video_urls=_file_urls(row.get("videos")),
         storage_path=_nz(row.get("storage_path")),

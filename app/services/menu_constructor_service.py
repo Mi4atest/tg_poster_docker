@@ -1304,6 +1304,8 @@ def attach_custom_product(
         collection_name=CUSTOM_COLLECTION,
         custom_button_id=target_button_id,
         status="active",
+        # Как в боте: без явного статуса кнопка показывает «На заказ»
+        availability_status="on_order",
     )
     db.add(product)
     db.commit()

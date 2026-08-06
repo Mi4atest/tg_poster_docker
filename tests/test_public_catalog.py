@@ -5,6 +5,7 @@ from app.api.endpoints.public_catalog import (
     _best_max_href,
     _build_links,
     _file_urls,
+    _public_availability,
     _row_to_public,
 )
 
@@ -79,3 +80,36 @@ def test_row_to_public_collects_all_links():
         instagram=None,
         avito=None,
     ).telegram is None
+
+
+def test_new_null_availability_becomes_on_order():
+    assert _public_availability("new", None) == "on_order"
+    assert _public_availability("new", "") == "on_order"
+    assert _public_availability("new", "available") == "available"
+    assert _public_availability("new", "on_order") == "on_order"
+    assert _public_availability("used", None) is None
+
+    row = {
+        "id": 2,
+        "name": "iPad",
+        "display_label": None,
+        "price": "1",
+        "collection_name": "iPad",
+        "status": "active",
+        "availability_status": None,
+        "photos": [],
+        "videos": [],
+        "storage_path": None,
+        "telegram_link": None,
+        "vk_product_id": None,
+        "vk_product_link": None,
+        "vk_post_link": None,
+        "max_link": None,
+        "max_share_url": None,
+        "instagram_link": None,
+        "avito_url": None,
+        "avito_item_id": None,
+        "created_at": None,
+        "custom_button_id": None,
+    }
+    assert _row_to_public(row, "new").availability_status == "on_order"

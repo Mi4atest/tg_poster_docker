@@ -27,7 +27,7 @@ class PublicProduct(BaseModel):
     collection_name: Optional[str] = None
     kind: Literal["used", "new"]
     status: str
-    availability_status: Optional[str] = None
+    availability_status: Optional[str] = None  # new: available|on_order (null→on_order в API)
     image_urls: list[str] = Field(default_factory=list)
     video_urls: list[str] = Field(default_factory=list)
     storage_path: Optional[str] = None

@@ -132,17 +132,44 @@ def format_for_telegram(text: str, signature_enabled: bool = True) -> str:
     # Добавляем подпись для Telegram
     formatted_text += get_telegram_signature(enabled=signature_enabled)
     
-    # Экранируем специальные символы Markdown V2
+    # Экранируем Markdown V2, сохранив только намеренные парные *...* / _..._
+    # от format_post_text. Старый blanket-unescape всех \* и \_ ломал публикацию
+    # на серийниках (ABC_123) и заголовках (MacBook_Air) — TelegramBadRequest.
     special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+    markers = []
+
+    def _protect(match, open_ch: str, close_ch: str) -> str:
+        markers.append((open_ch, match.group(1), close_ch))
+        return f"\x00M{len(markers) - 1}\x00"
+
+    formatted_text = re.sub(
+        r'\*([^*\n]+)\*',
+        lambda m: _protect(m, '*', '*'),
+        formatted_text,
+    )
+    formatted_text = re.sub(
+        r'_([^_\n]+)_',
+        lambda m: _protect(m, '_', '_'),
+        formatted_text,
+    )
+
     for char in special_chars:
         formatted_text = formatted_text.replace(char, f'\\{char}')
-    
-    # Возвращаем форматирование для жирного и курсива
-    formatted_text = formatted_text.replace('\\*', '*').replace('\\_', '_')
-    
+
+    def _escape_inner(value: str) -> str:
+        for char in special_chars:
+            value = value.replace(char, f'\\{char}')
+        return value
+
+    for index, (open_ch, inner, close_ch) in enumerate(markers):
+        formatted_text = formatted_text.replace(
+            f"\x00M{index}\x00",
+            f"{open_ch}{_escape_inner(inner)}{close_ch}",
+        )
+
     # Восстанавливаем форматирование для ссылок
     formatted_text = re.sub(r'\\\[(.*?)\\\]\\\((.*?)\\\)', r'[\1](\2)', formatted_text)
-    
+
     return formatted_text
 
 def format_for_instagram(text: str) -> str:

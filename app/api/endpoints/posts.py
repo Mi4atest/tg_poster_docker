@@ -181,17 +181,6 @@ def get_posts(skip: int = 0, limit: int = 10000, search: str = None, db: Session
         search_term = f"%{search}%"
         text_query = query.filter(Post.text.ilike(search_term))
 
-        # Отладочный вывод
-        print(f"Searching for text: '{search}' with pattern: '{search_term}'")
-        # Выведем все посты и их тексты для отладки
-        all_posts = db.query(Post).all()
-        for post in all_posts:
-            if search in post.text:
-                print(f"Found match in post {post.id}: '{post.text[:100]}...'")
-            else:
-                print(f"No match in post {post.id}: '{post.text[:50]}...'")
-        print(f"Total posts: {len(all_posts)}")
-
         if is_date_search:
             # Если это похоже на дату, также ищем по дате
             date_query = db.query(Post)

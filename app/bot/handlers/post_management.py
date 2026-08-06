@@ -1903,6 +1903,7 @@ async def process_edit_text(message: Message, state: FSMContext):
     )
 
     # Переходим к состоянию ожидания фотографий
+    await state.set_state(PostEdit.waiting_for_photos)
 
 @router.callback_query(F.data == "delete_copy_message")
 async def delete_copy_message(callback: CallbackQuery, state: FSMContext):

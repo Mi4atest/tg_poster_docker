@@ -3,13 +3,14 @@ import logging
 import asyncio
 import aiohttp
 import requests
+import os
+import time
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
 from app.config.settings import (
     API_HOST,
     API_PORT,
-    VK_UPLOAD_STRICT_MODE,
     VK_WALL_ATTACH_MARKET,
 )
 from app.utils.vk_client import get_community_vk_session, resolved_vk_group_id_int
@@ -23,6 +24,29 @@ from app.db.post_queries import (
 from app.utils.text_formatter import format_for_vk
 
 logger = logging.getLogger(__name__)
+
+
+def _vk_upload_strict_mode() -> bool:
+    try:
+        from app.services.settings_service import get_settings_service
+
+        return get_settings_service().is_vk_upload_strict_mode()
+    except Exception:
+        from app.config.settings import VK_UPLOAD_STRICT_MODE
+
+        return bool(VK_UPLOAD_STRICT_MODE)
+
+
+def _vk_wall_requires_market() -> bool:
+    try:
+        from app.services.settings_service import get_settings_service
+
+        return get_settings_service().is_vk_wall_requires_market()
+    except Exception:
+        from app.config.settings import VK_WALL_REQUIRES_MARKET
+
+        return bool(VK_WALL_REQUIRES_MARKET)
+
 
 class VKPublisher:
     """Class for publishing posts to VK."""
@@ -127,6 +151,34 @@ class VKPublisher:
             if bot:
                 await bot.session.close()
 
+    async def _download_telegram_file_with_retry(self, file_id, attempts: int = 3):
+        """Повторить временно неудачное скачивание файла из Telegram."""
+        for attempt in range(1, attempts + 1):
+            data = await self.download_telegram_file(file_id)
+            if data:
+                return data
+            if attempt < attempts:
+                logger.warning(
+                    "Telegram media download failed (attempt %s/%s), retrying",
+                    attempt,
+                    attempts,
+                )
+                await asyncio.sleep(attempt)
+        return None
+
+    @staticmethod
+    def _is_retryable_upload_error(exc: BaseException) -> bool:
+        code = getattr(exc, "code", None)
+        message = str(exc).lower()
+        return (
+            isinstance(exc, requests.RequestException)
+            or code in {6, 8, 9, 10, 29}
+            or (code == 100 and "photo is undefined" in message)
+            or "timeout" in message
+            or "temporar" in message
+            or "connection" in message
+        )
+
     def _upload_photo_sync(self, temp_file: str):
         """Синхронная загрузка фото на стену VK (вызывать через asyncio.to_thread)."""
         try:
@@ -156,15 +208,34 @@ class VKPublisher:
                 logger.error(f"Error with fallback photo upload: {str(e2)}")
                 upload_server = self.vk.photos.getWallUploadServer(group_id=self.group_id)
                 with open(temp_file, "rb") as f:
-                    response = requests.post(
-                        upload_server["upload_url"], files={"photo": f}
-                    ).json()
+                    upload_response = requests.post(
+                        upload_server["upload_url"],
+                        files={"photo": f},
+                        timeout=(10, 120),
+                    )
+                    upload_response.raise_for_status()
+                    response = upload_response.json()
                 return self.vk.photos.saveWallPhoto(
                     group_id=self.group_id,
                     photo=response["photo"],
                     server=response["server"],
                     hash=response["hash"],
                 )
+
+    async def _upload_photo_with_retry(self, temp_file: str, attempts: int = 3):
+        for attempt in range(1, attempts + 1):
+            try:
+                return await asyncio.to_thread(self._upload_photo_sync, temp_file)
+            except Exception as exc:
+                if attempt >= attempts or not self._is_retryable_upload_error(exc):
+                    raise
+                logger.warning(
+                    "VK wall photo upload failed (attempt %s/%s, code=%s), retrying",
+                    attempt,
+                    attempts,
+                    getattr(exc, "code", None),
+                )
+                await asyncio.sleep(attempt * 2)
 
     def _upload_video_sync(self, temp_file: str, name: str, description: str):
         return self.upload.video(
@@ -173,6 +244,25 @@ class VKPublisher:
             description=description,
             group_id=self.group_id,
         )
+
+    async def _upload_video_with_retry(
+        self, temp_file: str, name: str, description: str, attempts: int = 3
+    ):
+        for attempt in range(1, attempts + 1):
+            try:
+                return await asyncio.to_thread(
+                    self._upload_video_sync, temp_file, name, description
+                )
+            except Exception as exc:
+                if attempt >= attempts or not self._is_retryable_upload_error(exc):
+                    raise
+                logger.warning(
+                    "VK wall video upload failed (attempt %s/%s, code=%s), retrying",
+                    attempt,
+                    attempts,
+                    getattr(exc, "code", None),
+                )
+                await asyncio.sleep(attempt * 2)
 
     def _wall_post_sync(self, text: str, attachments: str):
         return self.vk.wall.post(
@@ -209,9 +299,10 @@ class VKPublisher:
 
             for file_id in post.photos or []:
                 attachments_before = len(photo_attachments)
+                temp_file = None
                 try:
                     # Download photo from Telegram
-                    photo_data = await self.download_telegram_file(file_id)
+                    photo_data = await self._download_telegram_file_with_retry(file_id)
 
                     if not photo_data:
                         logger.error(f"Failed to download photo {file_id}")
@@ -224,9 +315,7 @@ class VKPublisher:
                         f.write(photo_data)
 
                     # Upload photo to VK wall (в отдельном потоке — не блокировать бота)
-                    upload_result = await asyncio.to_thread(
-                        self._upload_photo_sync, temp_file
-                    )
+                    upload_result = await self._upload_photo_with_retry(temp_file)
 
                     # Format attachment string
                     for photo in upload_result:
@@ -238,13 +327,17 @@ class VKPublisher:
                 except Exception as e:
                     logger.error(f"Error uploading photo {file_id}: {str(e)}")
                     failed_photo_ids.append(file_id)
+                finally:
+                    if temp_file and os.path.exists(temp_file):
+                        os.unlink(temp_file)
 
             # Download and upload videos
             video_attachments = []
             for file_id in post.videos or []:
+                temp_file = None
                 try:
                     # Download video from Telegram
-                    video_data = await self.download_telegram_file(file_id)
+                    video_data = await self._download_telegram_file_with_retry(file_id)
 
                     if not video_data:
                         logger.error(f"Failed to download video {file_id}")
@@ -257,8 +350,7 @@ class VKPublisher:
                         f.write(video_data)
 
                     # Upload video to VK
-                    upload_result = await asyncio.to_thread(
-                        self._upload_video_sync,
+                    upload_result = await self._upload_video_with_retry(
                         temp_file,
                         post.name,
                         formatted_text[:200] + "..." if len(formatted_text) > 200 else formatted_text,
@@ -271,8 +363,11 @@ class VKPublisher:
                 except Exception as e:
                     logger.error(f"Error uploading video {file_id}: {str(e)}")
                     failed_video_ids.append(file_id)
+                finally:
+                    if temp_file and os.path.exists(temp_file):
+                        os.unlink(temp_file)
 
-            if VK_UPLOAD_STRICT_MODE and (failed_photo_ids or failed_video_ids):
+            if _vk_upload_strict_mode() and (failed_photo_ids or failed_video_ids):
                 raise RuntimeError(
                     f"VK upload strict mode: failed photos={failed_photo_ids}, videos={failed_video_ids}"
                 )
@@ -287,7 +382,17 @@ class VKPublisher:
 
                 if get_settings_service().is_vk_market_publish_allowed():
                     product_ok = await publish_product_to_vk(post_id)
-                    if product_ok and VK_WALL_ATTACH_MARKET:
+                    if not product_ok:
+                        msg = (
+                            "VK Market publication failed; wall post was not published"
+                        )
+                        if _vk_wall_requires_market():
+                            raise RuntimeError(msg)
+                        logger.error(
+                            "%s (wall-requires-market=off — publishing wall only)",
+                            msg,
+                        )
+                    elif VK_WALL_ATTACH_MARKET:
                         # Свежая сессия: market INSERT мог испортить текущее соединение.
                         try:
                             db.rollback()
@@ -315,9 +420,13 @@ class VKPublisher:
                                 post_id,
                             )
             except Exception as e:
-                # Не блокируем публикацию поста, если товар не опубликовался
                 logger.error(
                     f"Error publishing product before wall post {post_id}: {str(e)}"
+                )
+                if _vk_wall_requires_market():
+                    raise
+                logger.error(
+                    "Continuing wall publish without market (wall-requires-market=off)"
                 )
 
             # Combine all attachments
@@ -374,7 +483,8 @@ class VKPublisher:
 
             log_message = (
                 f"Published to VK (photos {len(photo_attachments)}/{total_photos}, "
-                f"videos {len(video_attachments)}/{total_videos}, strict={VK_UPLOAD_STRICT_MODE})"
+                f"videos {len(video_attachments)}/{total_videos}, "
+                f"strict={_vk_upload_strict_mode()})"
             )
             if failed_photo_ids:
                 log_message += f"; failed_photo_ids={','.join(failed_photo_ids)}"

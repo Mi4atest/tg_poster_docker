@@ -71,6 +71,13 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     },
     "features": {
         "vk_market_enabled": env_settings.VK_MARKET_ENABLED,
+        # Default из .env при первом сиде; дальше — тумблеры в меню Настройки → VK.
+        "vk_upload_strict_mode": bool(
+            getattr(env_settings, "VK_UPLOAD_STRICT_MODE", True)
+        ),
+        "vk_wall_requires_market": bool(
+            getattr(env_settings, "VK_WALL_REQUIRES_MARKET", True)
+        ),
     },
     "channels": {
         "telegram_channel_id": env_settings.TELEGRAM_CHANNEL_ID or "",
@@ -428,6 +435,26 @@ class SettingsService:
 
     def set_vk_market_enabled(self, enabled: bool) -> None:
         self.update({"features": {"vk_market_enabled": bool(enabled)}})
+
+    def is_vk_upload_strict_mode(self) -> bool:
+        """Не публиковать в VK/Market, если не все фото/видео загрузились."""
+        features = self.get_all().get("features", {})
+        if "vk_upload_strict_mode" in features:
+            return bool(features["vk_upload_strict_mode"])
+        return bool(getattr(env_settings, "VK_UPLOAD_STRICT_MODE", True))
+
+    def set_vk_upload_strict_mode(self, enabled: bool) -> None:
+        self.update({"features": {"vk_upload_strict_mode": bool(enabled)}})
+
+    def is_vk_wall_requires_market(self) -> bool:
+        """При включённых Товарах ВК: сбой Market блокирует и ленту."""
+        features = self.get_all().get("features", {})
+        if "vk_wall_requires_market" in features:
+            return bool(features["vk_wall_requires_market"])
+        return bool(getattr(env_settings, "VK_WALL_REQUIRES_MARKET", True))
+
+    def set_vk_wall_requires_market(self, enabled: bool) -> None:
+        self.update({"features": {"vk_wall_requires_market": bool(enabled)}})
 
     def is_telegram_used_catalog_button_enabled(self) -> bool:
         return bool(self.get_all()["signatures"].get("telegram_used_catalog_button_enabled", True))

@@ -181,10 +181,37 @@ async def _render_platform_interval_screen(callback: CallbackQuery, platform: st
     service = get_settings_service()
     enabled = service.is_platform_enabled(platform)
     minutes = service.get_platform_interval_minutes(platform)
-    await callback.message.edit_text(
-        f"⏱ {_platform_label(platform)}\n\nТекущий интервал: {minutes} мин\n"
+    lines = [
+        f"⏱ {_platform_label(platform)}",
+        "",
+        f"Текущий интервал: {minutes} мин",
         f"Статус: {'включено' if enabled else 'выключено'}",
-        reply_markup=get_platform_interval_keyboard(platform, enabled),
+    ]
+    vk_upload_strict = None
+    vk_wall_requires_market = None
+    if platform == "vk":
+        vk_upload_strict = service.is_vk_upload_strict_mode()
+        vk_wall_requires_market = service.is_vk_wall_requires_market()
+        lines.extend(
+            [
+                "",
+                "Политика публикации VK:",
+                "",
+                "• Полное медиа — если выкл, пост/товар уйдёт "
+                "даже при потере 1–2 фото/видео (аварийный режим).",
+                "",
+                "• Лента только с товаром — если выкл, при сбое "
+                "Товаров ВК лента всё равно опубликуется.",
+            ]
+        )
+    await callback.message.edit_text(
+        "\n".join(lines),
+        reply_markup=get_platform_interval_keyboard(
+            platform,
+            enabled,
+            vk_upload_strict=vk_upload_strict,
+            vk_wall_requires_market=vk_wall_requires_market,
+        ),
     )
     await callback.answer()
 
@@ -387,6 +414,20 @@ async def toggle_platform(callback: CallbackQuery):
     enabled = service.is_platform_enabled(platform)
     service.set_platform_enabled(platform, not enabled)
     await _render_platform_interval_screen(callback, platform)
+
+
+@router.callback_query(F.data == "settings_toggle_vk_upload_strict")
+async def toggle_vk_upload_strict(callback: CallbackQuery):
+    service = get_settings_service()
+    service.set_vk_upload_strict_mode(not service.is_vk_upload_strict_mode())
+    await _render_platform_interval_screen(callback, "vk")
+
+
+@router.callback_query(F.data == "settings_toggle_vk_wall_requires_market")
+async def toggle_vk_wall_requires_market(callback: CallbackQuery):
+    service = get_settings_service()
+    service.set_vk_wall_requires_market(not service.is_vk_wall_requires_market())
+    await _render_platform_interval_screen(callback, "vk")
 
 
 @router.callback_query(F.data.startswith("settings_interval_custom_"))

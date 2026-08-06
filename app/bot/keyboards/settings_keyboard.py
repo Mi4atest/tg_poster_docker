@@ -234,7 +234,13 @@ def get_settings_intervals_keyboard(data: dict) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def get_platform_interval_keyboard(platform: str, enabled: bool) -> InlineKeyboardMarkup:
+def get_platform_interval_keyboard(
+    platform: str,
+    enabled: bool,
+    *,
+    vk_upload_strict: bool | None = None,
+    vk_wall_requires_market: bool | None = None,
+) -> InlineKeyboardMarkup:
     labels = {"vk": "VK", "telegram": "Telegram", "instagram": "Instagram", "max": "Max", "avito": "Авито"}
     p_name = labels.get(platform, platform)
     buttons = [
@@ -242,19 +248,57 @@ def get_platform_interval_keyboard(platform: str, enabled: bool) -> InlineKeyboa
             text=(f"🟢 {p_name}: включено" if enabled else f"🔴 {p_name}: выключено"),
             callback_data=f"settings_toggle_platform_{platform}"
         )],
-        [
-            InlineKeyboardButton(text="3", callback_data=f"settings_interval_{platform}_3"),
-            InlineKeyboardButton(text="5", callback_data=f"settings_interval_{platform}_5"),
-            InlineKeyboardButton(text="10", callback_data=f"settings_interval_{platform}_10"),
-        ],
-        [
-            InlineKeyboardButton(text="15", callback_data=f"settings_interval_{platform}_15"),
-            InlineKeyboardButton(text="30", callback_data=f"settings_interval_{platform}_30"),
-            InlineKeyboardButton(text="45", callback_data=f"settings_interval_{platform}_45"),
-        ],
-        [InlineKeyboardButton(text="✏️ Свой интервал", callback_data=f"settings_interval_custom_{platform}")],
-        [InlineKeyboardButton(text="⬅️ Назад к интервалам", callback_data="settings_intervals")],
     ]
+    if platform == "vk":
+        strict_on = True if vk_upload_strict is None else bool(vk_upload_strict)
+        requires_on = (
+            True if vk_wall_requires_market is None else bool(vk_wall_requires_market)
+        )
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    text=(
+                        "🟢 Полное медиа обязательно"
+                        if strict_on
+                        else "🟡 Частичное медиа разрешено"
+                    ),
+                    callback_data="settings_toggle_vk_upload_strict",
+                )
+            ]
+        )
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    text=(
+                        "🟢 Лента только с товаром"
+                        if requires_on
+                        else "🟡 Лента без товара OK"
+                    ),
+                    callback_data="settings_toggle_vk_wall_requires_market",
+                )
+            ]
+        )
+    buttons.extend(
+        [
+            [
+                InlineKeyboardButton(text="3", callback_data=f"settings_interval_{platform}_3"),
+                InlineKeyboardButton(text="5", callback_data=f"settings_interval_{platform}_5"),
+                InlineKeyboardButton(text="10", callback_data=f"settings_interval_{platform}_10"),
+            ],
+            [
+                InlineKeyboardButton(text="15", callback_data=f"settings_interval_{platform}_15"),
+                InlineKeyboardButton(text="30", callback_data=f"settings_interval_{platform}_30"),
+                InlineKeyboardButton(text="45", callback_data=f"settings_interval_{platform}_45"),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="✏️ Свой интервал",
+                    callback_data=f"settings_interval_custom_{platform}",
+                )
+            ],
+            [InlineKeyboardButton(text="⬅️ Назад к интервалам", callback_data="settings_intervals")],
+        ]
+    )
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 

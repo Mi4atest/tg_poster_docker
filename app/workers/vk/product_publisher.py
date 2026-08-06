@@ -6,6 +6,7 @@ import requests
 import time
 import re
 import json
+import os
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Tuple, Any
@@ -19,7 +20,6 @@ from app.config.settings import (
     VK_MARKET_ENABLED,
     VK_MARKET_AUTO_CATEGORY,
     VK_MARKET_AUTO_COLLECTION,
-    VK_UPLOAD_STRICT_MODE,
 )
 from app.db.database import SessionLocal
 from app.db.post_queries import fetch_post, fetch_product_row_by_post_id
@@ -30,6 +30,17 @@ from app.utils.vk_client import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _vk_upload_strict_mode() -> bool:
+    try:
+        from app.services.settings_service import get_settings_service
+
+        return get_settings_service().is_vk_upload_strict_mode()
+    except Exception:
+        from app.config.settings import VK_UPLOAD_STRICT_MODE
+
+        return bool(VK_UPLOAD_STRICT_MODE)
 
 
 class VKProductPublisher:
@@ -156,6 +167,65 @@ class VKProductPublisher:
         finally:
             if bot:
                 await bot.session.close()
+
+    async def _download_telegram_file_with_retry(self, file_id, attempts: int = 3):
+        """Повторить временно неудачное скачивание файла из Telegram."""
+        for attempt in range(1, attempts + 1):
+            data = await self.download_telegram_file(file_id)
+            if data:
+                return data
+            if attempt < attempts:
+                logger.warning(
+                    "Telegram media download failed (attempt %s/%s), retrying",
+                    attempt,
+                    attempts,
+                )
+                await asyncio.sleep(attempt)
+        return None
+
+    @staticmethod
+    def _is_retryable_upload_error(exc: BaseException) -> bool:
+        code = getattr(exc, "code", None)
+        message = str(exc).lower()
+        return (
+            isinstance(exc, requests.RequestException)
+            or code in {6, 8, 9, 10, 29}
+            or (code == 100 and "photo is undefined" in message)
+            or "timeout" in message
+            or "temporar" in message
+            or "connection" in message
+        )
+
+    def _get_market_upload_server_sync(self) -> Dict:
+        params = {"group_id": self.group_id}
+        try:
+            return self.vk.market.getProductPhotoUploadServer(**params)
+        except ApiError as exc:
+            err_code = getattr(exc, "code", None)
+            if err_code is None and isinstance(getattr(exc, "error", None), dict):
+                err_code = exc.error.get("error_code")
+            if err_code == 3:
+                return self.vk.photos.getMarketUploadServer(**params)
+            raise
+
+    @staticmethod
+    def _post_market_photo_sync(upload_url: str, temp_file: str) -> Tuple[int, Dict]:
+        with open(temp_file, "rb") as photo_file:
+            response = requests.post(
+                upload_url,
+                files={"file": photo_file},
+                timeout=(10, 120),
+            )
+        response.raise_for_status()
+        return response.status_code, response.json()
+
+    def _upload_product_video_sync(self, temp_file: str, name: str) -> Dict:
+        return self.upload.video(
+            video_file=temp_file,
+            name=name,
+            description="Product video",
+            group_id=self.group_id,
+        )
 
     def get_market_categories(self) -> Optional[Dict]:
         """
@@ -342,17 +412,16 @@ class VKProductPublisher:
 
         for idx, file_id in enumerate(photos_to_upload):
             uploaded = False
+            temp_file = None
             try:
                 # Скачиваем фото из Telegram
-                photo_data = await self.download_telegram_file(file_id)
+                photo_data = await self._download_telegram_file_with_retry(file_id)
                 if not photo_data:
                     logger.error(f"Failed to download photo {file_id}")
                     failed_file_ids.append(file_id)
                     continue
 
                 # Сохраняем во временный файл
-                import tempfile
-                import os
                 temp_file = f"/tmp/product_{file_id}.jpg"
                 with open(temp_file, "wb") as f:
                     f.write(photo_data)
@@ -397,47 +466,45 @@ class VKProductPublisher:
 
                 # Загружаем фото на сервер ВК для товаров
                 try:
-                    await self._wait_for_api_interval()
+                    for attempt in range(1, 4):
+                        try:
+                            await self._wait_for_api_interval()
+                            upload_server = await asyncio.to_thread(
+                                self._get_market_upload_server_sync
+                            )
+                            _status, upload_data = await asyncio.to_thread(
+                                self._post_market_photo_sync,
+                                upload_server["upload_url"],
+                                temp_file,
+                            )
+                            await self._wait_for_api_interval()
+                            photo_result = await asyncio.to_thread(
+                                self._save_market_uploaded_product_photo, upload_data
+                            )
+                            if not photo_result:
+                                raise RuntimeError(
+                                    "VK Market returned no saved photo metadata"
+                                )
 
-                    # URL загрузки: в актуальном сценарии VK — market.getProductPhotoUploadServer;
-                    # ранее использовался photos.getMarketUploadServer (в новых версиях API может отвечать [3] Unknown method).
-                    # Главная фотография по-прежнему задаётся в market.add через main_photo_id.
-                    upload_server_params = {
-                        'group_id': self.group_id
-                    }
-
-                    try:
-                        upload_server = self.vk.market.getProductPhotoUploadServer(**upload_server_params)
-                    except ApiError as e:
-                        err_code = getattr(e, "code", None)
-                        if err_code is None and isinstance(getattr(e, "error", None), dict):
-                            err_code = e.error.get("error_code")
-                        if err_code == 3:
-                            upload_server = self.vk.photos.getMarketUploadServer(**upload_server_params)
-                        else:
-                            raise
-                    upload_url = upload_server['upload_url']
-
-                    # Загружаем файл на сервер VK
-                    with open(temp_file, 'rb') as f:
-                        files = {'file': f}
-                        upload_response = requests.post(upload_url, files=files)
-                        upload_response.raise_for_status()
-                        upload_data = upload_response.json()
-
-                    await self._wait_for_api_interval()
-                    photo_result = self._save_market_uploaded_product_photo(upload_data)
-
-                    if photo_result and len(photo_result) > 0:
-                        photo_info = photo_result[0]
-                        # Сохраняем и id, и owner_id для каждой фотографии
-                        photo_data_list.append({
-                            'id': photo_info['id'],
-                            'owner_id': photo_info['owner_id']
-                        })
-
-                        logger.info(f"Uploaded product photo {file_id} to VK, got ID {photo_info['id']}")
-                        uploaded = True
+                            photo_info = photo_result[0]
+                            photo_data_list.append({
+                                'id': photo_info['id'],
+                                'owner_id': photo_info['owner_id']
+                            })
+                            logger.info(
+                                f"Uploaded product photo {file_id} to VK, got ID {photo_info['id']}"
+                            )
+                            uploaded = True
+                            break
+                        except Exception as exc:
+                            if attempt >= 3 or not self._is_retryable_upload_error(exc):
+                                raise
+                            logger.warning(
+                                "VK Market photo upload failed (attempt %s/3, code=%s), retrying",
+                                attempt,
+                                getattr(exc, "code", None),
+                            )
+                            await asyncio.sleep(attempt * 2)
 
                     # Удаляем временный файл
                     if os.path.exists(temp_file):
@@ -455,6 +522,9 @@ class VKProductPublisher:
                 logger.error(f"Error processing product photo {file_id}: {str(e)}")
                 failed_file_ids.append(file_id)
                 continue
+            finally:
+                if temp_file and os.path.exists(temp_file):
+                    os.unlink(temp_file)
 
             if not uploaded:
                 failed_file_ids.append(file_id)
@@ -472,48 +542,51 @@ class VKProductPublisher:
         Returns:
             ID загруженного видео или None
         """
+        temp_file = None
         try:
             # Скачиваем видео из Telegram
-            video_data = await self.download_telegram_file(video_file_id)
+            video_data = await self._download_telegram_file_with_retry(video_file_id)
             if not video_data:
                 logger.error(f"Failed to download video {video_file_id}")
                 return None
 
             # Сохраняем во временный файл
-            import tempfile
-            import os
             temp_file = f"/tmp/product_video_{video_file_id}.mp4"
             with open(temp_file, "wb") as f:
                 f.write(video_data)
 
             # Загружаем видео на сервер ВК
-            try:
+            for attempt in range(1, 4):
                 await self._wait_for_api_interval()
-                upload_result = self.upload.video(
-                    video_file=temp_file,
-                    name=post.name or "Product video",
-                    description="Product video",
-                    group_id=self.group_id
-                )
-
-                video_id = upload_result.get('video_id')
-                if video_id:
-                    logger.info(f"Uploaded product video {video_file_id} to VK, got ID {video_id}")
-
-                # Удаляем временный файл
-                if os.path.exists(temp_file):
-                    os.unlink(temp_file)
-
-                return video_id
-            except Exception as e:
-                logger.error(f"Error uploading product video {video_file_id}: {str(e)}")
-                if os.path.exists(temp_file):
-                    os.unlink(temp_file)
-                return None
+                try:
+                    upload_result = await asyncio.to_thread(
+                        self._upload_product_video_sync,
+                        temp_file,
+                        post.name or "Product video",
+                    )
+                    video_id = upload_result.get('video_id')
+                    if not video_id:
+                        raise RuntimeError("VK Market returned no video_id")
+                    logger.info(
+                        f"Uploaded product video {video_file_id} to VK, got ID {video_id}"
+                    )
+                    return video_id
+                except Exception as exc:
+                    if attempt >= 3 or not self._is_retryable_upload_error(exc):
+                        raise
+                    logger.warning(
+                        "VK Market video upload failed (attempt %s/3, code=%s), retrying",
+                        attempt,
+                        getattr(exc, "code", None),
+                    )
+                    await asyncio.sleep(attempt * 2)
 
         except Exception as e:
             logger.error(f"Error processing product video {video_file_id}: {str(e)}")
             return None
+        finally:
+            if temp_file and os.path.exists(temp_file):
+                os.unlink(temp_file)
 
     async def publish_product(
         self,
@@ -751,7 +824,7 @@ class VKProductPublisher:
                 photo_data_list, failed_photo_ids = await self.upload_product_photos(
                     post_photos, post
                 )
-                if VK_UPLOAD_STRICT_MODE and failed_photo_ids:
+                if _vk_upload_strict_mode() and failed_photo_ids:
                     msg = (
                         f"VK Market upload strict mode: failed_photo_ids={','.join(failed_photo_ids)}"
                     )
@@ -787,6 +860,11 @@ class VKProductPublisher:
             video_id = None
             if post_videos:
                 video_id = await self.upload_product_video(post_videos[0], post)
+                if _vk_upload_strict_mode() and not video_id:
+                    logger.error(
+                        "VK Market upload strict mode: product video upload failed"
+                    )
+                    return False
 
             # Публикуем товар
             result = await self.publish_product(
@@ -848,7 +926,7 @@ class VKProductPublisher:
                     )
                 market_log = (
                     f"Published to VK Market (photos {len(photo_data_list)}/{expected_photos}, "
-                    f"strict={VK_UPLOAD_STRICT_MODE})"
+                    f"strict={_vk_upload_strict_mode()})"
                 )
                 if failed_photo_ids:
                     market_log += f"; failed_photo_ids={','.join(failed_photo_ids)}"

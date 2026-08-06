@@ -149,8 +149,9 @@ TELEGRAM_USED_CATALOG_BUTTON_ENABLED = os.getenv("TELEGRAM_USED_CATALOG_BUTTON_E
 TELEGRAM_USED_CATALOG_URL = (os.getenv("TELEGRAM_USED_CATALOG_URL") or "https://t.me/AppleShop43/12185").strip()
 VK_USED_CATALOG_URL = (os.getenv("VK_USED_CATALOG_URL") or "").strip()
 
-# VK upload: при true публикация падает, если не все фото/видео загрузились
-VK_UPLOAD_STRICT_MODE = os.getenv("VK_UPLOAD_STRICT_MODE", "false").lower() in ("1", "true", "yes")
+# VK upload: неполная публикация медиа запрещена по умолчанию.
+# Аварийный откат: VK_UPLOAD_STRICT_MODE=false — опубликовать то, что удалось загрузить.
+VK_UPLOAD_STRICT_MODE = os.getenv("VK_UPLOAD_STRICT_MODE", "true").lower() in ("1", "true", "yes")
 
 # VK Market settings
 VK_MARKET_ENABLED = os.getenv("VK_MARKET_ENABLED", "true").lower() == "true"
@@ -160,6 +161,14 @@ VK_MARKET_AUTO_COLLECTION = os.getenv("VK_MARKET_AUTO_COLLECTION", "true").lower
 # Прикреплять карточку товара (market-вложение) к посту в ленте VK — даёт кнопку
 # «Смотреть товары». Флаг отката: при false пост публикуется без market-вложения.
 VK_WALL_ATTACH_MARKET = os.getenv("VK_WALL_ATTACH_MARKET", "true").lower() in ("1", "true", "yes")
+
+# Если Товары ВК включены: при true сбой Market блокирует и ленту.
+# Аварийный откат: VK_WALL_REQUIRES_MARKET=false — лента уйдёт без товара.
+VK_WALL_REQUIRES_MARKET = os.getenv("VK_WALL_REQUIRES_MARKET", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+)
 
 # VK Report settings (для отправки отчетов о продажах)
 VK_REPORT_USER_IDS = [int(user_id) for user_id in os.getenv("VK_REPORT_USER_IDS", "").split(",") if user_id]

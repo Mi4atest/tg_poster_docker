@@ -122,3 +122,27 @@ def get_skip_back_keyboard() -> InlineKeyboardMarkup:
         ]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def get_publish_interval_keyboard() -> InlineKeyboardMarkup:
+    """Create the keyboard for choosing a bulk-publish interval."""
+    buttons = [
+        [InlineKeyboardButton(text="🚀 Сразу", callback_data="publish_immediately")],
+        [
+            InlineKeyboardButton(text="10 мин", callback_data="publish_interval_10"),
+            InlineKeyboardButton(text="15 мин", callback_data="publish_interval_15"),
+        ],
+        [
+            InlineKeyboardButton(text="30 мин", callback_data="publish_interval_30"),
+            InlineKeyboardButton(text="45 мин", callback_data="publish_interval_45"),
+        ],
+        [InlineKeyboardButton(text="✏️ Свой интервал", callback_data="publish_custom_interval")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_publish_all")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def get_custom_interval_keyboard() -> InlineKeyboardMarkup:
+    """Create the keyboard shown while entering a custom publish interval."""
+    buttons = [
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_custom_interval")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)

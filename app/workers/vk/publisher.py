@@ -244,7 +244,27 @@ class VKPublisher:
                     logger.error(f"Error uploading video {file_id}: {str(e)}")
 
             # Combine all attachments
-            attachments = ",".join(photo_attachments + video_attachments)
+            attachment_list = photo_attachments + video_attachments
+            attachments = ",".join(attachment_list)
+
+            expected_media = len(post.photos or []) + len(post.videos or [])
+            # Never mark VK publish as success when every attachment was dropped —
+            # that leaves a text-only wall post that will not be retried with media.
+            if expected_media > 0 and not attachment_list:
+                message = (
+                    f"VK publish aborted for post {post_id}: expected "
+                    f"{expected_media} media file(s) but none uploaded"
+                )
+                logger.error(message)
+                log = PublicationLog(
+                    post_id=post.id,
+                    platform="vk",
+                    status="error",
+                    message=message,
+                )
+                db.add(log)
+                db.commit()
+                return False
 
             # Post to VK wall
             self.vk.wall.post(

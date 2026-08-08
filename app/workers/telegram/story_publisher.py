@@ -1,7 +1,7 @@
 import logging
 import asyncio
 from aiogram import Bot
-from aiogram.types import InputMediaPhoto, InputFile
+from aiogram.types import BufferedInputFile
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone
 import io
@@ -23,13 +23,18 @@ class TelegramStoryPublisher:
     async def create_story_image(self, file_id, model_name, price):
         """Create a story image with model name and price overlay."""
         try:
-            # Download the file from Telegram
+            # Download the file from Telegram (aiogram 3 returns BinaryIO)
             file = await self.bot.get_file(file_id)
             file_path = file.file_path
             file_content = await self.bot.download_file(file_path)
+            if file_content is None:
+                raise RuntimeError(f"Empty download for file_id={file_id}")
 
-            # Open the image
-            image = Image.open(io.BytesIO(file_content))
+            if isinstance(file_content, (bytes, bytearray)):
+                image = Image.open(io.BytesIO(file_content))
+            else:
+                file_content.seek(0)
+                image = Image.open(file_content)
 
             # Resize image to story format (9:16)
             width, height = image.size
@@ -126,10 +131,13 @@ class TelegramStoryPublisher:
             if story.post_link:
                 caption += f"\nПодробнее: {story.post_link}"
 
-            # Send story to Telegram channel
+            # Send story to Telegram channel (aiogram 3: use BufferedInputFile)
             message = await self.bot.send_photo(
                 TELEGRAM_CHANNEL_ID,
-                InputFile(story_image_buffer.getvalue()),
+                BufferedInputFile(
+                    story_image_buffer.getvalue(),
+                    filename="story.jpg",
+                ),
                 caption=caption
             )
 

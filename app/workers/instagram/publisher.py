@@ -238,6 +238,7 @@ class InstagramPublisher:
                                         self.client.album_upload(photo_paths, caption)
 
                                     # Затем пробуем загрузить видео отдельно
+                                    video_errors = []
                                     for video_path in video_paths:
                                         try:
                                             logger.info(f"Пробуем загрузить видео отдельно: {video_path}")
@@ -246,6 +247,27 @@ class InstagramPublisher:
                                             logger.info(f"Видео успешно загружено: {video_path}")
                                         except Exception as video_error:
                                             logger.error(f"Ошибка при загрузке видео {video_path}: {str(video_error)}")
+                                            video_errors.append(f"{video_path}: {video_error}")
+
+                                    # Photos may already be live; never mark full success
+                                    # when expected videos failed — otherwise the post
+                                    # leaves the pending queue and media is silently lost.
+                                    if video_errors:
+                                        message = (
+                                            "Частичная публикация в Instagram: фото отправлены, "
+                                            f"но не удалось загрузить видео "
+                                            f"({len(video_errors)}/{len(video_paths)}). "
+                                            + "; ".join(video_errors)
+                                        )
+                                        log = PublicationLog(
+                                            post_id=post_id,
+                                            platform="instagram",
+                                            status="error",
+                                            message=message,
+                                        )
+                                        db.add(log)
+                                        db.commit()
+                                        return False
                                 else:
                                     # Если нет фото, пробуем загрузить первое видео
                                     if video_paths:
@@ -262,15 +284,28 @@ class InstagramPublisher:
                                 self.client.album_upload(valid_paths, caption)
                         except Exception as e:
                             if "Please install moviepy" in str(e) and photo_paths:
-                                # Если ошибка связана с moviepy и есть фотографии, публикуем только фото
-                                logger.warning(f"Ошибка при загрузке видео: {str(e)}. Публикуем только фотографии.")
-
+                                # Photos-only is an incomplete publish when the post had videos.
+                                logger.warning(
+                                    f"Ошибка при загрузке видео: {str(e)}. "
+                                    "Фотографии могут быть опубликованы, полный успех не ставим."
+                                )
                                 if len(photo_paths) == 1:
-                                    # Если одно фото, публикуем как одиночный пост
                                     self.client.photo_upload(photo_paths[0], caption)
                                 else:
-                                    # Если несколько фото, публикуем как карусель
                                     self.client.album_upload(photo_paths, caption)
+
+                                log = PublicationLog(
+                                    post_id=post_id,
+                                    platform="instagram",
+                                    status="error",
+                                    message=(
+                                        "Частичная публикация в Instagram: опубликованы только фото "
+                                        f"(видео недоступно: {e})"
+                                    ),
+                                )
+                                db.add(log)
+                                db.commit()
+                                return False
                             else:
                                 # Если другая ошибка, пробрасываем её дальше
                                 raise

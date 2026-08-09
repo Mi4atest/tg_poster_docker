@@ -114,29 +114,23 @@ class InstagramPublisher:
             media_paths = []
 
             # Загружаем фотографии из Telegram
-            photos = post.photos
-            videos = post.videos
+            photos = post.photos or []
+            videos = post.videos or []
 
             # Если есть фотографии или видео, загружаем их
             if photos or videos:
-                # Загружаем фотографии
+                # Always re-download against current file_ids. Cached photo_N/video_N files
+                # become stale after post media edits (update keeps storage_path + filenames).
                 for i, photo_id in enumerate(photos):
                     photo_path = post_dir / f"photo_{i}.jpg"
-                    if not os.path.exists(photo_path):
-                        # Если файл не существует, скачиваем его
-                        await self._download_telegram_file(photo_id, photo_path)
-
-                    if os.path.exists(photo_path):
+                    downloaded = await self._download_telegram_file(photo_id, photo_path)
+                    if downloaded or os.path.exists(photo_path):
                         media_paths.append(str(photo_path))
 
-                # Загружаем видео
                 for i, video_id in enumerate(videos):
                     video_path = post_dir / f"video_{i}.mp4"
-                    if not os.path.exists(video_path):
-                        # Если файл не существует, скачиваем его
-                        await self._download_telegram_file(video_id, video_path)
-
-                    if os.path.exists(video_path):
+                    downloaded = await self._download_telegram_file(video_id, video_path)
+                    if downloaded or os.path.exists(video_path):
                         media_paths.append(str(video_path))
 
             # Публикуем пост в Instagram

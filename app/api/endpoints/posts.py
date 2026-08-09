@@ -265,10 +265,15 @@ async def update_post(post_id: str, data: dict, db: Session = Depends(get_db)):
         # Обновляем имя поста на основе нового текста
         post.name = generate_post_name(data["text"])
 
+    media_changed = False
     if "photos" in data:
+        if data["photos"] != post.photos:
+            media_changed = True
         post.photos = data["photos"]
 
     if "videos" in data:
+        if data["videos"] != post.videos:
+            media_changed = True
         post.videos = data["videos"]
 
     # Обновляем время изменения
@@ -283,6 +288,17 @@ async def update_post(post_id: str, data: dict, db: Session = Depends(get_db)):
         # Проверяем существование директории и создаем её при необходимости
         post_dir = MEDIA_DIR / post.storage_path
         os.makedirs(post_dir, exist_ok=True)
+
+        # Invalidate cached Telegram downloads so Instagram republish uses new file_ids
+        if media_changed and os.path.isdir(post_dir):
+            for name in os.listdir(post_dir):
+                if name.startswith(("photo_", "video_")) and name.endswith(
+                    (".jpg", ".jpeg", ".png", ".mp4", ".mov")
+                ):
+                    try:
+                        os.remove(post_dir / name)
+                    except OSError as e:
+                        print(f"Failed to remove stale media cache {name}: {e}")
         
         # Обновляем текстовый файл
         with open(post_dir / "text.txt", "w", encoding="utf-8") as f:

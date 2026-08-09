@@ -326,22 +326,27 @@ async def publish_posts_with_interval(pending_post_ids, interval_minutes, messag
                 else:
                     status_message = await safe_edit_message(message, status_text)
                 
-                # Публикуем в VK с учетом состояния подписи
-                vk_result = await publish_post_api(
-                    post_id,
-                    "vk",
-                    signature_enabled=get_signature_state(bot),
-                )
+                # Only publish to platforms that still need it. Pending posts may already
+                # be published on some platforms; republishing would create duplicates.
+                vk_result = True
+                if not post.get("is_published_vk"):
+                    vk_result = await publish_post_api(
+                        post_id,
+                        "vk",
+                        signature_enabled=get_signature_state(bot),
+                    )
 
-                # Публикуем в Telegram с учетом состояния подписи
-                tg_result = await publish_post_api(
-                    post_id,
-                    "telegram",
-                    signature_enabled=get_signature_state(bot),
-                )
+                tg_result = True
+                if not post.get("is_published_telegram"):
+                    tg_result = await publish_post_api(
+                        post_id,
+                        "telegram",
+                        signature_enabled=get_signature_state(bot),
+                    )
 
-                # Публикуем в Instagram
-                ig_result = await publish_post_api(post_id, "instagram")
+                ig_result = True
+                if not post.get("is_published_instagram"):
+                    ig_result = await publish_post_api(post_id, "instagram")
                 
                 # Формируем результат для этого поста
                 post_result = []

@@ -20,6 +20,24 @@ class PostCreation(StatesGroup):
     waiting_for_videos = State()
     confirmation = State()
 
+def merge_photos_for_skip(photos, temp_photos):
+    """Merge media-group temp_photos with single-photo uploads without wiping either."""
+    photos = list(photos or [])
+    temp_photos = list(temp_photos or [])
+    if not temp_photos:
+        return photos
+
+    merged = []
+    for photo in temp_photos:
+        file_id = photo.get("file_id") if isinstance(photo, dict) else photo
+        if file_id and file_id not in merged:
+            merged.append(file_id)
+    for file_id in photos:
+        if file_id and file_id not in merged:
+            merged.append(file_id)
+    return merged
+
+
 # API client function
 async def delete_previous_messages(message, state):
     """Delete previous bot messages to keep the interface clean."""
@@ -301,23 +319,6 @@ async def process_text_with_video(message: Message, state: FSMContext):
     # Move to photos state to allow adding photos
     await state.set_state(PostCreation.waiting_for_photos)
 
-@router.callback_query(PostCreation.waiting_for_photos, F.data == "skip")
-async def skip_photos(callback: CallbackQuery, state: FSMContext):
-    """Skip adding photos."""
-    await callback.message.edit_text(
-        "📹 Теперь отправьте видео для поста (до 50 МБ, формат .mov).\n\n"
-        "Отправляйте по одному видео за раз.",
-        reply_markup=get_skip_back_keyboard()
-    )
-
-    # Initialize empty videos list
-    await state.update_data(videos=[])
-
-    # Move to next state
-    await state.set_state(PostCreation.waiting_for_videos)
-
-    await callback.answer()
-
 @router.callback_query(PostCreation.waiting_for_photos, F.data == "back")
 async def back_to_text(callback: CallbackQuery, state: FSMContext):
     """Go back to entering text."""
@@ -523,46 +524,35 @@ async def process_photo(message: Message, state: FSMContext):
 
 @router.callback_query(PostCreation.waiting_for_photos, F.data == "skip")
 async def skip_photos(callback: CallbackQuery, state: FSMContext):
-    """Skip adding photos and proceed to creating post."""
-    # Get current data
+    """Skip adding photos and proceed to videos (or create post if videos already present)."""
     data = await state.get_data()
     temp_photos = data.get("temp_photos", [])
-    videos = data.get("videos", [])
+    photos = merge_photos_for_skip(data.get("photos", []), temp_photos)
+    videos = list(data.get("videos", []) or [])
 
-    # Если есть временные фотографии, сохраняем их в основное хранилище
+    # Media-group uploads are staged in temp_photos; merge them before create/next step.
+    # Do not wipe single-photo uploads that already live in `photos`.
     if temp_photos:
-        photos = [photo["file_id"] for photo in temp_photos]
-        await state.update_data(photos=photos)
-    else:
-        # If no photos were added, initialize empty list
-        await state.update_data(photos=[])
+        await state.update_data(photos=photos, temp_photos=[])
 
-    # Получаем количество загруженных фотографий и видео
-    photos = data.get("photos", [])
-
-    # Формируем сообщение с информацией о загруженных медиа
     media_info = ""
     if photos:
         media_info += f"📷 Фото: {len(photos)}\n"
     if videos:
         media_info += f"📹 Видео: {len(videos)}\n"
 
-    # Если уже есть видео, переходим сразу к созданию поста
+    # If videos were already added during the photo step, create the post now.
     if videos:
-        # Формируем сообщение с информацией о загруженных медиа
         await callback.message.edit_text(
             f"⏳ Создаю пост...\n\n{media_info}"
         )
 
-        # Получаем текст поста
         text = data.get("text", "")
 
-        # Создаем пост
         try:
             post = await create_post_api(text, photos, videos)
 
             if post:
-                # Format success message
                 photo_count = len(photos)
                 video_count = len(videos)
                 post_name = post.get("name", "")
@@ -578,7 +568,6 @@ async def skip_photos(callback: CallbackQuery, state: FSMContext):
 
                 success_text += "\nПост добавлен в список отложенных. Теперь вы можете опубликовать его в социальных сетях."
 
-                # Create keyboard for post actions
                 buttons = [
                     [InlineKeyboardButton(text="📋 Перейти к отложенным постам", callback_data="pending_posts")],
                     [InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")]
@@ -597,11 +586,8 @@ async def skip_photos(callback: CallbackQuery, state: FSMContext):
                 reply_markup=get_main_keyboard()
             )
 
-        # Reset state
         await state.clear()
     else:
-        # Если видео нет, переходим к добавлению видео
-        # Отправляем сообщение о переходе к добавлению видео с информацией о загруженных фото
         await callback.message.edit_text(
             f"{media_info}\n"
             "📹 Отправьте видео для поста (от 1 до 5 шт).\n"
@@ -609,7 +595,6 @@ async def skip_photos(callback: CallbackQuery, state: FSMContext):
             reply_markup=get_skip_back_keyboard()
         )
 
-        # Переходим к добавлению видео
         await state.set_state(PostCreation.waiting_for_videos)
 
     await callback.answer()

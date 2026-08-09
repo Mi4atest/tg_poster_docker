@@ -2,12 +2,14 @@ import logging
 import os
 import ssl
 import asyncio
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Tuple
+from urllib.parse import urlparse
 
 import aiohttp
 
-from app.config.settings import MEDIA_DIR
+from app.config.settings import APP_LOG_DIR, MEDIA_DIR
 from app.db.database import SessionLocal
 from app.db.post_queries import (
     fetch_post,
@@ -23,11 +25,51 @@ from app.workers.instagram.graph_client import InstagramGraphClient
 
 logger = logging.getLogger(__name__)
 
+_file_handler_added = False
+
+
+def _ensure_app_ig_log_handler() -> None:
+    """Пишет логи модуля в app/logs/instagram_graph.log."""
+    global _file_handler_added
+    if _file_handler_added:
+        return
+    try:
+        APP_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        fh = RotatingFileHandler(
+            APP_LOG_DIR / "instagram_graph.log",
+            maxBytes=2_000_000,
+            backupCount=3,
+            encoding="utf-8",
+        )
+        fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        logger.addHandler(fh)
+        logger.setLevel(logging.INFO)
+        _file_handler_added = True
+    except OSError:
+        pass
+
+
+def _redact_url(url: str) -> str:
+    """Убирает секреты из URL для логов (bot token и т.п.)."""
+    try:
+        if "/file/bot" in url:
+            parts = url.split("/file/bot", 1)
+            rest = parts[1]
+            slash = rest.find("/")
+            token_part = rest if slash < 0 else rest[:slash]
+            path_part = "" if slash < 0 else rest[slash:]
+            return f"{parts[0]}/file/bot***{token_part[-4:]}{path_part}"
+        parsed = urlparse(url)
+        return f"{parsed.scheme}://{parsed.netloc}{parsed.path[:80]}"
+    except Exception:
+        return "<bad-url>"
+
 
 class InstagramGraphPublisher:
     """Публикация постов через официальный Instagram Graph API."""
 
     def __init__(self) -> None:
+        _ensure_app_ig_log_handler()
         self.token_manager = InstagramGraphTokenManager()
         self.access_token = self.token_manager.get_access_token()
         self.ig_user_id = self.token_manager.get_ig_user_id()
@@ -37,7 +79,9 @@ class InstagramGraphPublisher:
         self.vk_api_version = os.getenv("VK_API_VERSION", "5.199")
         self._last_graph_error: Optional[str] = None
         self._last_graph_error_code: Optional[int] = None
+        self._last_graph_error_subcode: Optional[int] = None
         self._last_published_media_id: Optional[str] = None
+        self._uri_reject_seen: bool = False
 
     @property
     def enabled(self) -> bool:
@@ -75,13 +119,37 @@ class InstagramGraphPublisher:
 
             self.access_token = self.token_manager.get_access_token()
 
-            media_urls = await self._prepare_media_urls(post)
-            if not media_urls:
+            caption = format_for_instagram(post.text)
+            media_candidates = await self._collect_media_candidates(post)
+            if not media_candidates:
                 self._log_error(db, post_id, "Нет доступных медиафайлов для Graph API")
                 return False
 
-            caption = format_for_instagram(post.text)
-            creation_id = await self._create_media_container(media_urls, caption)
+            creation_id = None
+            used_source = None
+            for source_name, media_urls in media_candidates:
+                self._uri_reject_seen = False
+                logger.info(
+                    "IG media try post_id=%s source=%s count=%s",
+                    post_id,
+                    source_name,
+                    len(media_urls),
+                )
+                creation_id = await self._create_media_container(media_urls, caption)
+                if creation_id:
+                    used_source = source_name
+                    break
+                # VK CDN URI часто режет Meta (9004/2207052) — пробуем следующий источник.
+                if self._uri_reject_seen or self._is_skippable_media_error():
+                    logger.warning(
+                        "IG source=%s rejected (code=%s subcode=%s), fallback next",
+                        source_name,
+                        self._last_graph_error_code,
+                        self._last_graph_error_subcode,
+                    )
+                    continue
+                break
+
             if not creation_id:
                 details = self._last_graph_error or "Не удалось создать media container в Graph API"
                 if self._last_graph_error_code == 190:
@@ -89,6 +157,8 @@ class InstagramGraphPublisher:
                     await send_admin_alert(f"Instagram OAuthException (code 190) при создании media: {details}")
                 self._log_error(db, post_id, f"Graph API ошибка: {details}")
                 return False
+
+            logger.info("IG container ok post_id=%s source=%s creation_id=%s", post_id, used_source, creation_id)
 
             if not await self._publish_creation(creation_id):
                 details = self._last_graph_error or "Не удалось опубликовать media container в Graph API"
@@ -168,20 +238,45 @@ class InstagramGraphPublisher:
         insert_publication_log(db, post_id, "instagram", "error", message)
         db.commit()
 
-    async def _prepare_media_urls(self, post: Any) -> List[str]:
-        # Приоритетный источник: уже опубликованный VK-пост.
+    def _is_skippable_media_error(self) -> bool:
+        """Кадр/URI можно пропустить и продолжить (aspect ratio / Meta не скачала URI)."""
+        code = str(self._last_graph_error_code or "")
+        sub = str(self._last_graph_error_subcode or "")
+        if code == "36003":
+            return True
+        # 9004 + 2207052: «URI не соответствует требованиям» (часто VK CDN).
+        if code == "9004" and sub == "2207052":
+            return True
+        msg = (self._last_graph_error or "").lower()
+        if "uri" in msg and ("requirement" in msg or "media type" in msg):
+            return True
+        return False
+
+    async def _collect_media_candidates(self, post: Any) -> List[Tuple[str, List[str]]]:
+        """Список источников медиа по приоритету: VK → Telegram → local."""
+        candidates: List[Tuple[str, List[str]]] = []
+
         vk_photo_urls = await self._get_vk_wall_photo_urls(post)
         if vk_photo_urls:
-            return vk_photo_urls[:6]
+            candidates.append(("vk", vk_photo_urls[:6]))
 
-        # Второй источник: прямые URL файлов Telegram по file_id (если есть токен бота).
         telegram_photo_urls = await self._get_telegram_photo_urls(post)
         if telegram_photo_urls:
-            return telegram_photo_urls[:6]
+            candidates.append(("telegram", telegram_photo_urls[:6]))
 
-        # Fallback: локальные фото, если есть публичная раздача.
+        local_urls = await self._get_local_photo_urls(post)
+        if local_urls:
+            candidates.append(("local", local_urls[:6]))
+
+        return candidates
+
+    async def _prepare_media_urls(self, post: Any) -> List[str]:
+        candidates = await self._collect_media_candidates(post)
+        return candidates[0][1] if candidates else []
+
+    async def _get_local_photo_urls(self, post: Any) -> List[str]:
         if not self.media_base_url:
-            logger.warning("MEDIA_BASE_URL не задан и VK-фото недоступны")
+            logger.warning("MEDIA_BASE_URL не задан и локальные фото недоступны")
             return []
 
         post_dir = MEDIA_DIR / post.storage_path
@@ -240,9 +335,17 @@ class InstagramGraphPublisher:
                     }
                 )
                 if not child_id:
-                    # Частый кейс Graph API: часть фото не проходит по aspect ratio (code 36003).
-                    # Пропускаем только проблемный кадр и продолжаем собирать карусель.
-                    if str(self._last_graph_error_code) == "36003":
+                    # 36003 (aspect) и 9004/2207052 (URI VK CDN): пропускаем кадр.
+                    if self._is_skippable_media_error():
+                        if str(self._last_graph_error_code) == "9004":
+                            self._uri_reject_seen = True
+                        logger.warning(
+                            "IG skip frame idx=%s code=%s subcode=%s url=%s",
+                            idx,
+                            self._last_graph_error_code,
+                            self._last_graph_error_subcode,
+                            _redact_url(photo_url),
+                        )
                         continue
                     return None
                 children.append(child_id)
@@ -261,6 +364,9 @@ class InstagramGraphPublisher:
                 # Если после отбраковки остался один валидный кадр, публикуем одиночным постом.
                 return await self._create_container({"image_url": valid_photo_urls[0], "caption": caption})
 
+            # Все кадры отброшены — даём шанс fallback на другой источник.
+            if self._uri_reject_seen:
+                return None
             return None
 
         if photos and videos:
@@ -268,7 +374,11 @@ class InstagramGraphPublisher:
             return await self._create_container({"image_url": photos[0], "caption": caption})
 
         if photos:
-            return await self._create_container({"image_url": photos[0], "caption": caption})
+            child_id = await self._create_container({"image_url": photos[0], "caption": caption})
+            if not child_id and self._is_skippable_media_error():
+                if str(self._last_graph_error_code) == "9004":
+                    self._uri_reject_seen = True
+            return child_id
 
         return None
 
@@ -304,14 +414,6 @@ class InstagramGraphPublisher:
 
         post_item = items[0]
         attachments = post_item.get("attachments", [])
-        copy_history = post_item.get("copy_history", []) or []
-        copy_attachments_total = 0
-        copy_attachment_types: List[str] = []
-        if copy_history:
-            first_copy = copy_history[0] or {}
-            copy_attachments = first_copy.get("attachments", []) or []
-            copy_attachments_total = len(copy_attachments)
-            copy_attachment_types = [a.get("type") for a in copy_attachments[:10]]
         photo_urls: List[str] = []
         for att in attachments:
             if att.get("type") != "photo":
@@ -350,8 +452,15 @@ class InstagramGraphPublisher:
                 data = await response.json(content_type=None)
                 if response.status >= 400:
                     graph_error = (data or {}).get("error", {})
-                    self._last_graph_error = graph_error.get("message", str(data))
+                    self._last_graph_error = graph_error.get("message") or graph_error.get(
+                        "error_user_msg"
+                    ) or str(data)
                     self._last_graph_error_code = graph_error.get("code")
+                    self._last_graph_error_subcode = graph_error.get("error_subcode")
+                    # Prefer user-facing URI message when present.
+                    user_msg = graph_error.get("error_user_msg")
+                    if user_msg:
+                        self._last_graph_error = f"{self._last_graph_error} | {user_msg}"
                     logger.error(f"Graph API media error ({response.status}): {data}")
                     return None
                 return data.get("id")

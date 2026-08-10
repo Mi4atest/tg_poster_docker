@@ -11,6 +11,28 @@ from app.utils.text_extractor import extract_model_and_price
 
 router = APIRouter()
 
+
+def apply_post_snapshot_to_story(story, media_file_id, model_name, price) -> bool:
+    """Refresh story fields from the live post.
+
+    Returns True when a previously published story's content changed and
+    ``is_published`` was cleared so a republish is required.
+    """
+    changed = (
+        story.media_file_id != media_file_id
+        or story.model_name != model_name
+        or story.price != price
+    )
+    story.model_name = model_name
+    story.price = price
+    story.media_file_id = media_file_id
+    if changed and story.is_published:
+        story.is_published = False
+        story.published_at = None
+        return True
+    return False
+
+
 @router.post("/{post_id}/platform/{platform}", response_model=StorySchema, status_code=status.HTTP_201_CREATED)
 def create_story(post_id: str, platform: str, db: Session = Depends(get_db)):
     """Create a new story for a post."""
@@ -23,21 +45,25 @@ def create_story(post_id: str, platform: str, db: Session = Depends(get_db)):
     if post is None:
         raise HTTPException(status_code=404, detail="Post not found")
     
+    # Extract current model/price/media from the post (must stay in sync after edits)
+    model_name, price = extract_model_and_price(post.text)
+    media_file_id = post.photos[0] if post.photos else None
+
     # Check if story already exists for this post and platform
     existing_story = db.query(Story).filter(
         Story.post_id == post_id,
         Story.platform == platform
     ).first()
-    
+
     if existing_story:
+        # Refresh snapshot fields from the live post. Otherwise a failed publish
+        # (or a successful one followed by a post edit) reuses stale media/price
+        # and the bot still reports success.
+        apply_post_snapshot_to_story(existing_story, media_file_id, model_name, price)
+        db.commit()
+        db.refresh(existing_story)
         return existing_story
-    
-    # Extract model name and price from post text
-    model_name, price = extract_model_and_price(post.text)
-    
-    # Get first photo as media file
-    media_file_id = post.photos[0] if post.photos else None
-    
+
     # Create post link based on platform
     post_link = None
     if platform == "vk" and post.is_published_vk:
@@ -49,7 +75,7 @@ def create_story(post_id: str, platform: str, db: Session = Depends(get_db)):
     elif platform == "instagram" and post.is_published_instagram:
         # Instagram post link would be set after publishing
         pass
-    
+
     # Create story object
     db_story = Story(
         post_id=post_id,
@@ -59,12 +85,12 @@ def create_story(post_id: str, platform: str, db: Session = Depends(get_db)):
         media_file_id=media_file_id,
         post_link=post_link
     )
-    
+
     # Save story to database
     db.add(db_story)
     db.commit()
     db.refresh(db_story)
-    
+
     return db_story
 
 @router.get("/", response_model=StoryList)

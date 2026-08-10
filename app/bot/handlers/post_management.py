@@ -42,6 +42,15 @@ class PublishInterval(StatesGroup):
 router = Router()
 
 
+def is_post_fully_published(post: dict) -> bool:
+    """True when the post is published on VK, Telegram, and Instagram."""
+    return bool(
+        post.get("is_published_vk")
+        and post.get("is_published_telegram")
+        and post.get("is_published_instagram")
+    )
+
+
 def get_signature_state(bot) -> bool:
     """Возвращает текущее состояние переключателя подписи."""
     return getattr(bot, "signature_enabled", True)
@@ -110,11 +119,11 @@ async def get_posts_api(is_archived=False, search_query=None):
 
                         # Filter posts based on archive status
                         if is_archived:
-                            # Consider a post archived if it's published to all platforms
-                            filtered_posts = [p for p in posts if p.get("is_published_vk") and p.get("is_published_telegram")]
+                            # Archived only when published on every platform (VK + TG + IG)
+                            filtered_posts = [p for p in posts if is_post_fully_published(p)]
                         else:
-                            # Pending posts are those not published to at least one platform
-                            filtered_posts = [p for p in posts if not (p.get("is_published_vk") and p.get("is_published_telegram"))]
+                            # Pending = missing at least one platform (including Instagram-only gaps)
+                            filtered_posts = [p for p in posts if not is_post_fully_published(p)]
 
                         print(f"Filtered to {len(filtered_posts)} posts (is_archived={is_archived})")
                         return filtered_posts
@@ -1903,6 +1912,9 @@ async def process_edit_text(message: Message, state: FSMContext):
     )
 
     # Переходим к состоянию ожидания фотографий
+    # Without this, photo handlers / manage_* callbacks never match and new
+    # photos sent after a text edit are silently dropped.
+    await state.set_state(PostEdit.waiting_for_photos)
 
 @router.callback_query(F.data == "delete_copy_message")
 async def delete_copy_message(callback: CallbackQuery, state: FSMContext):

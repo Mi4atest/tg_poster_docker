@@ -89,9 +89,29 @@ class TelegramPublisher:
                         for file_id in videos[1:]:
                             media.append(InputMediaVideo(media=file_id))
 
-                # Send media group in batches of 10 (Telegram limit)
+                # sendMediaGroup requires 2-10 items; a single photo/video must use
+                # send_photo / send_video or Telegram rejects with HTTP 400.
                 message_id = None
-                if len(media) > 0:
+                if len(media) == 1:
+                    item = media[0]
+                    logger.info("Sending single media item (not a media group)")
+                    if isinstance(item, InputMediaPhoto):
+                        message = await self.bot.send_photo(
+                            TELEGRAM_CHANNEL_ID,
+                            item.media,
+                            caption=item.caption,
+                            parse_mode=item.parse_mode,
+                        )
+                    else:
+                        message = await self.bot.send_video(
+                            TELEGRAM_CHANNEL_ID,
+                            item.media,
+                            caption=item.caption,
+                            parse_mode=item.parse_mode,
+                        )
+                    message_id = message.message_id
+                elif len(media) > 1:
+                    # Send media group in batches of 10 (Telegram limit)
                     first_batch = media[:min(10, len(media))]
                     logger.info(f"Sending first batch of {len(first_batch)} media items")
                     messages = await self.bot.send_media_group(TELEGRAM_CHANNEL_ID, media=first_batch)

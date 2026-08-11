@@ -114,8 +114,9 @@ class InstagramPublisher:
             media_paths = []
 
             # Загружаем фотографии из Telegram
-            photos = post.photos
-            videos = post.videos
+            photos = post.photos or []
+            videos = post.videos or []
+            expected_media_count = len(photos) + len(videos)
 
             # Если есть фотографии или видео, загружаем их
             if photos or videos:
@@ -138,6 +139,23 @@ class InstagramPublisher:
 
                     if os.path.exists(video_path):
                         media_paths.append(str(video_path))
+
+            # Incomplete downloads must not publish a subset as full success
+            if expected_media_count > 0 and len(media_paths) < expected_media_count:
+                message = (
+                    "Неполные медиа для Instagram: "
+                    f"доступно {len(media_paths)}/{expected_media_count} файлов"
+                )
+                logger.error(message)
+                log = PublicationLog(
+                    post_id=post_id,
+                    platform="instagram",
+                    status="error",
+                    message=message,
+                )
+                db.add(log)
+                db.commit()
+                return False
 
             # Публикуем пост в Instagram
             try:
@@ -247,16 +265,42 @@ class InstagramPublisher:
                                         except Exception as video_error:
                                             logger.error(f"Ошибка при загрузке видео {video_path}: {str(video_error)}")
                                 else:
-                                    # Если нет фото, пробуем загрузить первое видео
+                                    # Video-only: publish every video (Instagram has no
+                                    # multi-video album). Do not silently drop extras.
                                     if video_paths:
-                                        try:
-                                            logger.info(f"Пост содержит только видео. Пробуем загрузить первое видео.")
-                                            # Пробуем использовать clip_upload вместо video_upload
-                                            self.client.clip_upload(video_paths[0], caption)
-                                            logger.info(f"Видео успешно загружено: {video_paths[0]}")
-                                        except Exception as video_error:
-                                            logger.error(f"Ошибка при загрузке видео {video_paths[0]}: {str(video_error)}")
-                                            raise
+                                        video_errors = []
+                                        logger.info(
+                                            f"Пост содержит только видео "
+                                            f"({len(video_paths)} шт). Публикуем по отдельности."
+                                        )
+                                        for video_path in video_paths:
+                                            try:
+                                                self.client.clip_upload(video_path, caption)
+                                                logger.info(f"Видео успешно загружено: {video_path}")
+                                            except Exception as video_error:
+                                                logger.error(
+                                                    f"Ошибка при загрузке видео {video_path}: "
+                                                    f"{str(video_error)}"
+                                                )
+                                                video_errors.append(
+                                                    f"{os.path.basename(video_path)}: {video_error}"
+                                                )
+                                        if video_errors:
+                                            message = (
+                                                "Частичная публикация в Instagram: "
+                                                f"не удалось загрузить видео "
+                                                f"({len(video_errors)}/{len(video_paths)}). "
+                                                + "; ".join(video_errors)
+                                            )
+                                            log = PublicationLog(
+                                                post_id=post_id,
+                                                platform="instagram",
+                                                status="error",
+                                                message=message,
+                                            )
+                                            db.add(log)
+                                            db.commit()
+                                            return False
                             else:
                                 # Если нет видео, загружаем все файлы как карусель
                                 self.client.album_upload(valid_paths, caption)

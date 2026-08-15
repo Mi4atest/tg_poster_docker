@@ -27,6 +27,10 @@ logger = logging.getLogger(__name__)
 
 _file_handler_added = False
 
+# Лимит карусели Instagram Graph API: до 10 media items (фото/видео).
+# Посты >10 в приложении IG не означают, что Content Publishing API принимает больше.
+IG_CAROUSEL_MAX_ITEMS = 10
+
 
 def _ensure_app_ig_log_handler() -> None:
     """Пишет логи модуля в app/logs/instagram_graph.log."""
@@ -273,15 +277,15 @@ class InstagramGraphPublisher:
 
         vk_photo_urls = await self._get_vk_wall_photo_urls(post)
         if vk_photo_urls:
-            candidates.append(("vk", vk_photo_urls[:6]))
+            candidates.append(("vk", vk_photo_urls[:IG_CAROUSEL_MAX_ITEMS]))
 
         telegram_photo_urls = await self._get_telegram_photo_urls(post)
         if telegram_photo_urls:
-            candidates.append(("telegram", telegram_photo_urls[:6]))
+            candidates.append(("telegram", telegram_photo_urls[:IG_CAROUSEL_MAX_ITEMS]))
 
         local_urls = await self._get_local_photo_urls(post)
         if local_urls:
-            candidates.append(("local", local_urls[:6]))
+            candidates.append(("local", local_urls[:IG_CAROUSEL_MAX_ITEMS]))
 
         return candidates
 
@@ -295,7 +299,7 @@ class InstagramGraphPublisher:
             return []
 
         post_dir = MEDIA_DIR / post.storage_path
-        photos = post.photos or []
+        photos = (post.photos or [])[:IG_CAROUSEL_MAX_ITEMS]
         media_urls: List[str] = []
 
         for i, _ in enumerate(photos):
@@ -304,7 +308,7 @@ class InstagramGraphPublisher:
                 await self._download_telegram_file(photos[i], local_path)
             if local_path.exists():
                 media_urls.append(self._to_public_url(local_path))
-        return media_urls[:6]
+        return media_urls[:IG_CAROUSEL_MAX_ITEMS]
 
     async def _get_telegram_photo_urls(self, post: Any) -> List[str]:
         bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
@@ -316,7 +320,7 @@ class InstagramGraphPublisher:
         urls: List[str] = []
         timeout = aiohttp.ClientTimeout(total=self.timeout_seconds)
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            for file_id in photos[:6]:
+            for file_id in photos[:IG_CAROUSEL_MAX_ITEMS]:
                 file_info_url = f"https://api.telegram.org/bot{bot_token}/getFile?file_id={file_id}"
                 try:
                     async with session.get(file_info_url) as response:
@@ -343,7 +347,7 @@ class InstagramGraphPublisher:
         if len(photos) > 1:
             children = []
             valid_photo_urls = []
-            for idx, photo_url in enumerate(photos[:6]):
+            for idx, photo_url in enumerate(photos[:IG_CAROUSEL_MAX_ITEMS]):
                 child_id = await self._create_container(
                     {
                         "image_url": photo_url,
@@ -358,7 +362,7 @@ class InstagramGraphPublisher:
                         logger.warning(
                             "IG URI reject idx=%s/%s code=%s subcode=%s url=%s — abort source for fallback",
                             idx,
-                            len(photos[:6]),
+                            len(photos[:IG_CAROUSEL_MAX_ITEMS]),
                             self._last_graph_error_code,
                             self._last_graph_error_subcode,
                             _redact_url(photo_url),

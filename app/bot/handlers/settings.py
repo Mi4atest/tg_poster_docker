@@ -710,6 +710,9 @@ async def save_integration_value(message: Message, state: FSMContext):
     if field in SECRET_INTEGRATION_FIELDS:
         service = get_settings_service()
         service.set_secret(field, raw)
+        # Одно поле «Токен VK» должно покрывать и стену, и market.edit.
+        if field == "vk_access_token" and raw:
+            service.set_secret("vk_market_access_token", raw)
         # Убираем устаревшую plaintext-копию токена из integrations —
         # иначе token_manager мог бы читать старый invalid token вместо secret.
         if field == "instagram_graph_access_token":

@@ -8,12 +8,16 @@ from app.services.settings_service import get_settings_service
 
 
 def market_token() -> str:
-    """Токен для market.*: .env -> DB secret -> fallback на community token."""
+    """Токен для market.*: секрет из настроек (БД) -> .env fallback.
+
+    Поле «Токен VK» в боте пишет vk_access_token — его берём первым,
+    иначе свежий токен из UI перекрывается протухшим bootstrap vk_market_access_token.
+    """
     raw = (
-        (VK_MARKET_ACCESS_TOKEN or "").strip()
+        _get_secret("vk_access_token")
         or _get_secret("vk_market_access_token")
+        or (VK_MARKET_ACCESS_TOKEN or "").strip()
         or (VK_ACCESS_TOKEN or "").strip()
-        or _get_secret("vk_access_token")
     )
     while raw.startswith("VK_MARKET_ACCESS_TOKEN="):
         raw = raw.split("=", 1)[1].strip()
@@ -21,8 +25,8 @@ def market_token() -> str:
 
 
 def community_token() -> str:
-    """Токен сообщества: .env -> DB secret."""
-    return (VK_ACCESS_TOKEN or "").strip() or _get_secret("vk_access_token")
+    """Токен сообщества: секрет из настроек (БД) -> .env fallback."""
+    return _get_secret("vk_access_token") or (VK_ACCESS_TOKEN or "").strip()
 
 
 def resolve_vk_group_id() -> str:
@@ -44,14 +48,14 @@ def resolved_vk_group_id_int() -> int:
 
 
 def market_token_source() -> str:
-    if (VK_MARKET_ACCESS_TOKEN or "").strip():
-        return "VK_MARKET_ACCESS_TOKEN"
-    if _get_secret("vk_market_access_token"):
-        return "db.secret.vk_market_access_token"
-    if (VK_ACCESS_TOKEN or "").strip():
-        return "VK_ACCESS_TOKEN"
     if _get_secret("vk_access_token"):
         return "db.secret.vk_access_token"
+    if _get_secret("vk_market_access_token"):
+        return "db.secret.vk_market_access_token"
+    if (VK_MARKET_ACCESS_TOKEN or "").strip():
+        return "VK_MARKET_ACCESS_TOKEN"
+    if (VK_ACCESS_TOKEN or "").strip():
+        return "VK_ACCESS_TOKEN"
     return "missing"
 
 

@@ -598,14 +598,13 @@ async def exchange_instagram_long_lived(callback: CallbackQuery):
         await callback.answer(f"❌ Не удалось обменять token в long-lived: {(err or 'unknown')[:160]}", show_alert=True)
         return
 
-    patch = {
-        "instagram_graph_access_token": new_token,
+    meta = {
         "instagram_graph_token_last_error": "",
         "instagram_graph_token_last_check_at": datetime.now(timezone.utc).isoformat(),
     }
     if new_expires_at:
-        patch["instagram_graph_token_expires_at"] = new_expires_at.isoformat()
-    get_settings_service().update({"integrations": patch})
+        meta["instagram_graph_token_expires_at"] = new_expires_at.isoformat()
+    manager._store_access_token(new_token, meta)
 
     await callback.answer("✅ Long-lived token обновлен")
     await callback.message.edit_text(
@@ -709,7 +708,19 @@ async def save_integration_value(message: Message, state: FSMContext):
     restore_mid = data.get("integration_restore_message_id")
 
     if field in SECRET_INTEGRATION_FIELDS:
-        get_settings_service().set_secret(field, raw)
+        service = get_settings_service()
+        service.set_secret(field, raw)
+        # Убираем устаревшую plaintext-копию токена из integrations —
+        # иначе token_manager мог бы читать старый invalid token вместо secret.
+        if field == "instagram_graph_access_token":
+            service.update(
+                {
+                    "integrations": {
+                        "instagram_graph_access_token": "",
+                        "instagram_graph_token_last_error": "",
+                    }
+                }
+            )
         if field == "avito_client_secret":
             try:
                 from app.integrations.avito.actions import invalidate_token_cache

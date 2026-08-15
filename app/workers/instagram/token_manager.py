@@ -44,15 +44,24 @@ class InstagramGraphTokenManager:
     def _update_integrations(self, patch: dict) -> None:
         self.settings_service.update({"integrations": patch})
 
-    def get_access_token(self) -> str:
-        token_from_settings = (self._get_integrations().get("instagram_graph_access_token") or "").strip()
-        token_from_env = (getattr(env_settings, "INSTAGRAM_GRAPH_ACCESS_TOKEN", "") or "").strip()
+    def _store_access_token(self, token: str, meta: Optional[dict] = None) -> None:
+        """Сохраняет User token в encrypted_secrets и чистит устаревшую копию в integrations."""
+        value = (token or "").strip()
+        self.settings_service.set_secret("instagram_graph_access_token", value)
+        patch = {"instagram_graph_access_token": ""}
+        if meta:
+            patch.update(meta)
+        self._update_integrations(patch)
 
+    def get_access_token(self) -> str:
+        # Приоритет: secret (бот) → integrations (legacy) → .env
+        token_from_secret = (self.settings_service.get_secret("instagram_graph_access_token") or "").strip()
+        if token_from_secret:
+            return token_from_secret
+        token_from_settings = (self._get_integrations().get("instagram_graph_access_token") or "").strip()
         if token_from_settings:
             return token_from_settings
-        if token_from_env:
-            return token_from_env
-        return ""
+        return (getattr(env_settings, "INSTAGRAM_GRAPH_ACCESS_TOKEN", "") or "").strip()
 
     def get_ig_user_id(self) -> str:
         user_id = self._get_integrations().get("instagram_graph_user_id") or ""
@@ -73,6 +82,10 @@ class InstagramGraphTokenManager:
         return (getattr(env_settings, "INSTAGRAM_GRAPH_APP_ID", "") or "").strip()
 
     def get_app_secret(self) -> str:
+        # Приоритет как у access token: secret (бот) → integrations → .env
+        secret = (self.settings_service.get_secret("instagram_graph_app_secret") or "").strip()
+        if secret:
+            return secret
         app_secret = (self._get_integrations().get("instagram_graph_app_secret") or "").strip()
         if app_secret:
             return app_secret
@@ -186,14 +199,13 @@ class InstagramGraphTokenManager:
             # если токен еще валиден для exchange, но нет long-lived в системе.
             ex_ok, ex_error, ex_token, ex_expires_at = await self.exchange_to_long_lived_token(token)
             if ex_ok and ex_token:
-                patch = {
-                    "instagram_graph_access_token": ex_token,
+                meta = {
                     "instagram_graph_token_last_check_at": self._now_iso(),
                     "instagram_graph_token_last_error": "",
                 }
                 if ex_expires_at:
-                    patch["instagram_graph_token_expires_at"] = ex_expires_at.isoformat()
-                self._update_integrations(patch)
+                    meta["instagram_graph_token_expires_at"] = ex_expires_at.isoformat()
+                self._store_access_token(ex_token, meta)
                 return True
 
             self._update_integrations(
@@ -217,14 +229,13 @@ class InstagramGraphTokenManager:
             if days_left < self.refresh_before_days:
                 ok, refresh_error, new_token, new_expires_at = await self.refresh_long_lived_token(token)
                 if ok:
-                    refresh_patch = {
-                        "instagram_graph_access_token": new_token or token,
+                    meta = {
                         "instagram_graph_token_last_error": "",
                         "instagram_graph_token_last_check_at": self._now_iso(),
                     }
                     if new_expires_at:
-                        refresh_patch["instagram_graph_token_expires_at"] = new_expires_at.isoformat()
-                    self._update_integrations(refresh_patch)
+                        meta["instagram_graph_token_expires_at"] = new_expires_at.isoformat()
+                    self._store_access_token(new_token or token, meta)
                     return True
 
                 self._update_integrations(

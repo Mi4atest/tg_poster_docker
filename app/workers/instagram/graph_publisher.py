@@ -82,6 +82,7 @@ class InstagramGraphPublisher:
         self._last_graph_error_subcode: Optional[int] = None
         self._last_published_media_id: Optional[str] = None
         self._uri_reject_seen: bool = False
+        self._last_children_count: int = 0
 
     @property
     def enabled(self) -> bool:
@@ -142,10 +143,11 @@ class InstagramGraphPublisher:
                 # VK CDN URI часто режет Meta (9004/2207052) — пробуем следующий источник.
                 if self._uri_reject_seen or self._is_skippable_media_error():
                     logger.warning(
-                        "IG source=%s rejected (code=%s subcode=%s), fallback next",
+                        "IG source=%s rejected (code=%s subcode=%s uri_reject=%s), fallback next",
                         source_name,
                         self._last_graph_error_code,
                         self._last_graph_error_subcode,
+                        self._uri_reject_seen,
                     )
                     continue
                 break
@@ -158,7 +160,13 @@ class InstagramGraphPublisher:
                 self._log_error(db, post_id, f"Graph API ошибка: {details}")
                 return False
 
-            logger.info("IG container ok post_id=%s source=%s creation_id=%s", post_id, used_source, creation_id)
+            logger.info(
+                "IG container ok post_id=%s source=%s creation_id=%s photos=%s",
+                post_id,
+                used_source,
+                creation_id,
+                self._last_children_count,
+            )
 
             if not await self._publish_creation(creation_id):
                 details = self._last_graph_error or "Не удалось опубликовать media container в Graph API"
@@ -211,7 +219,11 @@ class InstagramGraphPublisher:
                     )
                     db.rollback()
             insert_publication_log(
-                db, post_id, "instagram", "success", "Пост опубликован через Instagram Graph API"
+                db,
+                post_id,
+                "instagram",
+                "success",
+                f"Пост опубликован через Instagram Graph API (source={used_source}, photos={self._last_children_count})",
             )
             db.commit()
             logger.info(f"Пост {post_id} успешно опубликован через Graph API")
@@ -238,19 +250,22 @@ class InstagramGraphPublisher:
         insert_publication_log(db, post_id, "instagram", "error", message)
         db.commit()
 
-    def _is_skippable_media_error(self) -> bool:
-        """Кадр/URI можно пропустить и продолжить (aspect ratio / Meta не скачала URI)."""
+    def _is_uri_reject_error(self) -> bool:
+        """Meta не смогла скачать URI (часто VK CDN) — нужен fallback на другой источник."""
         code = str(self._last_graph_error_code or "")
         sub = str(self._last_graph_error_subcode or "")
-        if code == "36003":
-            return True
-        # 9004 + 2207052: «URI не соответствует требованиям» (часто VK CDN).
         if code == "9004" and sub == "2207052":
             return True
         msg = (self._last_graph_error or "").lower()
-        if "uri" in msg and ("requirement" in msg or "media type" in msg):
-            return True
-        return False
+        return "uri" in msg and ("requirement" in msg or "media type" in msg)
+
+    def _is_aspect_ratio_error(self) -> bool:
+        """Кадр не проходит по aspect ratio — можно пропустить только его."""
+        return str(self._last_graph_error_code or "") == "36003"
+
+    def _is_skippable_media_error(self) -> bool:
+        """Ошибки, при которых имеет смысл пробовать другой источник медиа."""
+        return self._is_uri_reject_error() or self._is_aspect_ratio_error()
 
     async def _collect_media_candidates(self, post: Any) -> List[Tuple[str, List[str]]]:
         """Список источников медиа по приоритету: VK → Telegram → local."""
@@ -322,6 +337,7 @@ class InstagramGraphPublisher:
     async def _create_media_container(self, media_urls: List[str], caption: str) -> Optional[str]:
         photos = [url for url in media_urls if not url.lower().endswith((".mp4", ".mov", ".avi", ".mkv", ".webm"))]
         videos: List[str] = []
+        self._last_children_count = 0
 
         # Компромиссный режим: публикуем только фото (одиночное или карусель).
         if len(photos) > 1:
@@ -335,15 +351,24 @@ class InstagramGraphPublisher:
                     }
                 )
                 if not child_id:
-                    # 36003 (aspect) и 9004/2207052 (URI VK CDN): пропускаем кадр.
-                    if self._is_skippable_media_error():
-                        if str(self._last_graph_error_code) == "9004":
-                            self._uri_reject_seen = True
+                    # URI reject (часто VK CDN): не выкидываем отдельные кадры —
+                    # иначе карусель публикуется неполной. Abort → fallback на Telegram.
+                    if self._is_uri_reject_error():
+                        self._uri_reject_seen = True
                         logger.warning(
-                            "IG skip frame idx=%s code=%s subcode=%s url=%s",
+                            "IG URI reject idx=%s/%s code=%s subcode=%s url=%s — abort source for fallback",
                             idx,
+                            len(photos[:6]),
                             self._last_graph_error_code,
                             self._last_graph_error_subcode,
+                            _redact_url(photo_url),
+                        )
+                        return None
+                    # 36003 (aspect): пропускаем только проблемный кадр.
+                    if self._is_aspect_ratio_error():
+                        logger.warning(
+                            "IG skip frame idx=%s code=36003 (aspect) url=%s",
+                            idx,
                             _redact_url(photo_url),
                         )
                         continue
@@ -351,6 +376,7 @@ class InstagramGraphPublisher:
                 children.append(child_id)
                 valid_photo_urls.append(photo_url)
 
+            self._last_children_count = len(children)
             if len(children) >= 2:
                 return await self._create_container(
                     {
@@ -364,9 +390,6 @@ class InstagramGraphPublisher:
                 # Если после отбраковки остался один валидный кадр, публикуем одиночным постом.
                 return await self._create_container({"image_url": valid_photo_urls[0], "caption": caption})
 
-            # Все кадры отброшены — даём шанс fallback на другой источник.
-            if self._uri_reject_seen:
-                return None
             return None
 
         if photos and videos:
@@ -375,9 +398,10 @@ class InstagramGraphPublisher:
 
         if photos:
             child_id = await self._create_container({"image_url": photos[0], "caption": caption})
-            if not child_id and self._is_skippable_media_error():
-                if str(self._last_graph_error_code) == "9004":
-                    self._uri_reject_seen = True
+            if not child_id and self._is_uri_reject_error():
+                self._uri_reject_seen = True
+            if child_id:
+                self._last_children_count = 1
             return child_id
 
         return None

@@ -886,9 +886,9 @@ class VKProductPublisher:
             from app.db.post_queries import insert_publication_log
 
             vk_product_id = result.get("market_item_id") or result.get("item_id")
-            vk_product_link = (
-                f"https://vk.com/market{self.group_id}?w=product-{self.group_id}_{vk_product_id}"
-            )
+            from app.utils.vk_urls import market_product_url
+
+            vk_product_link = market_product_url(self.group_id, int(vk_product_id))
 
             db = SessionLocal()
             try:

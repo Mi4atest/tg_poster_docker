@@ -418,7 +418,9 @@ class InstagramGraphPublisher:
             logger.warning("VK community token не задан, не можем получить фото из VK")
             return []
 
-        endpoint = "https://api.vk.com/method/wall.getById"
+        from app.utils.vk_urls import api_method_url
+
+        endpoint = api_method_url("wall.getById")
         params = {
             "posts": post.vk_post_id,
             "access_token": token,

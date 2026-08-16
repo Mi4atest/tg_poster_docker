@@ -327,7 +327,9 @@ class VKStoryPublisher:
                             story_data = repost_result['story']
                             vk_story_id = story_data.get('id')
                             story_owner_id = story_data.get('owner_id', self.group_id)
-                            story_link = f"https://vk.com/stories{story_owner_id}_{vk_story_id}"
+                            from app.utils.vk_urls import VK_WEB_ORIGIN
+
+                            story_link = f"{VK_WEB_ORIGIN}/stories{story_owner_id}_{vk_story_id}"
                             
                             logger.info(f"Story created from repost: {story_link}")
                             
@@ -353,7 +355,9 @@ class VKStoryPublisher:
                         story_data = result[0]
                         story_owner_id = story_data.get('owner_id', self.group_id)
                         vk_story_id = story_data.get('id', 'unknown')
-                        story_link = f"https://vk.com/stories{story_owner_id}_{vk_story_id}"
+                        from app.utils.vk_urls import VK_WEB_ORIGIN
+
+                        story_link = f"{VK_WEB_ORIGIN}/stories{story_owner_id}_{vk_story_id}"
                     else:
                         story_link = post.vk_post_link
                     
@@ -575,7 +579,9 @@ class VKStoryPublisher:
                 story_data = save_result[0]
                 owner_id = story_data.get('owner_id', self.group_id)
                 vk_story_id = story_data.get('id', 'unknown')
-                story_link = f"https://vk.com/stories{owner_id}_{vk_story_id}"
+                from app.utils.vk_urls import VK_WEB_ORIGIN
+
+                story_link = f"{VK_WEB_ORIGIN}/stories{owner_id}_{vk_story_id}"
                 logger.info(f"Story published to VK: {story_link}")
 
                 # Проверяем, что история действительно опубликована
@@ -694,7 +700,9 @@ class VKStoryPublisher:
         story_data = save_result[0]
         owner_id = story_data.get('owner_id', self.group_id)
         vk_story_id = story_data.get('id', 'unknown')
-        story_link = f"https://vk.com/stories{owner_id}_{vk_story_id}"
+        from app.utils.vk_urls import VK_WEB_ORIGIN
+
+        story_link = f"{VK_WEB_ORIGIN}/stories{owner_id}_{vk_story_id}"
         logger.info(f"Story published to VK: {story_link}")
         
         return True

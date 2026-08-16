@@ -26,7 +26,7 @@ def parse_vk_channel_message_link(text: str) -> Optional[VkChannelMessageRef]:
     """
     Разбирает ссылку вида:
       https://vk.ru/im/channels/-235526445?cmid=1
-      https://vk.com/im/channels/-235526445?cmid=1
+      https://vk.com/im/channels/-235526445?cmid=1  (legacy, тоже принимается)
     или короткую запись: ``-235526445,1`` / ``-235526445 1``.
     """
     raw = (text or "").strip()

@@ -197,9 +197,11 @@ def fetch_channel_price_products() -> List[dict]:
 
 
 def _market_url(product: dict, group_id: Optional[int] = None) -> Optional[str]:
+    from app.utils.vk_urls import market_product_url, rewrite_vk_com_to_ru
+
     link = (product.get("vk_product_link") or "").strip()
     if link:
-        return link
+        return rewrite_vk_com_to_ru(link)
     vk_id = product.get("vk_product_id")
     if not vk_id:
         return None
@@ -211,7 +213,7 @@ def _market_url(product: dict, group_id: Optional[int] = None) -> Optional[str]:
             gid = resolved_vk_group_id_int()
         except Exception:
             return None
-    return f"https://vk.com/market-{gid}?w=product-{gid}_{int(vk_id)}"
+    return market_product_url(int(gid), int(vk_id))
 
 
 def _format_price_rub(rub: Optional[int], *, prefix_ot: bool = False) -> str:

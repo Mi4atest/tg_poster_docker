@@ -528,7 +528,7 @@ async def mc_add_prod(callback: CallbackQuery, state: FSMContext):
         callback.message,
         "📥 <b>Добавить товар</b>\n\n"
         "Вставьте ссылку на товар ВК. Пример:\n"
-        "<code>vk.com/market-129808251?w=product-129808251_11608836</code>",
+        "<code>vk.ru/market-129808251?w=product-129808251_11608836</code>",
         reply_markup=get_constructor_input_cancel_keyboard(),
         parse_mode="HTML",
         disable_link_preview=True,

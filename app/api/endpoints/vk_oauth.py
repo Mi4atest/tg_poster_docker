@@ -1,4 +1,4 @@
-"""VK ID OAuth 2.1 (PKCE) → VK_MARKET_ACCESS_TOKEN. Legacy oauth.vk.com для Web-приложений не работает."""
+"""VK ID OAuth 2.1 (PKCE) → VK_MARKET_ACCESS_TOKEN. Legacy oauth.vk.ru для Web-приложений не работает."""
 import json
 from urllib.parse import urlencode
 
@@ -50,9 +50,9 @@ async def vk_oauth_help():
     app_id = VK_APP_ID or "54604726"
     body = f"""
 <h1>Токен для VK Market (<code>VK_MARKET_ACCESS_TOKEN</code>)</h1>
-<p><b>Standalone на dev.vk.com больше не создаётся</b> — приложения перенесены в
-<a href="https://id.vk.com/about/business/go/docs/ru/vkid/latest/vk-id/connection/create-application">VK ID</a>.
-Старый <code>oauth.vk.com</code> даёт <b>Security Error</b> — это нормально для Web-приложения.</p>
+<p><b>Standalone на dev.vk.ru больше не создаётся</b> — приложения перенесены в
+<a href="https://id.vk.ru/about/business/go/docs/ru/vkid/latest/vk-id/connection/create-application">VK ID</a>.
+Старый <code>oauth.vk.ru</code> даёт <b>Security Error</b> — это нормально для Web-приложения.</p>
 
 <h2 class="err">Важно (проверено на сервере, май 2026)</h2>
 <ul>
@@ -65,7 +65,7 @@ async def vk_oauth_help():
 <ol>
   <li>После разблокировки профиля — токен через проверенный способ с правом <b>market</b>
       (не vkhost, если хотите избежать блокировок; либо напишите
-      <a href="mailto:devsupport@corp.vk.com">devsupport@corp.vk.com</a> — как серверу получить vk1.a для app {app_id}).</li>
+      <a href="mailto:devsupport@corp.vk.ru">devsupport@corp.vk.ru</a> — как серверу получить vk1.a для app {app_id}).</li>
   <li>В <code>.env</code> одна строка, <b>без дубля</b>:
     <code>VK_MARKET_ACCESS_TOKEN=vk1.a.XXXX</code> (не <code>VK_MARKET_ACCESS_TOKEN=VK_MARKET_ACCESS_TOKEN=...</code>).</li>
   <li><code>VK_ACCESS_TOKEN</code> — отдельно ключ из группы.</li>
@@ -106,7 +106,7 @@ async def vk_oauth_vkid_start():
 
 @router.get("/vk/oauth/start")
 async def vk_oauth_start():
-    """Редирект на VK ID (не legacy oauth.vk.com)."""
+    """Редирект на VK ID (не legacy oauth.vk.ru)."""
     return RedirectResponse("/vk/oauth/vkid/start", status_code=302)
 
 

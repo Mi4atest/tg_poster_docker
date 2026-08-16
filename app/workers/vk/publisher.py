@@ -462,7 +462,9 @@ class VKPublisher:
             if vk_post_id:
                 owner_id = -self.group_id
                 vk_post_id_str = f"{owner_id}_{vk_post_id}"
-                vk_post_link = f"https://vk.com/wall{owner_id}_{vk_post_id}"
+                from app.utils.vk_urls import wall_post_url
+
+                vk_post_link = wall_post_url(owner_id, int(vk_post_id))
 
             # После market INSERT соединение могло умереть — сохраняем wall в свежей сессии.
             try:

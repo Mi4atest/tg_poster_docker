@@ -466,7 +466,10 @@ class SettingsService:
         return str(self.get_all()["signatures"].get("telegram_used_catalog_url") or "").strip()
 
     def get_vk_used_catalog_url(self) -> str:
-        return str(self.get_all()["signatures"].get("vk_used_catalog_url") or "").strip()
+        from app.utils.vk_urls import rewrite_vk_com_to_ru
+
+        raw = str(self.get_all()["signatures"].get("vk_used_catalog_url") or "").strip()
+        return (rewrite_vk_com_to_ru(raw) or "").strip()
 
     def is_vk_market_publish_allowed(self) -> bool:
         """Публикация товара в VK Market: мастер-флаг VK_MARKET_ENABLED и переключатель в БД."""

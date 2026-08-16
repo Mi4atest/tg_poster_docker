@@ -20,7 +20,7 @@ REPAIRS = [
         "max_link": "max://channel/-71185634522473/mid.ffffbf41cd8a8a97019f28045ba12350",
         "max_share_url": "https://max.ru/c/-71185634522473/AZ8oBFuhI1A",
         "vk_post_id": "-129808251_25327",
-        "vk_post_link": "https://vk.com/wall-129808251_25327",
+        "vk_post_link": "https://vk.ru/wall-129808251_25327",
         "published_telegram_at": "2026-07-03 12:46:33+03:00",
         "published_max_at": "2026-07-03 12:46:42+03:00",
         "published_vk_at": "2026-07-03 12:47:36+03:00",

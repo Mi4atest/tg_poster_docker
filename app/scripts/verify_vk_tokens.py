@@ -24,7 +24,7 @@ def _validate_market_token_format(token: str) -> list[str]:
             "Нужен user token формата vk1.a.* с правом market (см. /vk/oauth/help)"
         )
     elif not token.startswith("vk1.a."):
-        issues.append("ожидается user token vk1.a.* для api.vk.com (market, wall от пользователя)")
+        issues.append("ожидается user token vk1.a.* для api.vk.ru (market, wall от пользователя)")
     return issues
 from app.utils.vk_client import (
     community_token,

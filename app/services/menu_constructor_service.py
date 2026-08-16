@@ -1168,12 +1168,14 @@ def count_delete_preview(db: Session, button_id: int) -> Tuple[int, int]:
 
 
 def _normalize_vk_link(link: str) -> str:
+    from app.utils.vk_urls import rewrite_vk_com_to_ru
+
     link = (link or "").strip()
     if not link:
         return ""
-    if link.startswith("http://") or link.startswith("https://"):
-        return link
-    return f"https://{link}"
+    if not (link.startswith("http://") or link.startswith("https://")):
+        link = f"https://{link}"
+    return rewrite_vk_com_to_ru(link) or ""
 
 
 def _extract_vk_product_id(vk_link: str) -> Optional[int]:

@@ -110,7 +110,11 @@ def _vk_item_to_product_dict(item: Dict, collection_name: str, collection_id: in
     vk_product_id = item.get("id")
     group_id = resolved_vk_group_id_int()
     owner_id = item.get("owner_id", -group_id)
-    vk_product_link = f"https://vk.com/market{group_id}?w=product-{abs(owner_id)}_{vk_product_id}"
+    from app.utils.vk_urls import market_product_url
+
+    vk_product_link = market_product_url(
+        group_id, int(vk_product_id), owner_id=abs(int(owner_id))
+    )
     title = item.get("title", "Без названия")
     price_obj = item.get("price", {})
     price_value = price_obj.get("amount") if isinstance(price_obj, dict) else None

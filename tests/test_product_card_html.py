@@ -19,7 +19,7 @@ BASE = {
     "category_name": "смартфоны",
     "collection_name": "iPhone б/у",
     "published_at": "2026-07-01T09:35:00+00:00",  # 12:35 МСК
-    "vk_product_link": "https://vk.com/market-1?w=product-1_99",
+    "vk_product_link": "https://vk.ru/market-1?w=product-1_99",
     "telegram_link": "https://t.me/test/1",
 }
 

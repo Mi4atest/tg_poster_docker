@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import html
+import re
 from typing import Any, Optional, Union
 
 from aiogram.exceptions import TelegramBadRequest
@@ -13,8 +15,11 @@ from app.bot.keyboards.post_edit_keyboard import (
     get_edit_text_prompt_keyboard,
 )
 from app.bot.utils.post_media import format_media_summary
+from app.utils.product_parser import extract_product_description, extract_product_name
 
 TEXT_PREVIEW_LEN = 120
+# Запас под HTML-обёртку и статусы площадок (лимит сообщения TG = 4096).
+ARCHIVE_CARD_TEXT_LIMIT = 3500
 
 
 def _escape_md(text: str) -> str:
@@ -89,7 +94,7 @@ def format_edit_text_prompt_body(data: dict) -> str:
 
 
 def format_post_card(post: dict, *, success_prefix: str = "") -> str:
-    """Single post view card (drafts / archive / after save)."""
+    """Single post view card (drafts / after save). Plain text, no HTML."""
     post_name = post.get("name") or "Без названия"
     text = post.get("text") or ""
     photos = post.get("photos") or []
@@ -122,6 +127,92 @@ def format_post_card(post: dict, *, success_prefix: str = "") -> str:
     av = "✅" if post.get("is_published_avito") else "❌"
     lines.append(f"ВК: {vk}, ТГ: {tg}, IG: {ig}, MAX: {mx}, Авито: {av}")
     return "\n".join(lines)
+
+
+def _extract_price_line(text: str) -> str:
+    for line in (text or "").split("\n"):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        lower = stripped.lower()
+        if "💵" in stripped or re.match(r"(?i)^цена\s*:", stripped) or "цена:" in lower:
+            return stripped
+    return ""
+
+
+def format_archive_post_card(post: dict, *, success_prefix: str = "") -> str:
+    """Карточка поста из архива: две области <pre> для копирования (название + описание).
+
+    Как в вечернем отчёте: тап/клик по блоку копирует только его содержимое.
+    Цена и метаданные — обычный текст между блоками.
+    """
+    post_name = post.get("name") or "Без названия"
+    text = (post.get("text") or "").strip()
+    photos = post.get("photos") or []
+    videos = post.get("videos") or []
+    photo_count = len(photos) if isinstance(photos, list) else 0
+    video_count = len(videos) if isinstance(videos, list) else 0
+
+    title = (extract_product_name(text) or post_name).strip()
+    description = (extract_product_description(text) or "").strip()
+    price_line = _extract_price_line(text)
+
+    # Укладываемся в лимит сообщения: при переполнении режем описание.
+    overhead = 280 + len(post_name) + len(title) + len(price_line) + len(success_prefix or "")
+    max_desc = max(200, ARCHIVE_CARD_TEXT_LIMIT - overhead)
+    if len(description) > max_desc:
+        description = description[: max_desc - 1].rstrip() + "…"
+
+    lines: list[str] = []
+    if success_prefix:
+        lines.append(html.escape(success_prefix))
+        lines.append("")
+    lines.append(f"📝 {html.escape(post_name)}")
+    lines.append("")
+    if title:
+        lines.append(f"<pre>{html.escape(title)}</pre>")
+        lines.append("")
+    if price_line:
+        lines.append(html.escape(price_line))
+        lines.append("")
+    if description:
+        lines.append(f"<pre>{html.escape(description)}</pre>")
+        lines.append("")
+    elif text and not title:
+        # Нестандартный пост — один копируемый блок с сырым текстом
+        body = text if len(text) <= max_desc else text[: max_desc - 1].rstrip() + "…"
+        lines.append(f"<pre>{html.escape(body)}</pre>")
+        lines.append("")
+
+    lines.append(f"📷 {photo_count} фото")
+    lines.append(f"📹 {video_count} видео")
+    lines.append("")
+    vk = "✅" if post.get("is_published_vk") else "❌"
+    tg = "✅" if post.get("is_published_telegram") else "❌"
+    ig = "✅" if post.get("is_published_instagram") else "❌"
+    mx = "✅" if post.get("is_published_max") else "❌"
+    av = "✅" if post.get("is_published_avito") else "❌"
+    lines.append(f"ВК: {vk}, ТГ: {tg}, IG: {ig}, MAX: {mx}, Авито: {av}")
+    return "\n".join(lines)
+
+
+def format_post_card_for_user(
+    post: dict,
+    user_data: dict | None = None,
+    *,
+    success_prefix: str = "",
+) -> tuple[str, Optional[str]]:
+    """Карточка поста: HTML с copy-блоками в архиве, иначе plain text.
+
+    Returns:
+        (text, parse_mode) — parse_mode is \"HTML\" or None.
+    """
+    ud = user_data or {}
+    archive_state = ud.get("archive_state") or {}
+    from_archive = bool(ud.get("in_archive") or archive_state.get("year") is not None)
+    if from_archive:
+        return format_archive_post_card(post, success_prefix=success_prefix), "HTML"
+    return format_post_card(post, success_prefix=success_prefix), None
 
 
 def format_photo_manage_body(photos: list) -> str:

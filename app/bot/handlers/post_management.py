@@ -23,9 +23,10 @@ from app.bot.keyboards.post_edit_keyboard import (
     get_edit_video_manage_keyboard,
 )
 from app.bot.utils.post_edit_flow import (
+    ARCHIVE_CARD_TEXT_LIMIT,
     edit_draft_from_data,
     format_photo_manage_body,
-    format_post_card,
+    format_post_card_for_user,
     format_video_manage_body,
     refresh_edit_panel_message,
     show_edit_panel,
@@ -1138,6 +1139,20 @@ async def show_archived_posts(message: Message, year=None, month=None, day=None,
             reply_markup=keyboard
         )
 
+def _user_data_for(bot, user_id: int) -> dict:
+    if not hasattr(bot, "user_data"):
+        return {}
+    if user_id not in bot.user_data:
+        bot.user_data[user_id] = {}
+    return bot.user_data[user_id]
+
+
+def _is_from_archive(user_data: dict | None) -> bool:
+    ud = user_data or {}
+    archive_state = ud.get("archive_state") or {}
+    return bool(ud.get("in_archive") or archive_state.get("year") is not None)
+
+
 @router.callback_query(lambda c: c.data and c.data.startswith("view_post_"))
 async def view_post_callback(callback: CallbackQuery):
     """Handle post selection via callback query."""
@@ -1145,8 +1160,9 @@ async def view_post_callback(callback: CallbackQuery):
     # Extract post_id from callback data
     post_id = callback.data.replace("view_post_", "")
 
-    # Get post details
-    post = await get_post_card_api(post_id, truncate=1000)
+    user_data = _user_data_for(callback.bot, callback.from_user.id)
+    truncate = ARCHIVE_CARD_TEXT_LIMIT if _is_from_archive(user_data) else 1000
+    post = await get_post_card_api(post_id, truncate=truncate)
 
     if not post:
         await callback.message.edit_text(
@@ -1157,18 +1173,13 @@ async def view_post_callback(callback: CallbackQuery):
         )
         return
 
-    response_text = format_post_card(post)
-
-    user_data = {}
-    if hasattr(callback.bot, "user_data"):
-        if callback.from_user.id not in callback.bot.user_data:
-            callback.bot.user_data[callback.from_user.id] = {}
-        callback.bot.user_data[callback.from_user.id]["selected_post"] = post_id
-        user_data = callback.bot.user_data[callback.from_user.id]
+    user_data["selected_post"] = post_id
+    response_text, parse_mode = format_post_card_for_user(post, user_data)
 
     await callback.message.edit_text(
         response_text,
         reply_markup=post_actions_kb_for_user(user_data),
+        parse_mode=parse_mode,
     )
 
 # Оставляем для обратной совместимости
@@ -1195,46 +1206,21 @@ async def process_post_selection(message: Message, state: FSMContext):
         await message.reply("❌ Неверный номер поста. Пожалуйста, выберите пост из списка.")
         return
 
-    # Get post details
-    post = await get_post_card_api(post_id, truncate=1000)
+    user_data = _user_data_for(message.bot, message.from_user.id)
+    truncate = ARCHIVE_CARD_TEXT_LIMIT if _is_from_archive(user_data) else 1000
+    post = await get_post_card_api(post_id, truncate=truncate)
 
     if not post:
         await message.reply("❌ Пост не найден. Возможно, он был удален.")
         return
 
-    # Format post details
-    post_name = post.get("name", "Без названия")
-    text = post.get("text", "") or ""
-    photos = post.get("photos") or []
-    videos = post.get("videos") or []
-    photo_count = len(photos) if isinstance(photos, list) else 0
-    video_count = len(videos) if isinstance(videos, list) else 0
+    user_data["selected_post"] = post_id
+    response_text, parse_mode = format_post_card_for_user(post, user_data)
 
-    # Truncate text if too long
-    if len(text) > 1000:
-        text = text[:997] + "..."
-
-    response_text = f"📝 {post_name}\n\n"
-    response_text += f"{text}\n\n"
-    response_text += f"📷 {photo_count} фото\n"
-    response_text += f"📹 {video_count} видео\n\n"
-
-    # Add platform status
-    vk_status = "✅" if post.get("is_published_vk") else "❌"
-    tg_status = "✅" if post.get("is_published_telegram") else "❌"
-    ig_status = "✅" if post.get("is_published_instagram") else "❌"
-    max_status = "✅" if post.get("is_published_max") else "❌"
-    avito_status = "✅" if post.get("is_published_avito") else "❌"
-
-    response_text += f"ВК: {vk_status}, ТГ: {tg_status}, IG: {ig_status}, MAX: {max_status}, Авито: {avito_status}"
-
-    # Store selected post ID
-    message.bot.user_data[message.from_user.id]["selected_post"] = post_id
-
-    # Send post details with action keyboard
     await message.reply(
         response_text,
-        reply_markup=_post_actions_kb(message.bot, message.from_user.id)
+        reply_markup=_post_actions_kb(message.bot, message.from_user.id),
+        parse_mode=parse_mode,
     )
 
 @router.callback_query(F.data == "publish_vk")
@@ -2726,9 +2712,12 @@ async def edit_cancel(callback: CallbackQuery, state: FSMContext):
             ),
         )
     else:
+        user_data = _user_data_for(callback.bot, callback.from_user.id)
+        body, parse_mode = format_post_card_for_user(post, user_data)
         await callback.message.edit_text(
-            format_post_card(post),
+            body,
             reply_markup=_post_actions_kb(callback.bot, callback.from_user.id),
+            parse_mode=parse_mode,
         )
     await callback.answer()
 
@@ -2756,8 +2745,13 @@ async def edit_save(callback: CallbackQuery, state: FSMContext):
         await state.clear()
 
         if updated_post:
+            user_data = _user_data_for(callback.bot, callback.from_user.id)
+            body, parse_mode = format_post_card_for_user(
+                updated_post, user_data, success_prefix="✅ Пост сохранён."
+            )
             await callback.message.edit_text(
-                format_post_card(updated_post, success_prefix="✅ Пост сохранён."),
+                body,
+                parse_mode=parse_mode,
                 reply_markup=_post_actions_kb(callback.bot, callback.from_user.id),
             )
         else:

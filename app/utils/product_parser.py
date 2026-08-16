@@ -39,6 +39,8 @@ def extract_product_description(text: str) -> Optional[str]:
     """
     Извлекает описание товара из текста поста, исключая заголовок, цену и контактную информацию.
     
+    Адрес и часы работы включаются (нужны для Авито и копирования из архива).
+    
     Args:
         text: Текст поста
         
@@ -55,56 +57,57 @@ def extract_product_description(text: str) -> Optional[str]:
     # Пропускаем первую строку (заголовок)
     description_lines = []
     skip_contact_section = False
-    found_price = False
-    
-    # Ключевые слова, после которых начинается контактная информация
-    contact_keywords = [
-        'мы находимся',
-        'работаем без выходных',
+
+    # Жёсткий стоп: телефоны / соцссылки / призывы подписаться
+    stop_contact_keywords = [
         'подписывайся',
         'авито:',
         'телеграм:',
         '📞',
-        '⏰',
         '🛒',
-        '✈️'
+        '✈️',
     ]
+    # Адрес и график — часть описания для объявления
+    keep_location_hours = (
+        '📍',
+        'мы находимся',
+        '⏰',
+        'работаем без выходных',
+    )
     
-    for i, line in enumerate(lines[1:], start=1):
+    for line in lines[1:]:
         line_stripped = line.strip()
         line_lower = line_stripped.lower()
         
         # Пропускаем строку с ценой
-        if '💵' in line_stripped or 'цена:' in line_lower or 'цена' in line_lower:
-            found_price = True
+        if '💵' in line_stripped or 'цена:' in line_lower:
+            continue
+        # Строка только про цену без эмодзи (осторожно: не режем «Цена за наличные» в блоке услуг)
+        if re.match(r'(?i)^цена\s*:', line_stripped):
             continue
         
-        # Проверяем, не началась ли контактная информация (но не по эмодзи 📍, так как это может быть адрес)
-        if any(keyword in line_lower for keyword in contact_keywords):
-            # Если это адрес (📍), включаем его в описание
-            if '📍' in line_stripped or 'мы находимся' in line_lower:
-                # Включаем адрес и время работы, но не контакты
-                if '📞' not in line_stripped and '🛒' not in line_stripped and '✈️' not in line_stripped:
-                    description_lines.append(line_stripped)
-                    continue
+        if any(keyword in line_lower or keyword in line_stripped for keyword in stop_contact_keywords):
             skip_contact_section = True
+        
+        is_location_hours = any(
+            marker in line_lower or marker in line_stripped for marker in keep_location_hours
+        )
+        if is_location_hours:
+            if '📞' not in line_stripped and '🛒' not in line_stripped and '✈️' not in line_stripped:
+                description_lines.append(line_stripped)
+                continue
         
         # Если встретили разделитель, проверяем контекст
         if re.match(r'^-{5,}$', line_stripped.replace('—', '-')):
-            # Если это разделитель после контактной информации, прекращаем
             if skip_contact_section:
                 break
-            # Иначе включаем разделитель в описание
             description_lines.append(line_stripped)
             continue
         
-        # Если еще не в контактной секции, добавляем строку
-        if not skip_contact_section and line_stripped:
+        if not skip_contact_section:
             description_lines.append(line_stripped)
     
     description = '\n'.join(description_lines)
-    
-    # Удаляем множественные пустые строки
     description = re.sub(r'\n{3,}', '\n\n', description)
     
     return description.strip() if description.strip() else None

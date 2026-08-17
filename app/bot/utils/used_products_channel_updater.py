@@ -12,6 +12,7 @@ from app.db.database import SessionLocal
 from app.db.product_queries import fetch_used_products_for_list
 from app.services.settings_service import get_settings_service
 from app.bot.utils.product_list_formatter import format_full_products_list
+from app.bot.utils.used_products_lists import RESERVED_SLOT_TEXT
 from app.utils.product_formatter import format_product_name_for_list
 
 logger = logging.getLogger(__name__)
@@ -136,7 +137,7 @@ async def update_used_products_list_in_channel(bot) -> bool:
     full_text = _build_full_text(products)
     chunks = _split_text_into_chunks(full_text)
     if not chunks:
-        chunks = [""]
+        chunks = [RESERVED_SLOT_TEXT]
 
     message_ids = list(USED_PRODUCTS_LIST_MESSAGE_IDS)
     chat_id = TELEGRAM_CHANNEL_ID
@@ -168,7 +169,7 @@ async def update_used_products_list_in_channel(bot) -> bool:
             bot,
             chat_id=chat_id,
             message_id=message_ids[j],
-            text="—",
+            text=RESERVED_SLOT_TEXT,
             parse_mode="HTML",
         )
         if not ok:

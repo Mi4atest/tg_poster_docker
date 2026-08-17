@@ -11,7 +11,7 @@ from app.config.settings import MAX_API_BASE_URL, MAX_BOT_TOKEN, TELEGRAM_BOT_TO
 from app.db.database import SessionLocal
 from app.db.post_queries import fetch_post, insert_publication_log
 from app.services.settings_service import get_settings_service
-from app.integrations.max.client import MaxApiClient
+from app.integrations.max.client import MaxApiClient, extract_message_id
 from app.utils.text_formatter import format_for_max, format_for_max_plain
 from app.utils.max_share_link import resolve_max_channel_share_url
 
@@ -95,7 +95,7 @@ class MaxPublisher:
                             raise
                     else:
                         raise last_exc
-                message_id = self._extract_message_id(resp)
+                message_id = extract_message_id(resp)
             else:
                 try:
                     resp = await client.send_message(
@@ -111,7 +111,7 @@ class MaxPublisher:
                         parse_mode=None,
                         disable_web_page_preview=True,
                     )
-                message_id = self._extract_message_id(resp)
+                message_id = extract_message_id(resp)
 
             now = datetime.now(timezone.utc)
             max_link = None
@@ -171,6 +171,14 @@ class MaxPublisher:
             )
             insert_publication_log(db, post_id, "max", "success", "Published to Max")
             db.commit()
+            try:
+                from app.bot.utils.used_products_max_channel_updater import (
+                    update_used_products_list_in_max_channel,
+                )
+
+                await update_used_products_list_in_max_channel()
+            except Exception as upd_err:
+                logger.warning("Failed to update used products list in Max channel: %s", upd_err)
             return True
         except Exception as exc:
             logger.error("Error publishing post %s to Max: %s", post_id, exc)
@@ -203,35 +211,7 @@ class MaxPublisher:
 
     @staticmethod
     def _extract_message_id(resp: dict | None) -> str | None:
-        if not isinstance(resp, dict):
-            return None
-        # Встречающиеся варианты ответа Max API:
-        # 1) {"result":{"message_id":"..."}}
-        # 2) {"message":{"message_id":"..."}}
-        # 3) {"message_id":"..."} или {"id":"..."}
-        result = resp.get("result")
-        if isinstance(result, dict):
-            mid = result.get("message_id") or result.get("id")
-            if mid:
-                return str(mid)
-        if isinstance(result, list) and result:
-            first = result[0]
-            if isinstance(first, dict):
-                mid = first.get("message_id") or first.get("id")
-                if mid:
-                    return str(mid)
-        msg = resp.get("message")
-        if isinstance(msg, dict):
-            mid = msg.get("message_id") or msg.get("id")
-            if mid:
-                return str(mid)
-            body = msg.get("body")
-            if isinstance(body, dict):
-                nested_mid = body.get("mid") or body.get("message_id") or body.get("id")
-                if nested_mid:
-                    return str(nested_mid)
-        top_mid = resp.get("message_id") or resp.get("id")
-        return str(top_mid) if top_mid else None
+        return extract_message_id(resp)
 
 
 async def publish_post_to_max(post_id: str, signature_enabled: bool = True) -> bool:

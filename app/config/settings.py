@@ -63,6 +63,12 @@ if _used_list_ids_str:
             USED_PRODUCTS_LIST_MESSAGE_IDS.append(int(part))
         except ValueError:
             pass
+_max_used_list_ids_str = os.getenv("MAX_USED_PRODUCTS_LIST_MESSAGE_IDS", "").strip()
+MAX_USED_PRODUCTS_LIST_MESSAGE_IDS: List[str] = []
+if _max_used_list_ids_str:
+    for part in _max_used_list_ids_str.replace(" ", "").split(","):
+        if part:
+            MAX_USED_PRODUCTS_LIST_MESSAGE_IDS.append(part)
 TELEGRAM_CONTACT_USER_ID = os.getenv("TELEGRAM_CONTACT_USER_ID")
 if TELEGRAM_CONTACT_USER_ID:
     try:
@@ -148,6 +154,7 @@ SIGNATURE_PHONE = os.getenv("SIGNATURE_PHONE", "")
 TELEGRAM_USED_CATALOG_BUTTON_ENABLED = os.getenv("TELEGRAM_USED_CATALOG_BUTTON_ENABLED", "true").lower() == "true"
 TELEGRAM_USED_CATALOG_URL = (os.getenv("TELEGRAM_USED_CATALOG_URL") or "https://t.me/AppleShop43/12185").strip()
 VK_USED_CATALOG_URL = (os.getenv("VK_USED_CATALOG_URL") or "").strip()
+MAX_USED_CATALOG_URL = (os.getenv("MAX_USED_CATALOG_URL") or "").strip()
 
 # VK upload: неполная публикация медиа запрещена по умолчанию.
 # Аварийный откат: VK_UPLOAD_STRICT_MODE=false — опубликовать то, что удалось загрузить.

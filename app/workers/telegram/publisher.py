@@ -184,6 +184,14 @@ class TelegramPublisher:
                 await update_used_products_list_in_channel(self.bot)
             except Exception as upd_err:
                 logger.warning("Failed to update used products list in channel: %s", upd_err)
+            try:
+                from app.bot.utils.used_products_max_channel_updater import (
+                    update_used_products_list_in_max_channel,
+                )
+
+                await update_used_products_list_in_max_channel()
+            except Exception as upd_err:
+                logger.warning("Failed to update used products list in Max channel: %s", upd_err)
             return True
         except Exception as e:
             logger.error(f"Error publishing post {post_id} to Telegram: {str(e)}")

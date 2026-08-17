@@ -13,7 +13,7 @@ load_dotenv()
 
 from aiogram import Bot
 from app.config.settings import TELEGRAM_BOT_TOKEN
-from app.bot.utils.used_products_channel_updater import update_used_products_list_in_channel
+from app.bot.utils.used_products_lists import refresh_used_products_catalogs
 
 
 async def main():
@@ -22,8 +22,12 @@ async def main():
         return
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
     try:
-        ok = await update_used_products_list_in_channel(bot)
-        print("OK" if ok else "Не выполнено (проверьте USED_PRODUCTS_LIST_MESSAGE_IDS и TELEGRAM_CHANNEL_ID)")
+        result = await refresh_used_products_catalogs(bot)
+        print(
+            "OK TG={telegram} Max={max}".format(**result)
+            if any(result.values())
+            else "Не выполнено (проверьте ID сообщений каталога и каналы)"
+        )
     finally:
         await bot.session.close()
 

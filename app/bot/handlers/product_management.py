@@ -705,10 +705,24 @@ async def sync_telegram_links(callback: CallbackQuery):
             reply_markup=get_products_menu_keyboard(),
         )
         channel_ok = await update_used_products_list_in_channel(callback.bot)
+        max_ok = False
+        try:
+            from app.bot.utils.used_products_max_channel_updater import (
+                update_used_products_list_in_max_channel,
+            )
+
+            max_ok = await update_used_products_list_in_max_channel()
+        except Exception as max_err:
+            logger.warning("Failed to update used products list in Max channel: %s", max_err)
         channel_line = (
             "✅ Список и новинки в канале обновлены."
             if channel_ok
             else "⚠️ Канал не обновлён (проверьте USED_PRODUCTS_LIST_MESSAGE_IDS в настройках)."
+        )
+        max_line = (
+            "✅ Каталог б/у в Max обновлён."
+            if max_ok
+            else "⚠️ Каталог Max не обновлён (проверьте ID сообщений Max в настройках)."
         )
         text = (
             "🔄 Обновление постов\n\n"
@@ -716,7 +730,8 @@ async def sync_telegram_links(callback: CallbackQuery):
             f"Постов с товарами: {posts_processed}\n"
             f"Создано отсутствующих товаров: {created_missing}\n"
             f"Обновлено ссылок у товаров: {updated_products}\n\n"
-            f"{channel_line}"
+            f"{channel_line}\n"
+            f"{max_line}"
         )
     except Exception as e:
         logger.exception("sync_telegram_links failed")
@@ -1555,9 +1570,9 @@ async def product_confirm_action(callback: CallbackQuery, state: FSMContext):
                 parse_mode="HTML",
             )
         try:
-            from app.bot.utils.used_products_channel_updater import update_used_products_list_in_channel
+            from app.bot.utils.used_products_lists import refresh_used_products_catalogs
 
-            await update_used_products_list_in_channel(callback.bot)
+            await refresh_used_products_catalogs(callback.bot)
         except Exception as upd_err:
             logger.warning("Failed to update used products list in channel: %s", upd_err)
     
@@ -1572,8 +1587,8 @@ async def product_confirm_action(callback: CallbackQuery, state: FSMContext):
                 reply_markup=get_products_menu_keyboard()
             )
             try:
-                from app.bot.utils.used_products_channel_updater import update_used_products_list_in_channel
-                await update_used_products_list_in_channel(callback.bot)
+                from app.bot.utils.used_products_lists import refresh_used_products_catalogs
+                await refresh_used_products_catalogs(callback.bot)
             except Exception as upd_err:
                 logger.warning("Failed to update used products list in channel: %s", upd_err)
         else:

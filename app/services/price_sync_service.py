@@ -500,7 +500,7 @@ class PriceSyncService:
                 self._list_debounce_vk_price = False
 
                 bot = self._bot
-                if bot is None and not do_vk:
+                if bot is None and not do_vk and not do_used:
                     return
                 if do_used and bot is not None:
                     from app.bot.utils.used_products_channel_updater import (
@@ -508,6 +508,15 @@ class PriceSyncService:
                     )
 
                     await update_used_products_list_in_channel(bot)
+                if do_used:
+                    try:
+                        from app.bot.utils.used_products_max_channel_updater import (
+                            update_used_products_list_in_max_channel,
+                        )
+
+                        await update_used_products_list_in_max_channel()
+                    except Exception:
+                        logger.exception("Debounced Max used-products catalog refresh failed")
                 if do_avail and bot is not None:
                     from app.bot.utils.channel_updater import update_availability_message
 

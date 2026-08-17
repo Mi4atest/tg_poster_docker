@@ -10,6 +10,40 @@ logger = logging.getLogger(__name__)
 _MEDIA_ATTACHMENT_TYPES = frozenset({"image", "video", "file", "audio"})
 
 
+def extract_message_id(resp: dict | None) -> str | None:
+    """Достаёт mid из типичных вариантов ответа Max API."""
+    if not isinstance(resp, dict):
+        return None
+    result = resp.get("result")
+    if isinstance(result, dict):
+        mid = result.get("message_id") or result.get("id") or result.get("mid")
+        if mid:
+            return str(mid)
+    if isinstance(result, list) and result:
+        first = result[0]
+        if isinstance(first, dict):
+            mid = first.get("message_id") or first.get("id") or first.get("mid")
+            if mid:
+                return str(mid)
+    msg = resp.get("message")
+    if isinstance(msg, dict):
+        mid = msg.get("message_id") or msg.get("id") or msg.get("mid")
+        if mid:
+            return str(mid)
+        body = msg.get("body")
+        if isinstance(body, dict):
+            nested_mid = body.get("mid") or body.get("message_id") or body.get("id")
+            if nested_mid:
+                return str(nested_mid)
+    body = resp.get("body")
+    if isinstance(body, dict):
+        nested_mid = body.get("mid") or body.get("message_id") or body.get("id")
+        if nested_mid:
+            return str(nested_mid)
+    top_mid = resp.get("message_id") or resp.get("id") or resp.get("mid")
+    return str(top_mid) if top_mid else None
+
+
 def create_max_api_client() -> "MaxApiClient":
     """Клиент Max API: токен из настроек бота (encrypted_secrets), fallback — MAX_BOT_TOKEN из .env."""
     from app.config.settings import MAX_API_BASE_URL, MAX_BOT_TOKEN
@@ -76,8 +110,31 @@ class MaxApiClient:
                         },
                     ) as response:
                         data = await response.json(content_type=None)
+                        if response.status == 429:
+                            retry_after = 1.0
+                            raw_retry = response.headers.get("Retry-After")
+                            if raw_retry:
+                                try:
+                                    retry_after = min(float(raw_retry), 15.0)
+                                except ValueError:
+                                    retry_after = 1.0
+                            last_error = RuntimeError(
+                                f"Max API {http_method} {path} failed: status=429, body={data}"
+                            )
+                            if attempt < retries:
+                                logger.info(
+                                    "Max API 429 on %s %s, retry in %.1fs",
+                                    http_method,
+                                    path,
+                                    retry_after,
+                                )
+                                await asyncio.sleep(retry_after)
+                                continue
+                            raise last_error
                         if response.status >= 400:
-                            raise RuntimeError(f"Max API {http_method} {path} failed: status={response.status}, body={data}")
+                            raise RuntimeError(
+                                f"Max API {http_method} {path} failed: status={response.status}, body={data}"
+                            )
 
                         # Max API иногда не возвращает поле ok, поэтому считаем успешным любой 2xx без code=error
                         if isinstance(data, dict) and data.get("code") and data.get("success") is False:
@@ -89,7 +146,7 @@ class MaxApiClient:
                         await asyncio.sleep(1.0 + attempt)
                         continue
                     raise
-        raise RuntimeError(f"Max API {method_name} failed: {last_error}")
+        raise RuntimeError(f"Max API {http_method} {path} failed: {last_error}")
 
     async def get_chat(self, chat_id: str) -> dict[str, Any]:
         return await self._request("GET", f"/chats/{chat_id}", payload=None, query=None)
@@ -191,7 +248,7 @@ class MaxApiClient:
     async def edit_message_text(
         self,
         chat_id: str,
-        message_id: int,
+        message_id: int | str,
         text: str,
         parse_mode: Optional[str] = None,
     ) -> dict[str, Any]:
@@ -200,7 +257,7 @@ class MaxApiClient:
     async def edit_message_caption(
         self,
         chat_id: str,
-        message_id: int,
+        message_id: int | str,
         caption: str,
         parse_mode: Optional[str] = None,
     ) -> dict[str, Any]:

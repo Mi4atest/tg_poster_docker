@@ -41,7 +41,9 @@ def _product_sort_key(product: Dict) -> Tuple[int, float]:
 
 def format_full_products_list(
     products: List[Dict],
-    exclude_product_id: Optional[int] = None
+    exclude_product_id: Optional[int] = None,
+    *,
+    name_link_key: str = "telegram_link",
 ) -> str:
     """
     Форматирует полный список товаров для отображения в Telegram.
@@ -101,15 +103,15 @@ def format_full_products_list(
                 price = 'Цена не указана'
             
             # Формируем строку с ссылками
-            telegram_link = product.get('telegram_link')
+            name_href = product.get(name_link_key)
             vk_link = product.get('vk_product_link')
             
             # Собираем строку
             line_parts = []
             
-            # Название с ссылкой на Telegram или без ссылки
-            if telegram_link:
-                line_parts.append(f'<a href="{telegram_link}">{formatted_name}</a>')
+            # Название со ссылкой на пост (TG / Max) или без ссылки
+            if name_href:
+                line_parts.append(f'<a href="{name_href}">{formatted_name}</a>')
             else:
                 line_parts.append(formatted_name)
             

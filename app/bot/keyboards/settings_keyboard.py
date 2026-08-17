@@ -30,7 +30,9 @@ def get_settings_reports_keyboard() -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton(text="📊 VK: получатели отчёта", callback_data="settings_edit_report_vk_report_user_ids")],
         [InlineKeyboardButton(text="🆕 ID сообщений «Наличие» (прайс ТГ)", callback_data="settings_edit_report_availability_message_ids")],
-        [InlineKeyboardButton(text="♻️ ID сообщений «Список б/у»", callback_data="settings_edit_report_used_products_list_message_ids")],
+        [InlineKeyboardButton(text="♻️ ID сообщений «Список б/у» (ТГ)", callback_data="settings_edit_report_used_products_list_message_ids")],
+        [InlineKeyboardButton(text="💬 ID сообщений «Список б/у» (Max)", callback_data="settings_edit_report_max_used_products_list_message_ids")],
+        [InlineKeyboardButton(text="💬 Создать каталог б/у в Max", callback_data="settings_max_catalog_reserve")],
         [InlineKeyboardButton(text="📣 Прайс (шаблон / маркеры ТГ)", callback_data="settings_vk_channel_price")],
         [InlineKeyboardButton(text="⬅️ Назад к настройкам", callback_data="settings_root")],
     ]
@@ -135,6 +137,10 @@ def get_settings_signatures_keyboard(
             text="🔗 Ссылка каталога б/у (VK)",
             callback_data="settings_edit_vk_catalog_url",
         )],
+        [InlineKeyboardButton(
+            text="🔗 Ссылка каталога б/у (Max)",
+            callback_data="settings_edit_max_catalog_url",
+        )],
         [InlineKeyboardButton(text="✏️ Изменить поля подписей", callback_data="settings_edit_signatures_menu")],
         [InlineKeyboardButton(text="⬅️ Назад к настройкам", callback_data="settings_root")],
     ]
@@ -206,6 +212,33 @@ def get_input_cancel_keyboard(return_callback: str) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="❌ Отмена ввода", callback_data="settings_cancel_input")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_max_catalog_reserve_count_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="15 (обычно)", callback_data="settings_max_catalog_count_15")],
+            [
+                InlineKeyboardButton(text="10", callback_data="settings_max_catalog_count_10"),
+                InlineKeyboardButton(text="20", callback_data="settings_max_catalog_count_20"),
+            ],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="settings_cancel_input")],
+        ]
+    )
+
+
+def get_max_catalog_reserve_confirm_keyboard(*, has_existing: bool) -> InlineKeyboardMarkup:
+    if has_existing:
+        rows = [
+            [InlineKeyboardButton(text="➕ Добавить к текущим", callback_data="settings_max_catalog_do_append")],
+            [InlineKeyboardButton(text="🆕 Создать новые (заменить ID)", callback_data="settings_max_catalog_do_replace")],
+        ]
+    else:
+        rows = [
+            [InlineKeyboardButton(text="✅ Создать посты в канале", callback_data="settings_max_catalog_do_new")],
+        ]
+    rows.append([InlineKeyboardButton(text="❌ Отмена", callback_data="settings_cancel_input")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def get_settings_intervals_keyboard(data: dict) -> InlineKeyboardMarkup:

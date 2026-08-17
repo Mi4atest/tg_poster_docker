@@ -242,6 +242,19 @@ def format_for_max(text: str, signature_enabled: bool = True) -> str:
     """
     formatted_text = format_post_text(text)
     formatted_text = re.sub(r'—{30}', '—' * 19, formatted_text)
+
+    try:
+        cfg = get_settings_service().get_all().get("signatures", {})
+        catalog_enabled = bool(cfg.get("telegram_used_catalog_button_enabled", True))
+        catalog_url = str(cfg.get("max_used_catalog_url") or "").strip()
+        if catalog_enabled and is_valid_catalog_button_url(catalog_url):
+            formatted_text += (
+                "\n> *🔄 Не подошла эта модель?*\n"
+                f"> Удобный выбор товаров в [нашем каталоге]({catalog_url})!\n"
+            )
+    except Exception:
+        pass
+
     formatted_text += get_telegram_signature(enabled=signature_enabled)
 
     # Преобразуем одинарные *...* в **...** для корректного bold в Max.

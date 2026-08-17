@@ -50,6 +50,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
         "telegram_used_catalog_button_enabled": env_settings.TELEGRAM_USED_CATALOG_BUTTON_ENABLED,
         "telegram_used_catalog_url": env_settings.TELEGRAM_USED_CATALOG_URL or "https://t.me/AppleShop43/12185",
         "vk_used_catalog_url": env_settings.VK_USED_CATALOG_URL or "",
+        "max_used_catalog_url": env_settings.MAX_USED_CATALOG_URL or "",
     },
     "publishing": {
         "interval_minutes": {
@@ -87,6 +88,9 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
         "vk_report_user_ids": list(env_settings.VK_REPORT_USER_IDS or []),
         "availability_message_ids": list(env_settings.AVAILABILITY_MESSAGE_IDS or []),
         "used_products_list_message_ids": list(env_settings.USED_PRODUCTS_LIST_MESSAGE_IDS or []),
+        "max_used_products_list_message_ids": list(
+            getattr(env_settings, "MAX_USED_PRODUCTS_LIST_MESSAGE_IDS", None) or []
+        ),
     },
     # Прайс в VK-канале (edit одного/нескольких сообщений по шаблону слотов).
     "vk_channel_price": {
@@ -186,6 +190,22 @@ def _normalize_int_list(value) -> list:
             result.append(int(item))
         except (TypeError, ValueError):
             continue
+    return result
+
+
+def _normalize_str_list(value) -> list:
+    """Принимает list | "a,b,c" | "" → list[str] без пустых."""
+    result: list = []
+    if value is None:
+        return result
+    if isinstance(value, (list, tuple)):
+        items = value
+    else:
+        items = str(value).split(",")
+    for item in items:
+        s = str(item).strip() if item is not None else ""
+        if s:
+            result.append(s)
     return result
 
 
@@ -351,6 +371,15 @@ class SettingsService:
         ids = _normalize_int_list(self.get_all().get("reports", {}).get("used_products_list_message_ids"))
         return ids or list(env_settings.USED_PRODUCTS_LIST_MESSAGE_IDS or [])
 
+    def get_max_used_products_list_message_ids(self) -> list:
+        ids = _normalize_str_list(
+            self.get_all().get("reports", {}).get("max_used_products_list_message_ids")
+        )
+        return ids or list(getattr(env_settings, "MAX_USED_PRODUCTS_LIST_MESSAGE_IDS", None) or [])
+
+    def set_max_used_products_list_message_ids(self, ids: list) -> None:
+        self.update({"reports": {"max_used_products_list_message_ids": _normalize_str_list(ids)}})
+
     def get_vk_channel_price_config(self) -> Dict[str, Any]:
         data = dict(self.get_all().get("vk_channel_price") or {})
         defaults = DEFAULT_SETTINGS["vk_channel_price"]
@@ -470,6 +499,9 @@ class SettingsService:
 
         raw = str(self.get_all()["signatures"].get("vk_used_catalog_url") or "").strip()
         return (rewrite_vk_com_to_ru(raw) or "").strip()
+
+    def get_max_used_catalog_url(self) -> str:
+        return str(self.get_all()["signatures"].get("max_used_catalog_url") or "").strip()
 
     def is_vk_market_publish_allowed(self) -> bool:
         """Публикация товара в VK Market: мастер-флаг VK_MARKET_ENABLED и переключатель в БД."""

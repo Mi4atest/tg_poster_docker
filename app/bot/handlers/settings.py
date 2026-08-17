@@ -23,6 +23,8 @@ from app.bot.keyboards.settings_keyboard import (
     get_settings_signatures_edit_keyboard,
     get_settings_signatures_keyboard,
     get_vk_channel_price_keyboard,
+    get_max_catalog_reserve_count_keyboard,
+    get_max_catalog_reserve_confirm_keyboard,
 )
 from app.services.settings_service import get_settings_service
 from app.utils.signatures import get_instagram_signature, get_telegram_signature, get_vk_signature
@@ -59,6 +61,7 @@ class SettingsState(StatesGroup):
     waiting_for_integration_value = State()
     waiting_for_channel_value = State()
     waiting_for_report_value = State()
+    waiting_for_max_catalog_slot_count = State()
     waiting_for_backup_value = State()
     waiting_for_backup_schedule = State()
     waiting_for_price_tag_value = State()
@@ -94,6 +97,7 @@ def _build_signatures_contacts_text() -> str:
         f"- Instagram: {signatures.get('instagram') or 'не задано'}\n"
         f"- Каталог б/у (Telegram): {signatures.get('telegram_used_catalog_url') or 'не задано'}\n"
         f"- Каталог б/у (VK): {signatures.get('vk_used_catalog_url') or 'не задано'}\n"
+        f"- Каталог б/у (Max): {signatures.get('max_used_catalog_url') or 'не задано'}\n"
     )
 
 
@@ -390,6 +394,22 @@ async def request_vk_catalog_url(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
+@router.callback_query(F.data == "settings_edit_max_catalog_url")
+async def request_max_catalog_url(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(SettingsState.waiting_for_signature_value)
+    await state.update_data(
+        signature_field="max_used_catalog_url",
+        input_return_callback="settings_signatures",
+    )
+    current = _get_signature_field_current_value("max_used_catalog_url")
+    await callback.message.edit_text(
+        f"Текущая ссылка каталога б/у для Max:\n{current}\n\n"
+        "Введите новый URL (https://max.ru/c/…):",
+        reply_markup=get_input_cancel_keyboard("settings_signatures"),
+    )
+    await callback.answer()
+
+
 @router.callback_query(F.data == "settings_intervals")
 async def open_intervals(callback: CallbackQuery):
     service = get_settings_service()
@@ -658,7 +678,7 @@ async def save_signature_value(message: Message, state: FSMContext):
         await message.answer("❌ Не удалось определить поле подписи.")
         return
     raw = (message.text or "").strip()
-    if field in ("telegram_used_catalog_url", "vk_used_catalog_url"):
+    if field in ("telegram_used_catalog_url", "vk_used_catalog_url", "max_used_catalog_url"):
         if not is_valid_catalog_button_url(raw):
             await message.answer(
                 "❌ Укажите корректный URL с протоколом https:// или http:// (например https://t.me/…)."
@@ -912,28 +932,227 @@ def _build_reports_text() -> str:
     vk_ids = ", ".join(str(x) for x in svc.get_vk_report_user_ids()) or "не заданы"
     avail = ", ".join(str(x) for x in svc.get_availability_message_ids()) or "не заданы"
     used = ", ".join(str(x) for x in svc.get_used_products_list_message_ids()) or "не заданы"
+    used_max_ids = list(svc.get_max_used_products_list_message_ids() or [])
+    used_max = ", ".join(used_max_ids) or "не заданы"
     return (
         "🗂 Отчёты и списки\n\n"
-        f"VK получатели отчёта: {vk_ids}\n"
-        f"ID сообщений «Наличие» (полный прайс ТГ): {avail}\n"
-        f"ID сообщений «Список б/у»: {used}\n\n"
-        "«Наличие» — несколько ID через запятую (например 11728,11729,11730,11731).\n"
-        "Бот только редактирует эти сообщения, новые посты не создаёт.\n"
-        "Значения — целые числа через запятую."
+        f"VK получатели отчёта: {escape(vk_ids)}\n"
+        f"ID сообщений «Наличие» (полный прайс ТГ): {escape(avail)}\n"
+        f"ID сообщений «Список б/у» (ТГ): {escape(used)}\n"
+        f"ID сообщений «Список б/у» (Max): {escape(used_max)}\n\n"
+        "Telegram: целые <code>message_id</code> через запятую, по порядку сверху вниз.\n"
+        "Пример ТГ: <code>11728,11729,11730,11731</code>\n\n"
+        "Max: mid вводить не нужно — кнопка «Создать каталог б/у в Max» сама "
+        "отправит посты в <b>канал этого сервера</b> и запомнит ID. "
+        "Чужой канал того же бота не используется.\n"
+        "Пример Max (если вставляете вручную): "
+        "<code>mid.ffffbf41cd8a8a9701a010b89a821a2b, "
+        "mid.ffffbf41cd8a8a9701a010b89d561a2b</code>\n\n"
+        "Бот только редактирует запомненные сообщения, новые посты в каталог сам не плодит."
     )
 
 
-_REPORT_FIELDS = {
+_REPORT_INT_FIELDS = {
     "vk_report_user_ids",
     "availability_message_ids",
     "used_products_list_message_ids",
 }
+_REPORT_STR_FIELDS = {
+    "max_used_products_list_message_ids",
+}
+_REPORT_FIELDS = _REPORT_INT_FIELDS | _REPORT_STR_FIELDS
 
 
 @router.callback_query(F.data == "settings_reports")
-async def open_reports(callback: CallbackQuery):
-    await callback.message.edit_text(_build_reports_text(), reply_markup=get_settings_reports_keyboard())
+async def open_reports(callback: CallbackQuery, state: FSMContext | None = None):
+    if state is not None:
+        await state.clear()
+    await callback.message.edit_text(
+        _build_reports_text(),
+        reply_markup=get_settings_reports_keyboard(),
+        parse_mode="HTML",
+    )
     await callback.answer()
+
+
+@router.callback_query(F.data == "settings_max_catalog_reserve")
+async def start_max_catalog_reserve(callback: CallbackQuery, state: FSMContext):
+    svc = get_settings_service()
+    chat_id = (svc.get_max_channel_id() or "").strip()
+    if not chat_id:
+        await callback.answer("Сначала задайте ID канала Max в «Каналы публикации».", show_alert=True)
+        return
+    await state.set_state(SettingsState.waiting_for_max_catalog_slot_count)
+    await state.update_data(input_return_callback="settings_reports")
+    existing = list(svc.get_max_used_products_list_message_ids() or [])
+    existing_line = (
+        f"Сейчас уже зарезервировано: <b>{len(existing)}</b> сообщений.\n"
+        if existing
+        else "Слотов пока нет — mid вводить не нужно, бот создаст их сам.\n"
+    )
+    await callback.message.edit_text(
+        "💬 Создать каталог б/у в Max\n\n"
+        f"Посты уйдут в канал <b>этого</b> сервера:\n<code>{escape(chat_id)}</code>\n\n"
+        f"{existing_line}\n"
+        "Сколько сообщений создать? Обычно <b>15</b>.\n"
+        "Можно нажать кнопку или прислать число от 1 до 30.",
+        reply_markup=get_max_catalog_reserve_count_keyboard(),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+async def _show_max_catalog_confirm(callback_or_message, state: FSMContext, count: int) -> None:
+    svc = get_settings_service()
+    existing = list(svc.get_max_used_products_list_message_ids() or [])
+    from app.bot.utils.used_products_max_channel_updater import fetch_max_catalog_target
+
+    target = await fetch_max_catalog_target()
+    chat_id = target.get("chat_id") or (svc.get_max_channel_id() or "").strip()
+    title = target.get("title") or ""
+    title_line = f"Название: <b>{escape(title)}</b>\n" if title else ""
+    await state.update_data(
+        max_catalog_slot_count=count,
+        input_return_callback="settings_reports",
+    )
+    await state.set_state(SettingsState.waiting_for_max_catalog_slot_count)
+
+    if existing:
+        extra = (
+            f"Уже сохранено слотов: <b>{len(existing)}</b>.\n"
+            "«Добавить» допишет новые посты в конец каталога.\n"
+            "«Создать новые» забудет старые ID (посты в канале останутся как есть) "
+            "и начнёт список заново.\n\n"
+        )
+    else:
+        extra = ""
+
+    text = (
+        "Подтверждение\n\n"
+        f"Канал Max этого сервера:\n<code>{escape(chat_id)}</code>\n"
+        f"{title_line}\n"
+        f"В канал уйдёт <b>{count}</b> постов «зарезервировано ⬇️», "
+        "потом в них запишется актуальный список б/у.\n\n"
+        f"{extra}"
+        "Чужой канал того же бота не используется — только ID из настроек этого проекта.\n"
+        "Продолжить?"
+    )
+    markup = get_max_catalog_reserve_confirm_keyboard(has_existing=bool(existing))
+    if isinstance(callback_or_message, CallbackQuery):
+        await callback_or_message.message.edit_text(text, reply_markup=markup, parse_mode="HTML")
+        await callback_or_message.answer()
+    else:
+        await callback_or_message.answer(text, reply_markup=markup, parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("settings_max_catalog_count_"))
+async def pick_max_catalog_count(callback: CallbackQuery, state: FSMContext):
+    raw = callback.data.replace("settings_max_catalog_count_", "")
+    try:
+        count = int(raw)
+    except ValueError:
+        await callback.answer("Неверное число", show_alert=True)
+        return
+    if count < 1 or count > 30:
+        await callback.answer("Допустимо 1–30", show_alert=True)
+        return
+    await _show_max_catalog_confirm(callback, state, count)
+
+
+@router.message(SettingsState.waiting_for_max_catalog_slot_count)
+async def typed_max_catalog_count(message: Message, state: FSMContext):
+    raw = (message.text or "").strip()
+    if not raw.isdigit():
+        await message.answer("Введите число от 1 до 30 или нажмите кнопку.")
+        return
+    count = int(raw)
+    if count < 1 or count > 30:
+        await message.answer("Допустимо от 1 до 30.")
+        return
+    await _show_max_catalog_confirm(message, state, count)
+
+
+@router.callback_query(F.data.in_({
+    "settings_max_catalog_do_new",
+    "settings_max_catalog_do_append",
+    "settings_max_catalog_do_replace",
+}))
+async def run_max_catalog_reserve(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    count = int(data.get("max_catalog_slot_count") or 0)
+    if count < 1 or count > 30:
+        await callback.answer("Сначала выберите число слотов.", show_alert=True)
+        return
+    mode = callback.data.replace("settings_max_catalog_do_", "")
+    append = mode == "append"
+    force = mode == "replace"
+    svc = get_settings_service()
+    chat_id = (svc.get_max_channel_id() or "").strip()
+    await callback.answer()
+    await callback.message.edit_text(
+        f"Создаю {count} постов в канале Max <code>{escape(chat_id)}</code>…\n"
+        "Это займёт около минуты, mid подставятся сами.",
+        parse_mode="HTML",
+    )
+    try:
+        from app.bot.utils.used_products_max_channel_updater import (
+            reserve_and_fill_max_used_catalog,
+        )
+
+        ids, ok = await reserve_and_fill_max_used_catalog(
+            count, force=force, append=append
+        )
+    except Exception as exc:
+        await state.clear()
+        await callback.message.edit_text(
+            f"❌ Не удалось создать каталог Max:\n{escape(str(exc))}",
+            reply_markup=get_settings_reports_keyboard(),
+            parse_mode="HTML",
+        )
+        return
+
+    await state.clear()
+    catalog_url = svc.get_max_used_catalog_url() or "не задан"
+    status = "список записан" if ok else "слоты созданы, но список не записался"
+    await callback.message.edit_text(
+        f"✅ Каталог б/у в Max: {status}.\n\n"
+        f"Канал: <code>{escape(chat_id)}</code>\n"
+        f"Слотов в настройках: <b>{len(ids)}</b>\n"
+        f"Ссылка на первый пост: {escape(catalog_url)}\n\n"
+        "Mid сохранены на этом сервере. Другой проект с тем же ботом их не подхватит.",
+        reply_markup=get_settings_reports_keyboard(),
+        parse_mode="HTML",
+    )
+
+
+_REPORT_FIELD_HINTS = {
+    "vk_report_user_ids": (
+        "VK user_id получателей отчёта — целые числа через запятую.\n"
+        "Пример: <code>123456789,987654321</code>\n"
+        "«-» — очистить."
+    ),
+    "availability_message_ids": (
+        "ID сообщений прайса «Наличие» в Telegram-канале.\n"
+        "Только целые <code>message_id</code> через запятую, сверху вниз.\n"
+        "Пример: <code>11728,11729,11730,11731</code>\n"
+        "Править можно только сообщения этого бота. «-» — очистить."
+    ),
+    "used_products_list_message_ids": (
+        "ID сообщений каталога б/у в Telegram-канале.\n"
+        "Только целые <code>message_id</code> через запятую, сверху вниз.\n"
+        "Пример: <code>12185,12186,12187,12188</code>\n"
+        "Править можно только сообщения этого бота. «-» — очистить."
+    ),
+    "max_used_products_list_message_ids": (
+        "mid сообщений каталога б/у в канале Max.\n"
+        "Строки вида <code>mid.xxxxxxxx</code> через запятую (или с новой строки), "
+        "в том же порядке, что посты в канале.\n"
+        "Пример: <code>mid.ffffbf41cd8a8a9701a010b89a821a2b, "
+        "mid.ffffbf41cd8a8a9701a010b89d561a2b</code>\n\n"
+        "Это не числа Telegram. Для другого проекта/бота Max эти mid не подойдут — "
+        "нужны слоты, которые отправил бот того проекта. «-» — очистить."
+    ),
+}
 
 
 @router.callback_query(F.data.startswith("settings_edit_report_"))
@@ -944,10 +1163,20 @@ async def request_report_value(callback: CallbackQuery, state: FSMContext):
         return
     await state.set_state(SettingsState.waiting_for_report_value)
     await state.update_data(report_field=field, input_return_callback="settings_reports")
+    svc = get_settings_service()
+    if field == "max_used_products_list_message_ids":
+        current = ", ".join(str(x) for x in svc.get_max_used_products_list_message_ids()) or "не заданы"
+    elif field == "used_products_list_message_ids":
+        current = ", ".join(str(x) for x in svc.get_used_products_list_message_ids()) or "не заданы"
+    elif field == "availability_message_ids":
+        current = ", ".join(str(x) for x in svc.get_availability_message_ids()) or "не заданы"
+    else:
+        current = ", ".join(str(x) for x in svc.get_vk_report_user_ids()) or "не заданы"
+    hint = _REPORT_FIELD_HINTS.get(field, "Введите значения через запятую или «-» для очистки.")
     await callback.message.edit_text(
-        f"Текущее значение `{field}`.\n\n"
-        "Введите ID через запятую (например 100,101,102) или «-» для очистки:",
+        f"Текущее значение:\n<code>{escape(current)}</code>\n\n{hint}",
         reply_markup=get_input_cancel_keyboard("settings_reports"),
+        parse_mode="HTML",
     )
     await callback.answer()
 
@@ -963,9 +1192,21 @@ async def save_report_value(message: Message, state: FSMContext):
     raw = (message.text or "").strip()
     if raw in ("-", "none", "нет", "сброс", ""):
         ids: list = []
+    elif field in _REPORT_STR_FIELDS:
+        ids = [part.strip() for part in re.split(r"[\s,]+", raw) if part.strip()]
+        if not ids:
+            await message.answer("❌ Укажите mid через запятую или «-» для очистки.")
+            return
+        bad = [x for x in ids if not re.match(r"^mid\.[A-Za-z0-9._-]+$", x)]
+        if bad:
+            await message.answer(
+                "❌ Для Max нужны mid вида mid.xxxx через запятую.\n"
+                f"Не похоже на mid: {bad[0]}"
+            )
+            return
     else:
         ids = []
-        for part in raw.replace(" ", "").split(","):
+        for part in re.split(r"[\s,]+", raw):
             if not part:
                 continue
             if not part.lstrip("-").isdigit():

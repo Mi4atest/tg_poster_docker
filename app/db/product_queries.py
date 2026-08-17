@@ -165,11 +165,13 @@ def sync_telegram_links_to_products(db: Session) -> tuple[int, int, int, int]:
 
 
 def fetch_used_products_for_list(db: Session) -> list[dict[str, Any]]:
-    """Активные б/у товары со ссылками и датой публикации TG из поста."""
+    """Активные б/у товары со ссылками и датами публикации TG/Max из поста."""
     rows = db.execute(
         text(
             "SELECT p.id, p.name, p.price, p.telegram_link, p.vk_product_link, "
-            "po.published_telegram_at "
+            "p.max_link, p.max_share_url, "
+            "po.published_telegram_at, po.published_max_at, "
+            "po.max_share_url AS post_max_share_url "
             "FROM products p "
             "LEFT JOIN posts po ON po.id = p.post_id "
             "WHERE p.status = 'active' "
@@ -192,7 +194,10 @@ def fetch_used_products_for_list(db: Session) -> list[dict[str, Any]]:
             "price": r["price"] or "Цена не указана",
             "telegram_link": r["telegram_link"],
             "vk_product_link": r["vk_product_link"],
+            "max_link": r["max_link"],
+            "max_share_url": r["max_share_url"] or r["post_max_share_url"],
             "published_telegram_at": r["published_telegram_at"],
+            "published_max_at": r["published_max_at"],
         }
         for r in rows
     ]

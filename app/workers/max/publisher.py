@@ -7,9 +7,9 @@ import aiohttp
 from sqlalchemy import text
 
 from app.api.models.post import PublicationLog
-from app.config.settings import MAX_API_BASE_URL, MAX_BOT_TOKEN, TELEGRAM_BOT_TOKEN
+from app.config.settings import MAX_API_BASE_URL, MAX_BOT_TOKEN, MEDIA_DIR, TELEGRAM_BOT_TOKEN
 from app.db.database import SessionLocal
-from app.db.post_queries import fetch_post, insert_publication_log
+from app.db.post_queries import fetch_post, fetch_product_row_by_post_id, insert_publication_log
 from app.services.settings_service import get_settings_service
 from app.integrations.max.client import MaxApiClient, extract_message_id
 from app.utils.text_formatter import format_for_max, format_for_max_plain
@@ -36,6 +36,13 @@ class MaxPublisher:
             if not post:
                 logger.error("Post %s not found", post_id)
                 return False
+            product_row = fetch_product_row_by_post_id(db, post_id) or {}
+            vk_product_id = product_row.get("vk_product_id")
+            storage_path = getattr(post, "storage_path", None)
+            try:
+                db.rollback()
+            except Exception:
+                pass
 
             formatted_text = format_for_max(post.text or "", signature_enabled=signature_enabled)
             plain_text = format_for_max_plain(post.text or "", signature_enabled=signature_enabled)
@@ -55,12 +62,38 @@ class MaxPublisher:
                     media.extend({"type": "video", "media": item} for item in videos[1:])
 
                 prepared_media: list[dict] = []
+                media_sources: list[dict] = []
+                expected_count = sum(1 for item in media if item.get("media"))
+                photo_i = 0
+                video_i = 0
                 for idx, item in enumerate(media):
                     file_id = item.get("media")
                     m_type = item.get("type")
                     if not file_id:
                         continue
-                    file_bytes, filename = await self._download_telegram_media(file_id, m_type)
+                    if m_type == "image":
+                        local_idx = photo_i
+                        photo_i += 1
+                    else:
+                        local_idx = video_i
+                        video_i += 1
+                    file_bytes, filename, source = await self._load_media_bytes(
+                        file_id,
+                        m_type,
+                        idx,
+                        local_idx=local_idx,
+                        vk_product_id=vk_product_id,
+                        storage_path=storage_path,
+                    )
+                    media_sources.append(
+                        {
+                            "idx": idx,
+                            "local_idx": local_idx,
+                            "type": m_type,
+                            "source": source,
+                            "bytes": len(file_bytes or b""),
+                        }
+                    )
                     upload_resp = await client.create_upload("video" if m_type == "video" else "image")
                     upload_url = upload_resp.get("url")
                     if not upload_url:
@@ -72,10 +105,22 @@ class MaxPublisher:
                     else:
                         payload = upload_result
                     prepared_item = {"type": m_type, "payload": payload}
-                    if idx == 0:
+                    if not prepared_media:
                         prepared_item["caption"] = formatted_text
                         prepared_item["parse_mode"] = parse_mode
                     prepared_media.append(prepared_item)
+                logger.info(
+                    "Max media for %s: prepared=%s/%s sources=%s",
+                    post_id,
+                    len(prepared_media),
+                    expected_count,
+                    media_sources,
+                )
+                if len(prepared_media) != expected_count:
+                    raise RuntimeError(
+                        "Max: неполная медиагруппа, в канал не отправляем "
+                        f"({len(prepared_media)}/{expected_count})"
+                    )
 
                 try:
                     resp = await client.send_media_group(max_channel_id, prepared_media)
@@ -182,11 +227,173 @@ class MaxPublisher:
             return True
         except Exception as exc:
             logger.error("Error publishing post %s to Max: %s", post_id, exc)
-            insert_publication_log(db, post_id, "max", "error", str(exc))
-            db.commit()
+            try:
+                insert_publication_log(db, post_id, "max", "error", str(exc))
+                db.commit()
+            except Exception as log_err:
+                logger.warning(
+                    "Max: failed to write publication_log for %s: %s", post_id, log_err
+                )
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+                db2 = SessionLocal()
+                try:
+                    insert_publication_log(db2, post_id, "max", "error", str(exc))
+                    db2.commit()
+                except Exception:
+                    try:
+                        db2.rollback()
+                    except Exception:
+                        pass
+                finally:
+                    db2.close()
             return False
         finally:
             db.close()
+
+    async def _load_media_bytes(
+        self,
+        file_id: str,
+        media_type: str,
+        idx: int,
+        *,
+        local_idx: int,
+        vk_product_id,
+        storage_path,
+    ) -> tuple[bytes, str, str]:
+        try:
+            content, filename = await self._download_telegram_media(file_id, media_type)
+            return content, filename, "telegram"
+        except Exception as tg_err:
+            logger.warning(
+                "Max: Telegram media failed idx=%s local_idx=%s type=%s: %s",
+                idx,
+                local_idx,
+                media_type,
+                tg_err,
+            )
+            local, local_name = self._read_local_media(storage_path, media_type, local_idx)
+            if local:
+                logger.info(
+                    "Max: media idx=%s type=%s recovered from local %s (%s bytes)",
+                    idx,
+                    media_type,
+                    local_name,
+                    len(local),
+                )
+                return local, local_name or f"local_{local_idx}", "local"
+            if media_type == "image":
+                vk_url = await self._vk_market_photo_url(vk_product_id, local_idx)
+                if vk_url:
+                    content = await self._download_http_bytes(vk_url)
+                    logger.info(
+                        "Max: photo local_idx=%s recovered from VK market last-resort (%s bytes)",
+                        local_idx,
+                        len(content),
+                    )
+                    return content, f"vk_market_{local_idx}.jpg", "vk_market"
+            raise RuntimeError(
+                f"Max: media idx={idx} type={media_type} Telegram failed and no fallback: {tg_err}"
+            ) from tg_err
+
+    def _read_local_media(
+        self, storage_path, media_type: str, local_idx: int
+    ) -> tuple[bytes | None, str | None]:
+        if not storage_path:
+            return None, None
+        post_dir = MEDIA_DIR / str(storage_path)
+        if media_type == "image":
+            names = (
+                f"photo_{local_idx}.jpg",
+                f"photo_{local_idx}.jpeg",
+                f"photo_{local_idx}.png",
+                f"photo_{local_idx}.webp",
+            )
+        else:
+            names = (f"video_{local_idx}.mp4", f"video_{local_idx}.mov")
+        for name in names:
+            path = post_dir / name
+            try:
+                if path.is_file() and path.stat().st_size > 0:
+                    return path.read_bytes(), name
+            except Exception:
+                continue
+        return None, None
+
+    async def _vk_market_photo_url(self, vk_product_id, idx: int) -> str | None:
+        urls = await self._vk_market_photo_urls(vk_product_id)
+        if 0 <= idx < len(urls):
+            return urls[idx]
+        return None
+
+    async def _vk_market_photo_urls(self, vk_product_id) -> list[str]:
+        cached = getattr(self, "_vk_market_photo_urls_cache", None)
+        if cached is not None:
+            return cached
+        self._vk_market_photo_urls_cache = []
+        if not vk_product_id:
+            return self._vk_market_photo_urls_cache
+        try:
+            from app.utils.vk_client import community_token, resolved_vk_group_id_int
+            from app.utils.vk_urls import api_method_url
+
+            token = community_token()
+            if not token:
+                return self._vk_market_photo_urls_cache
+            gid = resolved_vk_group_id_int()
+            item_ids = f"-{gid}_{int(vk_product_id)}"
+            params = {
+                "item_ids": item_ids,
+                "extended": 1,
+                "access_token": token,
+                "v": "5.199",
+            }
+            timeout = aiohttp.ClientTimeout(total=30)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(api_method_url("market.getById"), params=params) as resp:
+                    payload = await resp.json(content_type=None)
+            if payload.get("error"):
+                logger.warning("Max VK market.getById error: %s", payload.get("error"))
+                return self._vk_market_photo_urls_cache
+            items = (payload.get("response") or {}).get("items") or []
+            if not items:
+                return self._vk_market_photo_urls_cache
+            urls: list[str] = []
+            for photo in items[0].get("photos") or []:
+                url = self._pick_largest_vk_photo_url(photo.get("sizes") or [])
+                if url:
+                    urls.append(url)
+            self._vk_market_photo_urls_cache = urls
+        except Exception as exc:
+            logger.warning("Max VK market photo fallback failed: %s", exc)
+        return self._vk_market_photo_urls_cache
+
+    @staticmethod
+    def _pick_largest_vk_photo_url(sizes: list) -> str | None:
+        best_url = None
+        best_area = -1
+        for size in sizes:
+            url = size.get("url") if isinstance(size, dict) else None
+            if not url:
+                continue
+            area = int(size.get("width") or 0) * int(size.get("height") or 0)
+            if area > best_area:
+                best_area = area
+                best_url = url
+        return best_url
+
+    async def _download_http_bytes(self, url: str) -> bytes:
+        timeout = aiohttp.ClientTimeout(total=60)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url) as resp:
+                if resp.status >= 400:
+                    raise RuntimeError(f"VK photo download failed status={resp.status}")
+                content = await resp.read()
+        if not content:
+            raise RuntimeError("VK photo download empty")
+        return content
 
     async def _download_telegram_media(self, file_id: str, media_type: str) -> tuple[bytes, str]:
         if not TELEGRAM_BOT_TOKEN:

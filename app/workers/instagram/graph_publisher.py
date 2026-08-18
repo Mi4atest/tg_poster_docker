@@ -94,6 +94,10 @@ class InstagramGraphPublisher:
         self.video_ready_timeout_seconds = int(
             os.getenv("INSTAGRAM_GRAPH_VIDEO_TIMEOUT_SECONDS", "180")
         )
+        self.publish_retries = int(os.getenv("INSTAGRAM_GRAPH_PUBLISH_RETRIES", "8"))
+        self.publish_retry_delay_seconds = int(
+            os.getenv("INSTAGRAM_GRAPH_PUBLISH_RETRY_DELAY_SECONDS", "3")
+        )
         self.vk_api_version = os.getenv("VK_API_VERSION", "5.199")
         self._last_graph_error: Optional[str] = None
         self._last_graph_error_code: Optional[int] = None
@@ -202,7 +206,7 @@ class InstagramGraphPublisher:
                 if self._last_graph_error_code == 190:
                     details = f"OAuthException code 190: {details}"
                     await send_admin_alert(f"Instagram OAuthException (code 190) при публикации media: {details}")
-                self._log_error(db, post_id, f"Graph API ошибка: {details}")
+                self._log_error_safe(post_id, f"Graph API ошибка: {details}")
                 return False
 
             published_media_id = self._last_published_media_id
@@ -259,15 +263,7 @@ class InstagramGraphPublisher:
             return True
         except Exception as exc:
             logger.error(f"Ошибка Graph API при публикации поста {post_id}: {exc}")
-            try:
-                self._log_error(db, post_id, f"Ошибка Graph API: {exc}")
-            except Exception:
-                try:
-                    db2 = SessionLocal()
-                    self._log_error(db2, post_id, f"Ошибка Graph API: {exc}")
-                    db2.close()
-                except Exception:
-                    logger.exception("Failed to write IG error log for %s", post_id)
+            self._log_error_safe(post_id, f"Ошибка Graph API: {exc}")
             return False
         finally:
             try:
@@ -278,6 +274,22 @@ class InstagramGraphPublisher:
     def _log_error(self, db, post_id: str, message: str) -> None:
         insert_publication_log(db, post_id, "instagram", "error", message)
         db.commit()
+
+    def _log_error_safe(self, post_id: str, message: str) -> None:
+        db = SessionLocal()
+        try:
+            self._log_error(db, post_id, message)
+        except Exception as exc:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            logger.exception("Failed to persist IG publication log for %s: %s", post_id, exc)
+        finally:
+            try:
+                db.close()
+            except Exception:
+                pass
 
     def _is_uri_reject_error(self) -> bool:
         """Meta не смогла скачать URI (часто VK CDN) — нужен fallback на другой источник."""
@@ -823,7 +835,7 @@ class InstagramGraphPublisher:
         endpoint = f"{self.base_url}/{self.ig_user_id}/media_publish"
         payload = {"creation_id": creation_id, "access_token": self.access_token}
         timeout = aiohttp.ClientTimeout(total=self.timeout_seconds)
-        retries = 3
+        retries = max(3, self.publish_retries)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             for attempt in range(1, retries + 1):
                 async with session.post(endpoint, data=payload) as response:
@@ -843,7 +855,14 @@ class InstagramGraphPublisher:
                         status_code = await self._get_creation_status_code(
                             creation_id, session=session
                         )
-                        await asyncio.sleep(2)
+                        logger.warning(
+                            "IG media_publish retry post creation_id=%s attempt=%s/%s status=%s",
+                            creation_id,
+                            attempt,
+                            retries,
+                            status_code,
+                        )
+                        await asyncio.sleep(min(self.publish_retry_delay_seconds * attempt, 12))
                         continue
                     return False
         return False

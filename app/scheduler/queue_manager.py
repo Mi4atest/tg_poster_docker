@@ -3,7 +3,7 @@ import threading
 from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import List, Optional, Dict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, desc, text
 
@@ -277,6 +277,47 @@ class QueueManager:
             logger.error("Error resetting queue items: %s", e)
             self.db.rollback()
             return 0
+
+    def recover_stale_publishing_items(self, stale_minutes: Optional[int] = None) -> int:
+        """Вернуть зависшие publishing-задачи в pending.
+
+        При stale_minutes=None (старт приложения) сбрасываются все publishing —
+        после рестарта активной публикации уже нет.
+        """
+        with self._isolated_session() as db:
+            try:
+                if stale_minutes is None:
+                    rows = db.execute(
+                        text(
+                            "UPDATE publication_queue SET status = 'pending', error_message = NULL "
+                            "WHERE status = 'publishing' RETURNING id, post_id, platform"
+                        )
+                    ).fetchall()
+                else:
+                    cutoff = datetime.now(timezone.utc) - timedelta(minutes=stale_minutes)
+                    rows = db.execute(
+                        text(
+                            "UPDATE publication_queue SET status = 'pending' "
+                            "WHERE status = 'publishing' AND created_at < :cutoff "
+                            "RETURNING id, post_id, platform"
+                        ),
+                        {"cutoff": cutoff},
+                    ).fetchall()
+                if rows:
+                    db.commit()
+                    for row in rows:
+                        logger.warning(
+                            "Recovered stale publishing queue item id=%s post=%s platform=%s",
+                            row[0],
+                            row[1],
+                            row[2],
+                        )
+                    return len(rows)
+                return 0
+            except Exception as e:
+                logger.error("Error recovering stale publishing items: %s", e)
+                db.rollback()
+                return 0
 
     def get_next_post(self, platform: str) -> Optional[PublicationQueue]:
         """Получить следующий пост для публикации на указанной платформе."""

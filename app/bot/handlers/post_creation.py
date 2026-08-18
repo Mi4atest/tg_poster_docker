@@ -71,25 +71,10 @@ async def create_post_api(text, photos, videos, avito_draft=None):
             }
             if isinstance(avito_draft, dict):
                 data["avito_draft"] = avito_draft
-            # #region agent log
-            logger.info(
-                "create_post_api start url=%s photos=%s videos=%s hypothesisId=D",
-                url,
-                len(data["photos"]),
-                len(data["videos"]),
-            )
-            # #endregion
 
             try:
                 async with session.post(url, json=data) as response:
                     elapsed_ms = (time.perf_counter() - t0) * 1000
-                    # #region agent log
-                    logger.info(
-                        "create_post_api response status=%s elapsed_ms=%.0f hypothesisId=D",
-                        response.status,
-                        elapsed_ms,
-                    )
-                    # #endregion
 
                     if response.status == 201:
                         result = await response.json()

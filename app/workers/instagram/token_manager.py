@@ -14,6 +14,11 @@ def _is_api_access_blocked(error: str) -> bool:
     return "API access blocked" in (error or "")
 
 
+def _is_request_limit_error(error: str) -> bool:
+    text = (error or "").lower()
+    return "application request limit reached" in text or "(#4)" in text
+
+
 class InstagramGraphTokenManager:
     def __init__(self) -> None:
         self.settings_service = get_settings_service()
@@ -254,8 +259,31 @@ class InstagramGraphTokenManager:
         if not token or not user_id:
             return False, "Graph API не настроен: требуется token и user_id"
 
+        # Не дергаем /debug_token на каждый пост: используем свежий успешный preflight из настроек.
+        integrations = self._get_integrations()
+        last_check_raw = str(integrations.get("instagram_graph_token_last_check_at") or "")
+        last_error_raw = str(integrations.get("instagram_graph_token_last_error") or "")
+        last_check_at = self._parse_datetime(last_check_raw)
+        if (
+            last_check_at
+            and not last_error_raw
+            and (datetime.now(timezone.utc) - last_check_at).total_seconds() < 15 * 60
+        ):
+            return True, ""
+
         valid, error, expires_at = await self.debug_token(token)
         if not valid:
+            # Graph API code=4 — transient rate-limit. Токен не обязательно отозван,
+            # поэтому не блокируем публикацию из-за проверки /debug_token.
+            if _is_request_limit_error(error):
+                self._update_integrations(
+                    {
+                        "instagram_graph_token_last_check_at": self._now_iso(),
+                        "instagram_graph_token_last_error": "Preflight limit reached: /debug_token rate limited",
+                    }
+                )
+                logger.warning("Instagram /debug_token rate-limited, continue publish without preflight block")
+                return True, ""
             if "INSTAGRAM_GRAPH_APP_ID/INSTAGRAM_GRAPH_APP_SECRET" in error:
                 self._update_integrations(
                     {

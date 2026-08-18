@@ -315,14 +315,6 @@ async def get_post_api(post_id):
                 elapsed_ms = (time.perf_counter() - t0) * 1000
                 if response.status == 200:
                     post_data = await response.json()
-                    # #region agent log
-                    logger.info(
-                        "get_post_api post_id=%s status=%s elapsed_ms=%.0f hypothesisId=E",
-                        post_id,
-                        response.status,
-                        elapsed_ms,
-                    )
-                    # #endregion
                     return post_data
                 logger.warning(
                     "get_post_api failed post_id=%s status=%s elapsed_ms=%.0f",

@@ -159,8 +159,9 @@ class PlatformWorker:
                     queue_item = self.queue_manager.get_next_post(self.platform)
 
                 if queue_item:
-                    self.queue_manager.mark_as_publishing(queue_item.id)
                     await self.wait_for_interval()
+                    if not self.queue_manager.mark_as_publishing(queue_item.id):
+                        continue
                     await self.publish_post(queue_item.id, queue_item.post_id)
                 else:
                     await asyncio.sleep(5)

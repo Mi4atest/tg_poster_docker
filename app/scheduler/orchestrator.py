@@ -57,7 +57,11 @@ class PublicationOrchestrator:
         """Запустить workers в асинхронном контексте."""
         if not self.is_running:
             return
-        
+
+        recovered = self.queue_manager.recover_stale_publishing_items()
+        if recovered:
+            logger.warning("Recovered %s stale publishing queue item(s) on startup", recovered)
+
         platforms = ["vk", "telegram", "instagram", "max", "avito"]
         for platform in platforms:
             if platform in self.workers and platform not in self.worker_tasks:

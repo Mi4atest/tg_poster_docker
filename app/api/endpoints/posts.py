@@ -6,7 +6,6 @@ from datetime import datetime, timezone
 import logging
 import os
 import json
-import time
 
 from pydantic import BaseModel
 
@@ -86,7 +85,6 @@ def create_storage_path(post_name: str) -> str:
 @router.post("/", response_model=PostSchema, status_code=status.HTTP_201_CREATED)
 def create_post(post_data: PostCreate, db: Session = Depends(get_db)):
     """Create a new post."""
-    t0 = time.perf_counter()
     # Generate post name from text
     post_name = generate_post_name(post_data.text)
 
@@ -114,16 +112,6 @@ def create_post(post_data: PostCreate, db: Session = Depends(get_db)):
     created_at = db_post.created_at
     updated_at = db_post.updated_at
     db.commit()
-    t_commit = time.perf_counter()
-    # #region agent log
-    logger.info(
-        "create_post commit ok post_id=%s photos=%s videos=%s commit_ms=%.0f hypothesisId=A",
-        post_id,
-        len(photos),
-        len(videos),
-        (t_commit - t0) * 1000,
-    )
-    # #endregion
 
     # Save post text to file
     post_dir = MEDIA_DIR / storage_path
@@ -137,7 +125,6 @@ def create_post(post_data: PostCreate, db: Session = Depends(get_db)):
             "videos": videos
         }, f, ensure_ascii=False, indent=2)
 
-    t_files = time.perf_counter()
     result = PostSchema.model_validate(
         {
             "id": post_id,
@@ -169,15 +156,6 @@ def create_post(post_data: PostCreate, db: Session = Depends(get_db)):
             "logs": [],
         }
     )
-    # #region agent log
-    logger.info(
-        "create_post done post_id=%s files_ms=%.0f schema_ms=%.0f total_ms=%.0f hypothesisId=B",
-        post_id,
-        (t_files - t_commit) * 1000,
-        (time.perf_counter() - t_files) * 1000,
-        (time.perf_counter() - t0) * 1000,
-    )
-    # #endregion
     return result
 
 @router.get("/archive/summary")
@@ -372,19 +350,10 @@ def get_posts(skip: int = 0, limit: int = 10000, search: str = None, db: Session
 @router.get("/{post_id}", response_model=PostSchema)
 def get_post(post_id: str, db: Session = Depends(get_db)):
     """Get a specific post by ID."""
-    t0 = time.perf_counter()
     row = _fetch_post_row(db, post_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Post not found")
-    result = _row_as_post_schema(db, row)
-    # #region agent log
-    logger.info(
-        "get_post post_id=%s elapsed_ms=%.0f hypothesisId=C",
-        post_id,
-        (time.perf_counter() - t0) * 1000,
-    )
-    # #endregion
-    return result
+    return _row_as_post_schema(db, row)
 
 
 @router.get("/{post_id}/card", response_model=PostSchema)

@@ -2,6 +2,7 @@ import logging
 import os
 import ssl
 import asyncio
+import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
@@ -30,6 +31,16 @@ _file_handler_added = False
 # Лимит карусели Instagram Graph API: до 10 media items (фото/видео).
 # Посты >10 в приложении IG не означают, что Content Publishing API принимает больше.
 IG_CAROUSEL_MAX_ITEMS = 10
+_VIDEO_EXTENSIONS = (".mp4", ".mov", ".avi", ".mkv", ".webm")
+MediaItem = Tuple[str, str]  # (kind, url) — kind: "photo" | "video"
+
+
+def _is_video_item(item: MediaItem) -> bool:
+    kind, url = item
+    if kind == "video":
+        return True
+    path = urlparse(url).path.lower()
+    return any(path.endswith(ext) for ext in _VIDEO_EXTENSIONS)
 
 
 def _ensure_app_ig_log_handler() -> None:
@@ -80,6 +91,9 @@ class InstagramGraphPublisher:
         self.api_version = os.getenv("INSTAGRAM_GRAPH_API_VERSION", "v19.0").strip()
         self.media_base_url = self.token_manager.get_media_base_url()
         self.timeout_seconds = int(os.getenv("INSTAGRAM_GRAPH_TIMEOUT_SECONDS", "60"))
+        self.video_ready_timeout_seconds = int(
+            os.getenv("INSTAGRAM_GRAPH_VIDEO_TIMEOUT_SECONDS", "180")
+        )
         self.vk_api_version = os.getenv("VK_API_VERSION", "5.199")
         self._last_graph_error: Optional[str] = None
         self._last_graph_error_code: Optional[int] = None
@@ -125,22 +139,33 @@ class InstagramGraphPublisher:
             self.access_token = self.token_manager.get_access_token()
 
             caption = format_for_instagram(post.text)
-            media_candidates = await self._collect_media_candidates(post)
+            merged_items, _slot_audit = await self._assemble_merged_media_items(post)
+
+            media_candidates: List[Tuple[str, List[MediaItem]]] = []
+            if merged_items:
+                media_candidates.append(("merged", merged_items))
+            for source_name, source_items in await self._collect_media_candidates(post):
+                if source_name == "merged":
+                    continue
+                media_candidates.append((source_name, source_items))
+
             if not media_candidates:
                 self._log_error(db, post_id, "Нет доступных медиафайлов для Graph API")
                 return False
 
             creation_id = None
             used_source = None
-            for source_name, media_urls in media_candidates:
+            for source_name, media_items in media_candidates:
                 self._uri_reject_seen = False
                 logger.info(
-                    "IG media try post_id=%s source=%s count=%s",
+                    "IG media try post_id=%s source=%s count=%s photos=%s videos=%s",
                     post_id,
                     source_name,
-                    len(media_urls),
+                    len(media_items),
+                    sum(1 for kind, _ in media_items if kind == "photo"),
+                    sum(1 for kind, _ in media_items if kind == "video"),
                 )
-                creation_id = await self._create_media_container(media_urls, caption)
+                creation_id = await self._create_media_container(media_items, caption)
                 if creation_id:
                     used_source = source_name
                     break
@@ -165,7 +190,7 @@ class InstagramGraphPublisher:
                 return False
 
             logger.info(
-                "IG container ok post_id=%s source=%s creation_id=%s photos=%s",
+                "IG container ok post_id=%s source=%s creation_id=%s items=%s",
                 post_id,
                 used_source,
                 creation_id,
@@ -227,7 +252,7 @@ class InstagramGraphPublisher:
                 post_id,
                 "instagram",
                 "success",
-                f"Пост опубликован через Instagram Graph API (source={used_source}, photos={self._last_children_count})",
+                f"Пост опубликован через Instagram Graph API (source={used_source}, items={self._last_children_count})",
             )
             db.commit()
             logger.info(f"Пост {post_id} успешно опубликован через Graph API")
@@ -271,144 +296,442 @@ class InstagramGraphPublisher:
         """Ошибки, при которых имеет смысл пробовать другой источник медиа."""
         return self._is_uri_reject_error() or self._is_aspect_ratio_error()
 
-    async def _collect_media_candidates(self, post: Any) -> List[Tuple[str, List[str]]]:
-        """Список источников медиа по приоритету: VK → Telegram → local."""
-        candidates: List[Tuple[str, List[str]]] = []
+    async def _collect_media_candidates(self, post: Any) -> List[Tuple[str, List[MediaItem]]]:
+        """Полные наборы по источнику (fallback): Telegram → local → VK wall."""
+        candidates: List[Tuple[str, List[MediaItem]]] = []
+
+        telegram_items = await self._get_telegram_media_items(post)
+        if telegram_items:
+            candidates.append(("telegram", telegram_items[:IG_CAROUSEL_MAX_ITEMS]))
+
+        local_items = await self._get_local_media_items(post)
+        if local_items:
+            candidates.append(("local", local_items[:IG_CAROUSEL_MAX_ITEMS]))
 
         vk_photo_urls = await self._get_vk_wall_photo_urls(post)
         if vk_photo_urls:
-            candidates.append(("vk", vk_photo_urls[:IG_CAROUSEL_MAX_ITEMS]))
-
-        telegram_photo_urls = await self._get_telegram_photo_urls(post)
-        if telegram_photo_urls:
-            candidates.append(("telegram", telegram_photo_urls[:IG_CAROUSEL_MAX_ITEMS]))
-
-        local_urls = await self._get_local_photo_urls(post)
-        if local_urls:
-            candidates.append(("local", local_urls[:IG_CAROUSEL_MAX_ITEMS]))
+            vk_items = [("photo", url) for url in vk_photo_urls[:IG_CAROUSEL_MAX_ITEMS]]
+            candidates.append(("vk", vk_items))
 
         return candidates
 
-    async def _prepare_media_urls(self, post: Any) -> List[str]:
+    async def _assemble_merged_media_items(
+        self, post: Any
+    ) -> Tuple[List[MediaItem], List[dict]]:
+        """Собирает медиагруппу по слотам: Telegram → local → VK wall → VK market."""
+        items: List[MediaItem] = []
+        slot_audit: List[dict] = []
+
+        vk_wall_urls = await self._get_vk_wall_photo_urls(post)
+        vk_product_id = self._get_vk_product_id_for_post(post.id)
+        vk_market_urls = (
+            await self._get_vk_market_photo_urls(vk_product_id) if vk_product_id else []
+        )
+
+        bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+        timeout = aiohttp.ClientTimeout(total=self.timeout_seconds)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            for index, file_id in enumerate(post.photos or []):
+                if len(items) >= IG_CAROUSEL_MAX_ITEMS:
+                    break
+                resolved: Optional[MediaItem] = None
+                source = "missing"
+                tg_error = None
+
+                if bot_token:
+                    tg_url, tg_error = await self._get_telegram_file_url_detailed(
+                        session, bot_token, file_id
+                    )
+                    if tg_url:
+                        resolved = ("photo", tg_url)
+                        source = "telegram"
+
+                if not resolved:
+                    local_url = await self._resolve_local_photo_url(post, index)
+                    if local_url:
+                        resolved = ("photo", local_url)
+                        source = "local"
+
+                if not resolved and index < len(vk_wall_urls):
+                    resolved = ("photo", vk_wall_urls[index])
+                    source = "vk_wall"
+
+                if not resolved and index < len(vk_market_urls):
+                    resolved = ("photo", vk_market_urls[index])
+                    source = "vk_market"
+
+                slot_audit.append(
+                    {
+                        "slot": index,
+                        "kind": "photo",
+                        "source": source,
+                        "tg_error": tg_error,
+                        "resolved": bool(resolved),
+                    }
+                )
+                if resolved:
+                    items.append(resolved)
+
+            for index, file_id in enumerate(post.videos or []):
+                if len(items) >= IG_CAROUSEL_MAX_ITEMS:
+                    break
+                resolved = None
+                source = "missing"
+                tg_error = None
+
+                if bot_token:
+                    tg_url, tg_error = await self._get_telegram_file_url_detailed(
+                        session, bot_token, file_id
+                    )
+                    if tg_url:
+                        resolved = ("video", tg_url)
+                        source = "telegram"
+
+                if not resolved:
+                    local_url = await self._resolve_local_video_url(post, index)
+                    if local_url:
+                        resolved = ("video", local_url)
+                        source = "local"
+
+                slot_audit.append(
+                    {
+                        "slot": index,
+                        "kind": "video",
+                        "source": source,
+                        "tg_error": tg_error,
+                        "resolved": bool(resolved),
+                    }
+                )
+                if resolved:
+                    items.append(resolved)
+
+        logger.info(
+            "IG merged assembly post_id=%s photos=%s/%s videos=%s/%s total=%s audit=%s",
+            post.id,
+            sum(1 for k, _ in items if k == "photo"),
+            len(post.photos or []),
+            sum(1 for k, _ in items if k == "video"),
+            len(post.videos or []),
+            len(items),
+            slot_audit,
+        )
+        return items, slot_audit
+
+    def _get_vk_product_id_for_post(self, post_id: str) -> Optional[int]:
+        from sqlalchemy import text
+
+        db = SessionLocal()
+        try:
+            row = db.execute(
+                text("SELECT vk_product_id FROM products WHERE post_id = :id LIMIT 1"),
+                {"id": post_id},
+            ).fetchone()
+            if row and row[0]:
+                return int(row[0])
+        except Exception as exc:
+            logger.warning("IG vk_product_id lookup failed for %s: %s", post_id, exc)
+        finally:
+            db.close()
+        return None
+
+    async def _get_vk_market_photo_urls(self, vk_product_id: int) -> List[str]:
+        try:
+            from app.utils.vk_client import resolved_vk_group_id_int
+            from app.utils.vk_urls import api_method_url
+
+            token = community_token()
+            if not token:
+                return []
+            gid = resolved_vk_group_id_int()
+            params = {
+                "item_ids": f"-{gid}_{int(vk_product_id)}",
+                "extended": 1,
+                "access_token": token,
+                "v": self.vk_api_version,
+            }
+            timeout = aiohttp.ClientTimeout(total=self.timeout_seconds)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(api_method_url("market.getById"), params=params) as resp:
+                    payload = await resp.json(content_type=None)
+            if payload.get("error"):
+                logger.warning("IG market.getById error: %s", payload.get("error"))
+                return []
+            market_items = (payload.get("response") or {}).get("items") or []
+            if not market_items:
+                return []
+            urls: List[str] = []
+            for photo in market_items[0].get("photos") or []:
+                best = self._pick_largest_vk_photo_url(photo.get("sizes") or [])
+                if best:
+                    urls.append(best)
+            return urls
+        except Exception as exc:
+            logger.warning("IG VK market photo fetch failed: %s", exc)
+            return []
+
+    async def _resolve_local_photo_url(self, post: Any, index: int) -> Optional[str]:
+        if not self.media_base_url or not post.storage_path:
+            return None
+        post_dir = MEDIA_DIR / post.storage_path
+        local_path = post_dir / f"photo_{index}.jpg"
+        if local_path.exists():
+            return self._to_public_url(local_path)
+        photos = post.photos or []
+        if index < len(photos) and await self._download_telegram_file(photos[index], local_path):
+            if local_path.exists():
+                return self._to_public_url(local_path)
+        return None
+
+    async def _resolve_local_video_url(self, post: Any, index: int) -> Optional[str]:
+        if not self.media_base_url or not post.storage_path:
+            return None
+        post_dir = MEDIA_DIR / post.storage_path
+        local_path = self._resolve_local_video_path(post_dir, index)
+        if local_path.exists():
+            return self._to_public_url(local_path)
+        videos = post.videos or []
+        if index < len(videos):
+            target = post_dir / f"video_{index}.mp4"
+            if await self._download_telegram_file(videos[index], target):
+                local_path = self._resolve_local_video_path(post_dir, index)
+                if local_path.exists():
+                    return self._to_public_url(local_path)
+        return None
+
+    async def _prepare_media_urls(self, post: Any) -> List[MediaItem]:
         candidates = await self._collect_media_candidates(post)
         return candidates[0][1] if candidates else []
 
-    async def _get_local_photo_urls(self, post: Any) -> List[str]:
+    async def _get_local_media_items(self, post: Any) -> List[MediaItem]:
         if not self.media_base_url:
-            logger.warning("MEDIA_BASE_URL не задан и локальные фото недоступны")
+            logger.warning("MEDIA_BASE_URL не задан и локальные медиа недоступны")
+            return []
+        if not post.storage_path:
             return []
 
         post_dir = MEDIA_DIR / post.storage_path
-        photos = (post.photos or [])[:IG_CAROUSEL_MAX_ITEMS]
-        media_urls: List[str] = []
+        photos = post.photos or []
+        videos = post.videos or []
+        media_items: List[MediaItem] = []
+        remaining = IG_CAROUSEL_MAX_ITEMS
 
-        for i, _ in enumerate(photos):
+        for i, file_id in enumerate(photos):
+            if remaining <= 0:
+                break
             local_path = post_dir / f"photo_{i}.jpg"
-            if not local_path.exists() and i < len(photos):
-                await self._download_telegram_file(photos[i], local_path)
+            if not local_path.exists():
+                await self._download_telegram_file(file_id, local_path)
             if local_path.exists():
-                media_urls.append(self._to_public_url(local_path))
-        return media_urls[:IG_CAROUSEL_MAX_ITEMS]
+                media_items.append(("photo", self._to_public_url(local_path)))
+                remaining -= 1
 
-    async def _get_telegram_photo_urls(self, post: Any) -> List[str]:
+        for i, file_id in enumerate(videos):
+            if remaining <= 0:
+                break
+            local_path = self._resolve_local_video_path(post_dir, i)
+            if not local_path.exists():
+                await self._download_telegram_file(file_id, post_dir / f"video_{i}.mp4")
+                local_path = self._resolve_local_video_path(post_dir, i)
+            if local_path.exists():
+                media_items.append(("video", self._to_public_url(local_path)))
+                remaining -= 1
+
+        return media_items
+
+    def _resolve_local_video_path(self, post_dir: Path, index: int) -> Path:
+        for name in (f"video_{index}.mp4", f"video_{index}.mov"):
+            candidate = post_dir / name
+            if candidate.exists():
+                return candidate
+        return post_dir / f"video_{index}.mp4"
+
+    async def _get_telegram_media_items(self, post: Any) -> List[MediaItem]:
         bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
         if not bot_token:
             return []
+
         photos = post.photos or []
-        if not photos:
+        videos = post.videos or []
+        if not photos and not videos:
             return []
-        urls: List[str] = []
+
+        items: List[MediaItem] = []
         timeout = aiohttp.ClientTimeout(total=self.timeout_seconds)
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            for file_id in photos[:IG_CAROUSEL_MAX_ITEMS]:
-                file_info_url = f"https://api.telegram.org/bot{bot_token}/getFile?file_id={file_id}"
-                try:
-                    async with session.get(file_info_url) as response:
-                        if response.status != 200:
-                            continue
-                        payload = await response.json(content_type=None)
-                except Exception:
-                    continue
-                file_path = payload.get("result", {}).get("file_path")
-                if payload.get("ok") and file_path:
-                    urls.append(f"https://api.telegram.org/file/bot{bot_token}/{file_path}")
-        return urls
+            for file_id in photos:
+                if len(items) >= IG_CAROUSEL_MAX_ITEMS:
+                    break
+                file_url = await self._get_telegram_file_url(session, bot_token, file_id)
+                if file_url:
+                    items.append(("photo", file_url))
+
+            for file_id in videos:
+                if len(items) >= IG_CAROUSEL_MAX_ITEMS:
+                    break
+                file_url = await self._get_telegram_file_url(session, bot_token, file_id)
+                if file_url:
+                    items.append(("video", file_url))
+        return items
+
+    async def _get_telegram_file_url(
+        self,
+        session: aiohttp.ClientSession,
+        bot_token: str,
+        file_id: str,
+    ) -> Optional[str]:
+        url, _error = await self._get_telegram_file_url_detailed(session, bot_token, file_id)
+        return url
+
+    async def _get_telegram_file_url_detailed(
+        self,
+        session: aiohttp.ClientSession,
+        bot_token: str,
+        file_id: str,
+    ) -> Tuple[Optional[str], Optional[str]]:
+        file_info_url = f"https://api.telegram.org/bot{bot_token}/getFile?file_id={file_id}"
+        try:
+            async with session.get(file_info_url) as response:
+                if response.status != 200:
+                    return None, f"http_{response.status}"
+                payload = await response.json(content_type=None)
+        except Exception as exc:
+            return None, str(exc)
+        if not payload.get("ok"):
+            return None, payload.get("description") or "telegram_getFile_failed"
+        file_path = payload.get("result", {}).get("file_path")
+        if file_path:
+            return f"https://api.telegram.org/file/bot{bot_token}/{file_path}", None
+        return None, "missing_file_path"
 
     def _to_public_url(self, file_path: Path) -> str:
         relative = file_path.relative_to(MEDIA_DIR).as_posix()
         return f"{self.media_base_url}/{relative}"
 
-    async def _create_media_container(self, media_urls: List[str], caption: str) -> Optional[str]:
-        photos = [url for url in media_urls if not url.lower().endswith((".mp4", ".mov", ".avi", ".mkv", ".webm"))]
-        videos: List[str] = []
-        self._last_children_count = 0
-
-        # Компромиссный режим: публикуем только фото (одиночное или карусель).
-        if len(photos) > 1:
-            children = []
-            valid_photo_urls = []
-            for idx, photo_url in enumerate(photos[:IG_CAROUSEL_MAX_ITEMS]):
-                child_id = await self._create_container(
-                    {
-                        "image_url": photo_url,
-                        "is_carousel_item": "true",
-                    }
-                )
-                if not child_id:
-                    # URI reject (часто VK CDN): не выкидываем отдельные кадры —
-                    # иначе карусель публикуется неполной. Abort → fallback на Telegram.
-                    if self._is_uri_reject_error():
-                        self._uri_reject_seen = True
-                        logger.warning(
-                            "IG URI reject idx=%s/%s code=%s subcode=%s url=%s — abort source for fallback",
-                            idx,
-                            len(photos[:IG_CAROUSEL_MAX_ITEMS]),
-                            self._last_graph_error_code,
-                            self._last_graph_error_subcode,
-                            _redact_url(photo_url),
-                        )
-                        return None
-                    # 36003 (aspect): пропускаем только проблемный кадр.
-                    if self._is_aspect_ratio_error():
-                        logger.warning(
-                            "IG skip frame idx=%s code=36003 (aspect) url=%s",
-                            idx,
-                            _redact_url(photo_url),
-                        )
-                        continue
-                    return None
-                children.append(child_id)
-                valid_photo_urls.append(photo_url)
-
-            self._last_children_count = len(children)
-            if len(children) >= 2:
-                return await self._create_container(
-                    {
-                        "media_type": "CAROUSEL",
-                        "children": ",".join(children),
-                        "caption": caption,
-                    }
-                )
-
-            if len(children) == 1:
-                # Если после отбраковки остался один валидный кадр, публикуем одиночным постом.
-                return await self._create_container({"image_url": valid_photo_urls[0], "caption": caption})
-
+    async def _create_media_container(self, media_items: List[MediaItem], caption: str) -> Optional[str]:
+        media_items = media_items[:IG_CAROUSEL_MAX_ITEMS]
+        if not media_items:
             return None
 
-        if photos and videos:
-            logger.warning("Смешанный набор фото+видео: публикуем только фото через Graph API")
-            return await self._create_container({"image_url": photos[0], "caption": caption})
+        self._last_children_count = 0
 
-        if photos:
-            child_id = await self._create_container({"image_url": photos[0], "caption": caption})
+        if len(media_items) == 1:
+            item = media_items[0]
+            url = item[1]
+            if _is_video_item(item):
+                child_id = await self._create_video_container(
+                    url, is_carousel_item=False, caption=caption
+                )
+            else:
+                child_id = await self._create_container({"image_url": url, "caption": caption})
             if not child_id and self._is_uri_reject_error():
                 self._uri_reject_seen = True
             if child_id:
                 self._last_children_count = 1
             return child_id
 
-        return None
+        children: List[str] = []
+        valid_items: List[MediaItem] = []
+        for idx, item in enumerate(media_items):
+            url = item[1]
+            is_video = _is_video_item(item)
+            if is_video:
+                child_id = await self._create_video_container(url, is_carousel_item=True)
+            else:
+                child_id = await self._create_container(
+                    {"image_url": url, "is_carousel_item": "true"}
+                )
+
+            if not child_id:
+                if self._is_uri_reject_error():
+                    self._uri_reject_seen = True
+                    logger.warning(
+                        "IG URI reject idx=%s/%s code=%s subcode=%s url=%s — abort source for fallback",
+                        idx,
+                        len(media_items),
+                        self._last_graph_error_code,
+                        self._last_graph_error_subcode,
+                        _redact_url(url),
+                    )
+                    return None
+                if self._is_aspect_ratio_error() and not is_video:
+                    logger.warning(
+                        "IG skip frame idx=%s code=36003 (aspect) url=%s",
+                        idx,
+                        _redact_url(url),
+                    )
+                    continue
+                return None
+
+            children.append(child_id)
+            valid_items.append(item)
+
+        self._last_children_count = len(children)
+        if not children:
+            return None
+
+        if len(children) == 1:
+            item = valid_items[0]
+            url = item[1]
+            if _is_video_item(item):
+                return await self._create_video_container(
+                    url, is_carousel_item=False, caption=caption
+                )
+            return await self._create_container({"image_url": url, "caption": caption})
+
+        return await self._create_container(
+            {
+                "media_type": "CAROUSEL",
+                "children": ",".join(children),
+                "caption": caption,
+            }
+        )
+
+    async def _create_video_container(
+        self,
+        video_url: str,
+        *,
+        is_carousel_item: bool,
+        caption: Optional[str] = None,
+    ) -> Optional[str]:
+        params: dict = {
+            "media_type": "VIDEO",
+            "video_url": video_url,
+        }
+        if is_carousel_item:
+            params["is_carousel_item"] = "true"
+        if caption:
+            params["caption"] = caption
+
+        container_id = await self._create_container(params)
+        if not container_id:
+            return None
+
+        ready = await self._wait_for_container_ready(container_id)
+        if not ready:
+            logger.error(
+                "IG video container not ready id=%s url=%s",
+                container_id,
+                _redact_url(video_url),
+            )
+            return None
+        return container_id
+
+    async def _wait_for_container_ready(self, container_id: str) -> bool:
+        deadline = time.monotonic() + self.video_ready_timeout_seconds
+        while time.monotonic() < deadline:
+            status = await self._get_creation_status_code(container_id=container_id)
+            if status == "FINISHED":
+                return True
+            if status in ("ERROR", "EXPIRED"):
+                logger.error("IG container status=%s id=%s", status, container_id)
+                return False
+            await asyncio.sleep(2)
+        logger.error(
+            "IG container ready timeout id=%s after %ss",
+            container_id,
+            self.video_ready_timeout_seconds,
+        )
+        return False
 
     async def _get_vk_wall_photo_urls(self, post: Any) -> List[str]:
         if not post.vk_post_id:
@@ -517,23 +840,42 @@ class InstagramGraphPublisher:
                     logger.error(f"Graph API media_publish error ({response.status}): {data}")
 
                     if str(self._last_graph_error_code) == "9007" and attempt < retries:
-                        status_code = await self._get_creation_status_code(session, creation_id)
+                        status_code = await self._get_creation_status_code(
+                            creation_id, session=session
+                        )
                         await asyncio.sleep(2)
                         continue
                     return False
         return False
 
     async def _get_creation_status_code(
-        self, session: aiohttp.ClientSession, creation_id: str
+        self,
+        creation_id: Optional[str] = None,
+        *,
+        session: Optional[aiohttp.ClientSession] = None,
+        container_id: Optional[str] = None,
     ) -> Optional[str]:
-        endpoint = f"{self.base_url}/{creation_id}"
+        target_id = container_id or creation_id
+        if not target_id:
+            return None
+
+        endpoint = f"{self.base_url}/{target_id}"
         params = {"fields": "status_code", "access_token": self.access_token}
         try:
-            async with session.get(endpoint, params=params) as response:
-                payload = await response.json(content_type=None)
-                if response.status >= 400:
-                    return None
-                return (payload or {}).get("status_code")
+            if session is not None:
+                async with session.get(endpoint, params=params) as response:
+                    payload = await response.json(content_type=None)
+                    if response.status >= 400:
+                        return None
+                    return (payload or {}).get("status_code")
+
+            timeout = aiohttp.ClientTimeout(total=self.timeout_seconds)
+            async with aiohttp.ClientSession(timeout=timeout) as own_session:
+                async with own_session.get(endpoint, params=params) as response:
+                    payload = await response.json(content_type=None)
+                    if response.status >= 400:
+                        return None
+                    return (payload or {}).get("status_code")
         except Exception:
             return None
 

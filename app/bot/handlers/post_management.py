@@ -1745,36 +1745,59 @@ async def show_stories_menu(callback: CallbackQuery):
 
 @router.callback_query(F.data == "back_to_post")
 async def back_to_post(callback: CallbackQuery):
-    """Go back to post view."""
-    # Get selected post ID
-    user_data = callback.bot.user_data.get(callback.from_user.id, {})
+    """Вернуться к карточке поста (работает и с текстовых меню, и с фото-превью сторис)."""
+    await callback.answer()
+
+    user_data = _user_data_for(callback.bot, callback.from_user.id)
     post_id = user_data.get("selected_post")
 
     if not post_id:
         await callback.message.answer("❌ Пост не выбран.")
         return
 
-    # Get post details
-    post = await get_post_api(post_id)
+    truncate = ARCHIVE_CARD_TEXT_LIMIT if _is_from_archive(user_data) else 1000
+    post = await get_post_card_api(post_id, truncate=truncate)
 
     if not post:
         await callback.message.answer("❌ Пост не найден.")
         return
 
-    # Show post details
-    await callback.message.edit_text(
-        callback.message.text.split("\n\n📱 Выберите платформу")[0],
-        reply_markup=post_actions_kb_for_user(user_data)
-    )
+    response_text, parse_mode = format_post_card_for_user(post, user_data)
+    kb = post_actions_kb_for_user(user_data)
 
-    await callback.answer()
+    # Фото/видео-превью: у сообщения нет text, edit_text недоступен
+    if callback.message.photo or callback.message.video or not callback.message.text:
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except TelegramBadRequest:
+            pass
+        await callback.message.answer(
+            response_text,
+            reply_markup=kb,
+            parse_mode=parse_mode,
+        )
+        return
+
+    try:
+        await callback.message.edit_text(
+            response_text,
+            reply_markup=kb,
+            parse_mode=parse_mode,
+        )
+    except TelegramBadRequest:
+        await callback.message.answer(
+            response_text,
+            reply_markup=kb,
+            parse_mode=parse_mode,
+        )
+
 
 @router.callback_query(F.data == "story_vk")
 async def preview_story_vk(callback: CallbackQuery):
     """Собрать превью VK-сторис и показать в чате до публикации."""
     await callback.answer("Собираю превью…")
 
-    user_data = callback.bot.user_data.get(callback.from_user.id, {})
+    user_data = _user_data_for(callback.bot, callback.from_user.id)
     post_id = user_data.get("selected_post")
     if not post_id:
         await callback.message.answer("❌ Пост не выбран.")
@@ -1793,9 +1816,16 @@ async def preview_story_vk(callback: CallbackQuery):
         )
         return
 
-    status_message = await callback.message.edit_text(
-        f"{callback.message.text}\n\n⏳ Собираю превью сторис ВК…"
-    )
+    from_preview_photo = bool(callback.message.photo)
+    if from_preview_photo:
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except TelegramBadRequest:
+            pass
+        status_message = await callback.message.answer("⏳ Собираю превью сторис ВК…")
+    else:
+        base = callback.message.text or ""
+        status_message = await callback.message.edit_text(f"{base}\n\n⏳ Собираю превью сторис ВК…")
 
     try:
         async with aiohttp.ClientSession() as session:
@@ -1804,7 +1834,7 @@ async def preview_story_vk(callback: CallbackQuery):
                 if response.status != 200:
                     err = await response.text()
                     await status_message.edit_text(
-                        f"{status_message.text.split('⏳')[0]}\n\n❌ Не удалось собрать превью: {err[:200]}",
+                        f"❌ Не удалось собрать превью: {err[:200]}",
                         reply_markup=_post_actions_kb(callback.bot, callback.from_user.id),
                     )
                     return
@@ -1821,18 +1851,25 @@ async def preview_story_vk(callback: CallbackQuery):
             photo=BufferedInputFile(image_bytes, filename=f"vk_story_preview_{post_id}.jpg"),
             caption=(
                 "👁 Превью сторис ВК (ещё не опубликовано)\n"
-                "Файл также: media/story_previews/{post_id}_vk.jpg\n\n"
+                f"Файл также: media/story_previews/{post_id}_vk.jpg\n\n"
                 "Если ок — «Опубликовать в ВК»."
-            ).replace("{post_id}", str(post_id)),
+            ),
             reply_markup=kb,
         )
-        await status_message.edit_text(
-            f"{status_message.text.split('⏳')[0]}\n\n👁 Превью отправлено сообщением ниже.",
-            reply_markup=_post_actions_kb(callback.bot, callback.from_user.id),
-        )
+        if from_preview_photo:
+            try:
+                await status_message.delete()
+            except TelegramBadRequest:
+                await status_message.edit_text("👁 Превью обновлено сообщением ниже.")
+        else:
+            base = (status_message.text or "").split("⏳")[0]
+            await status_message.edit_text(
+                f"{base}\n👁 Превью отправлено сообщением ниже.",
+                reply_markup=_post_actions_kb(callback.bot, callback.from_user.id),
+            )
     except Exception as e:
         await status_message.edit_text(
-            f"{status_message.text.split('⏳')[0]}\n\n❌ Ошибка превью: {str(e)}",
+            f"❌ Ошибка превью: {str(e)}",
             reply_markup=_post_actions_kb(callback.bot, callback.from_user.id),
         )
 

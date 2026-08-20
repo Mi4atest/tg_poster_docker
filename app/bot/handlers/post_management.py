@@ -1,6 +1,6 @@
 from aiogram import Router, F
 from aiogram.filters import StateFilter
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.exceptions import TelegramBadRequest
@@ -1730,7 +1730,7 @@ async def show_stories_menu(callback: CallbackQuery):
 
     # Create keyboard for stories
     buttons = [
-        [InlineKeyboardButton(text="📱 Опубликовать сторис в ВК", callback_data="story_vk")],
+        [InlineKeyboardButton(text="👁 Превью сторис ВК", callback_data="story_vk")],
         [InlineKeyboardButton(text="📢 Опубликовать сторис в ТГ", callback_data="story_telegram")],
         [InlineKeyboardButton(text="📸 Опубликовать сторис в IG", callback_data="story_instagram")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_post")]
@@ -1739,7 +1739,7 @@ async def show_stories_menu(callback: CallbackQuery):
 
     # Show stories menu
     await callback.message.edit_text(
-        f"{callback.message.text}\n\n📱 Выберите платформу для публикации сторис:",
+        f"{callback.message.text}\n\n📱 Сторис ВК: сначала превью в этом чате, потом публикация.\nВыберите действие:",
         reply_markup=keyboard
     )
 
@@ -1770,12 +1770,78 @@ async def back_to_post(callback: CallbackQuery):
     await callback.answer()
 
 @router.callback_query(F.data == "story_vk")
+async def preview_story_vk(callback: CallbackQuery):
+    """Собрать превью VK-сторис и показать в чате до публикации."""
+    await callback.answer("Собираю превью…")
+
+    user_data = callback.bot.user_data.get(callback.from_user.id, {})
+    post_id = user_data.get("selected_post")
+    if not post_id:
+        await callback.message.answer("❌ Пост не выбран.")
+        return
+
+    post = await get_post_api(post_id)
+    if not post:
+        await callback.message.answer("❌ Пост не найден.")
+        return
+    if not post.get("photos"):
+        await callback.message.answer("❌ Пост не содержит фотографий для сторис.")
+        return
+    if not post.get("is_published_vk") or not post.get("vk_post_id"):
+        await callback.message.answer(
+            "❌ Сначала опубликуйте пост на стене ВК — сторис ссылается на этот пост."
+        )
+        return
+
+    status_message = await callback.message.edit_text(
+        f"{callback.message.text}\n\n⏳ Собираю превью сторис ВК…"
+    )
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            url = f"http://{API_HOST}:{API_PORT}/api/stories/{post_id}/preview/vk"
+            async with session.post(url) as response:
+                if response.status != 200:
+                    err = await response.text()
+                    await status_message.edit_text(
+                        f"{status_message.text.split('⏳')[0]}\n\n❌ Не удалось собрать превью: {err[:200]}",
+                        reply_markup=_post_actions_kb(callback.bot, callback.from_user.id),
+                    )
+                    return
+                image_bytes = await response.read()
+
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="✅ Опубликовать в ВК", callback_data="story_vk_confirm")],
+                [InlineKeyboardButton(text="🔄 Пересобрать превью", callback_data="story_vk")],
+                [InlineKeyboardButton(text="⬅️ Назад к посту", callback_data="back_to_post")],
+            ]
+        )
+        await callback.message.answer_photo(
+            photo=BufferedInputFile(image_bytes, filename=f"vk_story_preview_{post_id}.jpg"),
+            caption=(
+                "👁 Превью сторис ВК (ещё не опубликовано)\n"
+                "Файл также: media/story_previews/{post_id}_vk.jpg\n\n"
+                "Если ок — «Опубликовать в ВК»."
+            ).replace("{post_id}", str(post_id)),
+            reply_markup=kb,
+        )
+        await status_message.edit_text(
+            f"{status_message.text.split('⏳')[0]}\n\n👁 Превью отправлено сообщением ниже.",
+            reply_markup=_post_actions_kb(callback.bot, callback.from_user.id),
+        )
+    except Exception as e:
+        await status_message.edit_text(
+            f"{status_message.text.split('⏳')[0]}\n\n❌ Ошибка превью: {str(e)}",
+            reply_markup=_post_actions_kb(callback.bot, callback.from_user.id),
+        )
+
+
+@router.callback_query(F.data == "story_vk_confirm")
 async def publish_story_to_vk(callback: CallbackQuery):
-    """Publish story to VK."""
-    # Сразу отвечаем на callback, чтобы избежать ошибки "query is too old"
+    """Публикация сторис в ВК после подтверждения превью."""
     await callback.answer("Публикую сторис в ВК...")
 
-    # Get selected post ID
     user_data = callback.bot.user_data.get(callback.from_user.id, {})
     post_id = user_data.get("selected_post")
 
@@ -1783,49 +1849,42 @@ async def publish_story_to_vk(callback: CallbackQuery):
         await callback.message.answer("❌ Пост не выбран.")
         return
 
-    # Get post details
     post = await get_post_api(post_id)
-
     if not post:
         await callback.message.answer("❌ Пост не найден.")
         return
-
-    # Check if post has photos
     if not post.get("photos"):
         await callback.message.answer("❌ Пост не содержит фотографий для сторис.")
         return
+    if not post.get("is_published_vk") or not post.get("vk_post_id"):
+        await callback.message.answer(
+            "❌ Сначала опубликуйте пост на стене ВК — сторис ссылается на этот пост."
+        )
+        return
 
-    # Publish story
-    status_message = await callback.message.edit_text(f"{callback.message.text}\n\n⏳ Публикую сторис в ВК...")
+    status_message = await callback.message.answer("⏳ Публикую сторис в ВК…")
 
     try:
-        # Create story
         story = await create_story_api(post_id, "vk")
-
         if not story:
-            await status_message.edit_text(
-                f"{status_message.text.split('⏳')[0]}\n\n❌ Ошибка при создании сторис для ВК.",
-                reply_markup=_post_actions_kb(callback.bot, callback.from_user.id)
-            )
+            await status_message.edit_text("❌ Ошибка при создании сторис для ВК.")
             return
 
-        # Publish story
         result = await publish_story_api(story.get("id"))
-
         if result:
             await status_message.edit_text(
-                f"{status_message.text.split('⏳')[0]}\n\n✅ Сторис опубликован в ВК!",
-                reply_markup=_post_actions_kb(callback.bot, callback.from_user.id)
+                "✅ Сторис опубликован в ВК!",
+                reply_markup=_post_actions_kb(callback.bot, callback.from_user.id),
             )
         else:
             await status_message.edit_text(
-                f"{status_message.text.split('⏳')[0]}\n\n❌ Ошибка при публикации сторис в ВК.",
-                reply_markup=_post_actions_kb(callback.bot, callback.from_user.id)
+                "❌ Ошибка при публикации сторис в ВК.",
+                reply_markup=_post_actions_kb(callback.bot, callback.from_user.id),
             )
     except Exception as e:
         await status_message.edit_text(
-            f"{status_message.text.split('⏳')[0]}\n\n❌ Ошибка: {str(e)}",
-            reply_markup=_post_actions_kb(callback.bot, callback.from_user.id)
+            f"❌ Ошибка: {str(e)}",
+            reply_markup=_post_actions_kb(callback.bot, callback.from_user.id),
         )
 
 @router.callback_query(F.data == "story_telegram")

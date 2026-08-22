@@ -262,8 +262,25 @@ class InstagramGraphPublisher:
             logger.info(f"Пост {post_id} успешно опубликован через Graph API")
             return True
         except Exception as exc:
-            logger.error(f"Ошибка Graph API при публикации поста {post_id}: {exc}")
-            self._log_error_safe(post_id, f"Ошибка Graph API: {exc}")
+            exc_name = type(exc).__name__
+            exc_text = str(exc).strip()
+            if isinstance(exc, (TimeoutError, asyncio.TimeoutError)) or not exc_text:
+                details = (
+                    f"{exc_name}: Graph API request timed out "
+                    f"(timeout={self.timeout_seconds}s)"
+                    if isinstance(exc, (TimeoutError, asyncio.TimeoutError)) or exc_name.endswith("TimeoutError")
+                    else f"{exc_name}: {exc_text or 'empty message'}"
+                )
+            else:
+                details = f"{exc_name}: {exc_text}"
+            self._last_graph_error = details
+            logger.error(
+                "Ошибка Graph API при публикации поста %s: %s",
+                post_id,
+                details,
+                exc_info=True,
+            )
+            self._log_error_safe(post_id, f"Ошибка Graph API: {details}")
             return False
         finally:
             try:
@@ -812,23 +829,43 @@ class InstagramGraphPublisher:
         endpoint = f"{self.base_url}/{self.ig_user_id}/media"
         payload = {**params, "access_token": self.access_token}
         timeout = aiohttp.ClientTimeout(total=self.timeout_seconds)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(endpoint, data=payload) as response:
-                data = await response.json(content_type=None)
-                if response.status >= 400:
-                    graph_error = (data or {}).get("error", {})
-                    self._last_graph_error = graph_error.get("message") or graph_error.get(
-                        "error_user_msg"
-                    ) or str(data)
-                    self._last_graph_error_code = graph_error.get("code")
-                    self._last_graph_error_subcode = graph_error.get("error_subcode")
-                    # Prefer user-facing URI message when present.
-                    user_msg = graph_error.get("error_user_msg")
-                    if user_msg:
-                        self._last_graph_error = f"{self._last_graph_error} | {user_msg}"
-                    logger.error(f"Graph API media error ({response.status}): {data}")
-                    return None
-                return data.get("id")
+        # Один быстрый локальный ретрай при зависании Meta (TimeoutError с пустым текстом).
+        for attempt in range(1, 3):
+            try:
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.post(endpoint, data=payload) as response:
+                        data = await response.json(content_type=None)
+                        if response.status >= 400:
+                            graph_error = (data or {}).get("error", {})
+                            self._last_graph_error = graph_error.get("message") or graph_error.get(
+                                "error_user_msg"
+                            ) or str(data)
+                            self._last_graph_error_code = graph_error.get("code")
+                            self._last_graph_error_subcode = graph_error.get("error_subcode")
+                            # Prefer user-facing URI message when present.
+                            user_msg = graph_error.get("error_user_msg")
+                            if user_msg:
+                                self._last_graph_error = f"{self._last_graph_error} | {user_msg}"
+                            logger.error(f"Graph API media error ({response.status}): {data}")
+                            return None
+                        return data.get("id")
+            except (TimeoutError, asyncio.TimeoutError) as exc:
+                self._last_graph_error = (
+                    f"TimeoutError creating media container "
+                    f"(attempt={attempt}/2, timeout={self.timeout_seconds}s)"
+                )
+                self._last_graph_error_code = None
+                self._last_graph_error_subcode = None
+                logger.error(
+                    "Graph API media create timeout attempt=%s/2 timeout=%ss: %s",
+                    attempt,
+                    self.timeout_seconds,
+                    type(exc).__name__,
+                )
+                if attempt >= 2:
+                    raise
+                await asyncio.sleep(2)
+        return None
 
     async def _publish_creation(self, creation_id: str) -> bool:
         self._last_published_media_id = None

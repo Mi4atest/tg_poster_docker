@@ -1,7 +1,7 @@
 import logging
 import asyncio
 from typing import Optional
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 from app.scheduler.queue_manager import QueueManager
 from app.workers.vk.publisher import publish_post_to_vk
@@ -30,6 +30,8 @@ class PlatformWorker:
         "max": 3 * 60,  # 3 минуты
         "avito": 60 * 60,
     }
+    # Сколько раз автоматически возвращать IG-задачу в очередь после сбоя.
+    INSTAGRAM_QUEUE_MAX_RETRIES = 5
 
     def __init__(self, platform: str, queue_manager: QueueManager, signature_enabled: bool = True, orchestrator=None):
         """Инициализация worker.
@@ -48,6 +50,37 @@ class PlatformWorker:
         self.is_paused = False
         self.last_published_at: Optional[datetime] = None
         self.current_task: Optional[asyncio.Task] = None
+
+    def _platform_interval_seconds(self) -> int:
+        try:
+            return get_settings_service().get_platform_interval_minutes(self.platform) * 60
+        except Exception:
+            return self.INTERVALS.get(self.platform, 3 * 60)
+
+    def _handle_publish_failure(self, queue_item_id: int, post_id: str, error_msg: str) -> None:
+        """Для Instagram — авто-ретрай с паузой ≈ интервал публикации; иначе failed."""
+        if self.platform == "instagram":
+            delay = self._platform_interval_seconds()
+            requeued = self.queue_manager.requeue_for_retry(
+                queue_item_id,
+                error_msg,
+                delay_seconds=delay,
+                max_attempts=self.INSTAGRAM_QUEUE_MAX_RETRIES,
+            )
+            if requeued:
+                logger.warning(
+                    "Instagram publish failed for %s; auto-retry in %ss (queue id=%s)",
+                    post_id,
+                    delay,
+                    queue_item_id,
+                )
+                return
+            logger.error(
+                "Instagram retries exhausted for %s (queue id=%s); marking failed",
+                post_id,
+                queue_item_id,
+            )
+        self.queue_manager.mark_as_failed(queue_item_id, error_msg)
 
     async def publish_post(self, queue_item_id: int, post_id: str) -> bool:
         """Опубликовать пост на платформе.
@@ -85,15 +118,15 @@ class PlatformWorker:
                 logger.info(f"Successfully published post {post_id} to {self.platform}")
             else:
                 error_msg = f"Failed to publish post {post_id} to {self.platform}"
-                self.queue_manager.mark_as_failed(queue_item_id, error_msg)
                 logger.error(error_msg)
+                self._handle_publish_failure(queue_item_id, post_id, error_msg)
 
             return success
 
         except Exception as e:
-            error_msg = f"Error publishing post {post_id} to {self.platform}: {str(e)}"
+            error_msg = f"Error publishing post {post_id} to {self.platform}: {str(e) or type(e).__name__}"
             logger.error(error_msg)
-            self.queue_manager.mark_as_failed(queue_item_id, error_msg)
+            self._handle_publish_failure(queue_item_id, post_id, error_msg)
             return False
 
     async def wait_for_interval(self):
@@ -102,10 +135,7 @@ class PlatformWorker:
             # Первая публикация, не ждем
             return
 
-        try:
-            interval = get_settings_service().get_platform_interval_minutes(self.platform) * 60
-        except Exception:
-            interval = self.INTERVALS.get(self.platform, 3 * 60)
+        interval = self._platform_interval_seconds()
         elapsed = (datetime.now(timezone.utc) - self.last_published_at).total_seconds()
         
         if elapsed < interval:

@@ -1,4 +1,5 @@
 import logging
+import re
 import threading
 from contextlib import contextmanager
 from types import SimpleNamespace
@@ -11,6 +12,8 @@ from app.db.database import SessionLocal
 from app.api.models.post import Post, PublicationQueue
 
 logger = logging.getLogger(__name__)
+
+_IG_RETRY_MARKER_RE = re.compile(r"\[ig_retry=(\d+)/(\d+)\]")
 
 
 class QueueManager:
@@ -439,17 +442,122 @@ class QueueManager:
                 row = db.execute(
                     text(
                         "UPDATE publication_queue SET status = 'failed', error_message = :msg "
-                        "WHERE id = :id RETURNING id"
+                        "WHERE id = :id RETURNING post_id"
                     ),
                     {"id": queue_item_id, "msg": (error_message or "")[:2000]},
                 ).first()
                 if not row:
                     return False
+
+                post_id = row[0]
+                remaining = db.execute(
+                    text(
+                        "SELECT COUNT(*) FROM publication_queue "
+                        "WHERE post_id = :post_id AND status IN ('pending', 'publishing', 'paused')"
+                    ),
+                    {"post_id": post_id},
+                ).scalar() or 0
+                if remaining == 0:
+                    any_completed = db.execute(
+                        text(
+                            "SELECT 1 FROM publication_queue "
+                            "WHERE post_id = :post_id AND status = 'completed' LIMIT 1"
+                        ),
+                        {"post_id": post_id},
+                    ).first()
+                    db.execute(
+                        text(
+                            "UPDATE posts SET in_queue = false, queue_status = :qstatus, "
+                            "updated_at = NOW() WHERE id = :id"
+                        ),
+                        {
+                            "id": post_id,
+                            "qstatus": "completed" if any_completed else "failed",
+                        },
+                    )
+
                 db.commit()
                 return True
 
             except Exception as e:
                 logger.error("Error marking queue item %s as failed: %s", queue_item_id, e)
+                db.rollback()
+                return False
+
+    def requeue_for_retry(
+        self,
+        queue_item_id: int,
+        error_message: str,
+        *,
+        delay_seconds: int,
+        max_attempts: int = 5,
+    ) -> bool:
+        """Вернуть задачу в pending с отложенным scheduled_at (авто-ретрай).
+
+        Returns:
+            True если ретрай поставлен, False если лимит попыток исчерпан.
+        """
+        delay_seconds = max(30, int(delay_seconds or 0))
+        max_attempts = max(1, int(max_attempts or 1))
+        with self._isolated_session() as db:
+            try:
+                row = (
+                    db.execute(
+                        text(
+                            "SELECT id, post_id, error_message FROM publication_queue "
+                            "WHERE id = :id"
+                        ),
+                        {"id": queue_item_id},
+                    )
+                    .mappings()
+                    .first()
+                )
+                if not row:
+                    return False
+
+                prev = row["error_message"] or ""
+                match = _IG_RETRY_MARKER_RE.search(prev)
+                attempt = int(match.group(1)) + 1 if match else 1
+                if attempt > max_attempts:
+                    return False
+
+                now = datetime.now(timezone.utc)
+                scheduled_at = now + timedelta(seconds=delay_seconds)
+                marker = f"[ig_retry={attempt}/{max_attempts}]"
+                msg = f"{marker} {error_message or 'publish failed'}".strip()[:2000]
+
+                db.execute(
+                    text(
+                        "UPDATE publication_queue SET status = 'pending', "
+                        "scheduled_at = :scheduled_at, error_message = :msg, published_at = NULL "
+                        "WHERE id = :id"
+                    ),
+                    {
+                        "id": queue_item_id,
+                        "scheduled_at": scheduled_at,
+                        "msg": msg,
+                    },
+                )
+                db.execute(
+                    text(
+                        "UPDATE posts SET in_queue = true, queue_status = 'pending', "
+                        "updated_at = NOW() WHERE id = :post_id"
+                    ),
+                    {"post_id": row["post_id"]},
+                )
+                db.commit()
+                logger.warning(
+                    "Requeued queue item %s post=%s attempt=%s/%s in %ss: %s",
+                    queue_item_id,
+                    row["post_id"],
+                    attempt,
+                    max_attempts,
+                    delay_seconds,
+                    msg[:200],
+                )
+                return True
+            except Exception as e:
+                logger.error("Error requeueing queue item %s for retry: %s", queue_item_id, e)
                 db.rollback()
                 return False
 

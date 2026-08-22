@@ -115,6 +115,8 @@ def get_settings_signatures_keyboard(
     enabled: bool,
     vk_market_enabled: bool,
     catalog_enabled: bool,
+    *,
+    vk_stories_auto_enabled: bool = False,
 ) -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton(
@@ -124,6 +126,10 @@ def get_settings_signatures_keyboard(
         [InlineKeyboardButton(
             text=("🟢" if vk_market_enabled else "🔴") + " Товары ВК",
             callback_data="settings_toggle_vk_market"
+        )],
+        [InlineKeyboardButton(
+            text=("🟢" if vk_stories_auto_enabled else "🔴") + " Сторис ВК (авто)",
+            callback_data="settings_toggle_vk_stories_auto"
         )],
         [InlineKeyboardButton(
             text=("🟢" if catalog_enabled else "🔴") + " Блок «Каталог б/у» в постах",

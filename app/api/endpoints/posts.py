@@ -28,6 +28,21 @@ def _fetch_post_row(db: Session, post_id: str) -> Optional[dict]:
     return dict(row) if row else None
 
 
+def _vk_story_published(db: Session, post_id: str) -> bool:
+    row = db.execute(
+        text(
+            """
+            SELECT 1
+            FROM stories
+            WHERE post_id = :id AND platform = 'vk' AND is_published = true
+            LIMIT 1
+            """
+        ),
+        {"id": post_id},
+    ).first()
+    return row is not None
+
+
 def _row_as_post_schema(db: Session, row: dict) -> PostSchema:
     data = dict(row)
     if data.get("photos") is None:
@@ -35,6 +50,10 @@ def _row_as_post_schema(db: Session, row: dict) -> PostSchema:
     if data.get("videos") is None:
         data["videos"] = []
     data["logs"] = []
+    if "is_published_vk_story" not in data or data.get("is_published_vk_story") is None:
+        data["is_published_vk_story"] = _vk_story_published(db, data["id"])
+    else:
+        data["is_published_vk_story"] = bool(data["is_published_vk_story"])
     return PostSchema.model_validate(data)
 
 
@@ -380,7 +399,13 @@ def get_post_card(
                     is_published_instagram,
                     is_published_max,
                     is_published_avito,
-                    name
+                    name,
+                    EXISTS (
+                        SELECT 1 FROM stories s
+                        WHERE s.post_id = posts.id
+                          AND s.platform = 'vk'
+                          AND s.is_published = true
+                    ) AS is_published_vk_story
                 FROM posts
                 WHERE id = :id
                 LIMIT 1

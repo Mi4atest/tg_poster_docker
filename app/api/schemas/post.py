@@ -35,6 +35,8 @@ class Post(PostBase):
     is_published_instagram: bool
     is_published_max: bool
     is_published_avito: bool = False
+    # Успешная публикация сторис ВК (из таблицы stories, не колонка posts)
+    is_published_vk_story: bool = False
     published_vk_at: Optional[datetime] = None
     published_telegram_at: Optional[datetime] = None
     published_instagram_at: Optional[datetime] = None

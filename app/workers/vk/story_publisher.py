@@ -309,6 +309,72 @@ async def publish_story_to_vk(story_id: str) -> bool:
     return await publisher.publish_story(story_id)
 
 
+async def ensure_vk_story_record(post_id: str) -> Optional[str]:
+    """Создать или вернуть Story(platform=vk) для поста. Возвращает story_id."""
+    db = SessionLocal()
+    try:
+        post = db.query(Post).filter(Post.id == post_id).first()
+        if not post:
+            return None
+        existing = (
+            db.query(Story)
+            .filter(Story.post_id == post_id, Story.platform == "vk")
+            .first()
+        )
+        if existing:
+            return existing.id
+        model_name, price = extract_model_and_price(post.text or "")
+        media_file_id = (post.photos or [None])[0] if post.photos else None
+        story = Story(
+            post_id=post_id,
+            platform="vk",
+            model_name=model_name,
+            price=price,
+            media_file_id=media_file_id,
+        )
+        db.add(story)
+        db.commit()
+        db.refresh(story)
+        return story.id
+    finally:
+        db.close()
+
+
+async def maybe_auto_publish_vk_story(post_id: str) -> bool:
+    """
+    Если включён тумблер «Сторис ВК (авто)» — опубликовать сторис после стены.
+    Не зависит от «Товары ВК». Ошибки не пробрасываются наружу (лента уже ушла).
+    """
+    try:
+        from app.services.settings_service import get_settings_service
+
+        if not get_settings_service().is_vk_stories_auto_enabled():
+            return False
+        db = SessionLocal()
+        try:
+            post = db.query(Post).filter(Post.id == post_id).first()
+            if not post or not post.is_published_vk or not post.vk_post_id:
+                return False
+            if not post.photos:
+                logger.info("Auto VK story skipped for %s: no photos", post_id)
+                return False
+        finally:
+            db.close()
+
+        story_id = await ensure_vk_story_record(post_id)
+        if not story_id:
+            return False
+        ok = await publish_story_to_vk(story_id)
+        if ok:
+            logger.info("Auto VK story published for post %s (story=%s)", post_id, story_id)
+        else:
+            logger.error("Auto VK story failed for post %s (story=%s)", post_id, story_id)
+        return bool(ok)
+    except Exception as e:
+        logger.error("Auto VK story error for post %s: %s", post_id, e)
+        return False
+
+
 async def compose_vk_story_preview(post_id: str) -> Optional[str]:
     """Собрать превью-кадр и сохранить в media/story_previews/. Возвращает путь или None."""
     db = SessionLocal()

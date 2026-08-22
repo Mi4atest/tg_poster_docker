@@ -72,6 +72,8 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     },
     "features": {
         "vk_market_enabled": env_settings.VK_MARKET_ENABLED,
+        # Автопубликация сторис ВК после успешного wall.post (независимо от Товаров ВК).
+        "vk_stories_auto_enabled": False,
         # Default из .env при первом сиде; дальше — тумблеры в меню Настройки → VK.
         "vk_upload_strict_mode": bool(
             getattr(env_settings, "VK_UPLOAD_STRICT_MODE", True)
@@ -465,6 +467,14 @@ class SettingsService:
     def set_vk_market_enabled(self, enabled: bool) -> None:
         self.update({"features": {"vk_market_enabled": bool(enabled)}})
 
+    def is_vk_stories_auto_enabled(self) -> bool:
+        """Автосторис ВК после публикации поста на стену (не зависит от Товаров ВК)."""
+        features = self.get_all().get("features", {})
+        return bool(features.get("vk_stories_auto_enabled", False))
+
+    def set_vk_stories_auto_enabled(self, enabled: bool) -> None:
+        self.update({"features": {"vk_stories_auto_enabled": bool(enabled)}})
+
     def is_vk_upload_strict_mode(self) -> bool:
         """Не публиковать в VK/Market, если не все фото/видео загрузились."""
         features = self.get_all().get("features", {})
@@ -673,6 +683,8 @@ class SettingsService:
                 lines.append(f"🔴 {labels[platform]} — отключено")
         vk_market_enabled = bool(data.get("features", {}).get("vk_market_enabled", True))
         lines.append("🟢 Товары ВК" if vk_market_enabled else "🔴 Товары ВК")
+        vk_stories_auto = bool(data.get("features", {}).get("vk_stories_auto_enabled", False))
+        lines.append("🟢 Сторис ВК (авто)" if vk_stories_auto else "🔴 Сторис ВК (авто)")
         return lines
 
 

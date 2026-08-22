@@ -502,6 +502,18 @@ class VKPublisher:
             # Примечание: публикация товара в VK Market теперь выполняется ДО wall.post
             # (см. блок выше), чтобы прикрепить карточку товара к посту в ленте.
 
+            # Автосторис ВК — независимо от Товаров ВК; ошибки не откатывают стену.
+            try:
+                from app.workers.vk.story_publisher import maybe_auto_publish_vk_story
+
+                await maybe_auto_publish_vk_story(post_id)
+            except Exception as story_err:
+                logger.error(
+                    "Auto VK story after wall.post failed for %s: %s",
+                    post_id,
+                    story_err,
+                )
+
             return True
         except Exception as e:
             logger.error(f"Error publishing post {post_id} to VK: {str(e)}")

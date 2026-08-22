@@ -40,14 +40,22 @@ def get_create_post_entry_keyboard(
     avito_enabled: bool = True,
     avito_screen_level: int = 1,
     avito_body_level: int = 1,
+    vk_stories_auto_enabled: bool = False,
 ) -> InlineKeyboardMarkup:
-    """Клавиатура шага «текст»: Назад, Товары ВК; Экран/Корпус — только если Авито включено."""
+    """Клавиатура шага «текст»: Назад, Товары ВК, Сторис ВК; Экран/Корпус — если Авито вкл."""
     vk_market_icon = "🟢" if vk_market_enabled else "🔴"
+    vk_stories_icon = "🟢" if vk_stories_auto_enabled else "🔴"
     row1 = [
         InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main"),
         InlineKeyboardButton(text=f"{vk_market_icon} Товары ВК", callback_data="create_post_toggle_vk_market"),
     ]
-    rows = [row1]
+    row2 = [
+        InlineKeyboardButton(
+            text=f"{vk_stories_icon} Сторис ВК",
+            callback_data="create_post_toggle_vk_stories",
+        ),
+    ]
+    rows = [row1, row2]
     if avito_enabled:
         sl = clamp_avito_level(avito_screen_level)
         bl = clamp_avito_level(avito_body_level)

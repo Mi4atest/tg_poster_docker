@@ -85,6 +85,7 @@ def _build_signatures_contacts_text() -> str:
         "📇 Контакты и подписи\n\n"
         f"Подпись: {'включена' if service.is_signature_enabled() else 'выключена'}\n"
         f"Товары ВК: {'включены' if service.is_vk_market_enabled() else 'выключены'}\n"
+        f"Сторис ВК (авто): {'включены' if service.is_vk_stories_auto_enabled() else 'выключены'}\n"
         f"Блок «Каталог б/у» в постах: {'включен' if service.is_telegram_used_catalog_button_enabled() else 'выключен'}\n\n"
         "Текущие контакты Telegram:\n"
         f"- username: {contacts.get('telegram_username') or 'не задан'}\n"
@@ -333,6 +334,7 @@ async def open_signatures(callback: CallbackQuery):
             enabled=get_settings_service().is_signature_enabled(),
             vk_market_enabled=get_settings_service().is_vk_market_enabled(),
             catalog_enabled=get_settings_service().is_telegram_used_catalog_button_enabled(),
+            vk_stories_auto_enabled=get_settings_service().is_vk_stories_auto_enabled(),
         ),
     )
     await callback.answer()
@@ -351,6 +353,14 @@ async def toggle_vk_market(callback: CallbackQuery):
     service = get_settings_service()
     next_state = not service.is_vk_market_enabled()
     service.set_vk_market_enabled(next_state)
+    await open_signatures(callback)
+
+
+@router.callback_query(F.data == "settings_toggle_vk_stories_auto")
+async def toggle_vk_stories_auto(callback: CallbackQuery):
+    service = get_settings_service()
+    next_state = not service.is_vk_stories_auto_enabled()
+    service.set_vk_stories_auto_enabled(next_state)
     await open_signatures(callback)
 
 

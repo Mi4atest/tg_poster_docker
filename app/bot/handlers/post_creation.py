@@ -243,6 +243,7 @@ async def cancel_text_only_post(callback: CallbackQuery, state: FSMContext):
 async def _render_post_creation_text_entry(message, state: FSMContext) -> None:
     service = get_settings_service()
     vk_market_enabled = service.is_vk_market_enabled()
+    vk_stories_auto_enabled = service.is_vk_stories_auto_enabled()
     avito_enabled = service.is_platform_enabled("avito")
     data = await state.get_data()
     sl = clamp_avito_level(data.get("avito_screen_level", 1))
@@ -255,6 +256,7 @@ async def _render_post_creation_text_entry(message, state: FSMContext) -> None:
         avito_enabled=avito_enabled,
         avito_screen_level=sl,
         avito_body_level=bl,
+        vk_stories_auto_enabled=vk_stories_auto_enabled,
     )
     await message.edit_text(text, reply_markup=kb, parse_mode="HTML")
 
@@ -469,6 +471,7 @@ async def back_to_text(callback: CallbackQuery, state: FSMContext):
     await state.update_data(photos=[], videos=[])
     service = get_settings_service()
     vk_market_enabled = service.is_vk_market_enabled()
+    vk_stories_auto_enabled = service.is_vk_stories_auto_enabled()
     avito_enabled = service.is_platform_enabled("avito")
     sl = clamp_avito_level(data.get("avito_screen_level", 1))
     bl = clamp_avito_level(data.get("avito_body_level", 1))
@@ -481,6 +484,7 @@ async def back_to_text(callback: CallbackQuery, state: FSMContext):
             avito_enabled=avito_enabled,
             avito_screen_level=sl,
             avito_body_level=bl,
+            vk_stories_auto_enabled=vk_stories_auto_enabled,
         ),
         parse_mode="HTML",
     )

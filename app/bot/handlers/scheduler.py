@@ -440,6 +440,7 @@ async def create_another_post(callback: CallbackQuery, state: FSMContext):
         await state.update_data(avito_screen_level=1, avito_body_level=1)
         service = get_settings_service()
         vk_market_enabled = service.is_vk_market_enabled()
+        vk_stories_auto_enabled = service.is_vk_stories_auto_enabled()
         avito_enabled = service.is_platform_enabled("avito")
         from app.bot.utils.platform_status import get_platform_status_hint_text
 
@@ -452,6 +453,7 @@ async def create_another_post(callback: CallbackQuery, state: FSMContext):
                 avito_enabled=avito_enabled,
                 avito_screen_level=1,
                 avito_body_level=1,
+                vk_stories_auto_enabled=vk_stories_auto_enabled,
             ),
             parse_mode="HTML",
         )

@@ -31,6 +31,7 @@ async def create_post_callback(callback: CallbackQuery, state: FSMContext):
     """Handle the 'Create Post' button."""
     service = get_settings_service()
     vk_market_enabled = service.is_vk_market_enabled()
+    vk_stories_auto_enabled = service.is_vk_stories_auto_enabled()
     avito_enabled = service.is_platform_enabled("avito")
     await state.update_data(avito_screen_level=1, avito_body_level=1, photos=[], videos=[])
     keyboard = get_create_post_entry_keyboard(
@@ -38,6 +39,7 @@ async def create_post_callback(callback: CallbackQuery, state: FSMContext):
         avito_enabled=avito_enabled,
         avito_screen_level=1,
         avito_body_level=1,
+        vk_stories_auto_enabled=vk_stories_auto_enabled,
     )
     status_hint = get_platform_status_hint_text()
 
@@ -50,33 +52,61 @@ async def create_post_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
+def _create_post_entry_keyboard_from_service(service, state_data: dict):
+    from app.integrations.avito.condition_maps import clamp_avito_level
+
+    sl = clamp_avito_level(state_data.get("avito_screen_level", 1))
+    bl = clamp_avito_level(state_data.get("avito_body_level", 1))
+    return get_create_post_entry_keyboard(
+        service.is_vk_market_enabled(),
+        avito_enabled=service.is_platform_enabled("avito"),
+        avito_screen_level=sl,
+        avito_body_level=bl,
+        vk_stories_auto_enabled=service.is_vk_stories_auto_enabled(),
+    ), sl, bl
+
+
 @router.callback_query(PostCreation.waiting_for_text, F.data == "create_post_toggle_vk_market")
 async def toggle_vk_market_from_create_post(callback: CallbackQuery, state: FSMContext):
     """Toggle VK market publication flag directly from create post screen."""
     service = get_settings_service()
     next_state = not service.is_vk_market_enabled()
     service.set_vk_market_enabled(next_state)
-    avito_enabled = service.is_platform_enabled("avito")
     data = await state.get_data()
-    from app.integrations.avito.condition_maps import clamp_avito_level
-
-    sl = clamp_avito_level(data.get("avito_screen_level", 1))
-    bl = clamp_avito_level(data.get("avito_body_level", 1))
-    keyboard = get_create_post_entry_keyboard(
-        next_state,
-        avito_enabled=avito_enabled,
-        avito_screen_level=sl,
-        avito_body_level=bl,
-    )
+    keyboard, sl, bl = _create_post_entry_keyboard_from_service(service, data)
     status_hint = get_platform_status_hint_text()
     await callback.message.edit_text(
-        format_post_creation_text_prompt(status_hint, sl, bl, avito_enabled=avito_enabled),
+        format_post_creation_text_prompt(
+            status_hint, sl, bl, avito_enabled=service.is_platform_enabled("avito")
+        ),
         reply_markup=keyboard,
         parse_mode="HTML",
     )
     await state.set_state(PostCreation.waiting_for_text)
     await callback.answer(
         "Товары ВК: включены" if next_state else "Товары ВК: выключены"
+    )
+
+
+@router.callback_query(PostCreation.waiting_for_text, F.data == "create_post_toggle_vk_stories")
+async def toggle_vk_stories_from_create_post(callback: CallbackQuery, state: FSMContext):
+    """Toggle auto VK stories flag from create post screen (independent of market)."""
+    service = get_settings_service()
+    next_state = not service.is_vk_stories_auto_enabled()
+    service.set_vk_stories_auto_enabled(next_state)
+    data = await state.get_data()
+    keyboard, sl, bl = _create_post_entry_keyboard_from_service(service, data)
+    status_hint = get_platform_status_hint_text()
+    await callback.message.edit_text(
+        format_post_creation_text_prompt(
+            status_hint, sl, bl, avito_enabled=service.is_platform_enabled("avito")
+        ),
+        reply_markup=keyboard,
+        parse_mode="HTML",
+    )
+    await state.set_state(PostCreation.waiting_for_text)
+    await callback.answer(
+        "Сторис ВК: включены" if next_state else "Сторис ВК: выключены"
     )
 
 @router.callback_query(F.data == "pending_posts")

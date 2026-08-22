@@ -125,7 +125,8 @@ def format_post_card(post: dict, *, success_prefix: str = "") -> str:
     ig = "✅" if post.get("is_published_instagram") else "❌"
     mx = "✅" if post.get("is_published_max") else "❌"
     av = "✅" if post.get("is_published_avito") else "❌"
-    lines.append(f"ВК: {vk}, ТГ: {tg}, IG: {ig}, MAX: {mx}, Авито: {av}")
+    st = "✅" if post.get("is_published_vk_story") else "❌"
+    lines.append(f"ВК: {vk}, ТГ: {tg}, IG: {ig}, MAX: {mx}, Авито: {av}, Сторис: {st}")
     return "\n".join(lines)
 
 
@@ -192,7 +193,8 @@ def format_archive_post_card(post: dict, *, success_prefix: str = "") -> str:
     ig = "✅" if post.get("is_published_instagram") else "❌"
     mx = "✅" if post.get("is_published_max") else "❌"
     av = "✅" if post.get("is_published_avito") else "❌"
-    lines.append(f"ВК: {vk}, ТГ: {tg}, IG: {ig}, MAX: {mx}, Авито: {av}")
+    st = "✅" if post.get("is_published_vk_story") else "❌"
+    lines.append(f"ВК: {vk}, ТГ: {tg}, IG: {ig}, MAX: {mx}, Авито: {av}, Сторис: {st}")
     return "\n".join(lines)
 
 

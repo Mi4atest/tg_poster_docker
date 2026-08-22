@@ -1,8 +1,15 @@
 """OAuth callback для заявки в developers.avito.ru (при client_credentials не вызывается в рантайме)."""
+import html
+
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
 router = APIRouter()
+
+
+def _esc(value: object) -> str:
+    """Экранирование для вставки в HTML (защита от отражённого XSS)."""
+    return html.escape("" if value is None else str(value), quote=True)
 
 
 @router.get("/avito/oauth/callback", response_class=HTMLResponse)
@@ -21,8 +28,8 @@ async def avito_oauth_callback(
         body = (
             "<!DOCTYPE html><html><head><meta charset='utf-8'>"
             "<title>Avito OAuth</title></head><body>"
-            f"<p>Ошибка авторизации: {error}</p>"
-            f"<p>{error_description or ''}</p>"
+            f"<p>Ошибка авторизации: {_esc(error)}</p>"
+            f"<p>{_esc(error_description or '')}</p>"
             "</body></html>"
         )
         return HTMLResponse(content=body, status_code=400)

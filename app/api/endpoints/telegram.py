@@ -1,129 +1,90 @@
-from fastapi import APIRouter, HTTPException, Response
-from aiogram import Bot
+"""Публичный прокси файлов Telegram по file_id (витрина, Avito XML, воркеры)."""
+from __future__ import annotations
+
+import logging
+import re
+
 import aiohttp
-import io
+from aiogram import Bot
+from fastapi import APIRouter, HTTPException, Response
 
 from app.config.settings import TELEGRAM_BOT_TOKEN
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+_BOT_TOKEN_IN_URL = re.compile(r"/file/bot[^/\s]+")
+
+
+def _redact(text: object) -> str:
+    """Убирает токен бота из URL/текста перед записью в лог."""
+    return _BOT_TOKEN_IN_URL.sub("/file/bot***", "" if text is None else str(text))
+
+
+def _content_type_for_path(file_path: str) -> str:
+    lower = (file_path or "").lower()
+    if lower.endswith((".jpg", ".jpeg")):
+        return "image/jpeg"
+    if lower.endswith(".png"):
+        return "image/png"
+    if lower.endswith(".mp4"):
+        return "video/mp4"
+    if lower.endswith(".mov"):
+        return "video/quicktime"
+    return "application/octet-stream"
+
 
 @router.get("/file/{file_id}")
 async def get_telegram_file(file_id: str):
     """Get a file from Telegram by file_id."""
-    bot = Bot(token=TELEGRAM_BOT_TOKEN)
+    if not TELEGRAM_BOT_TOKEN:
+        raise HTTPException(status_code=503, detail="Telegram bot is not configured")
 
+    bot = Bot(token=TELEGRAM_BOT_TOKEN)
     try:
-        # Get file info
         try:
             file_info = await bot.get_file(file_id)
             file_path = file_info.file_path
-        except Exception as e:
-            # Log the error
-            print(f"Error getting file info from Telegram: {str(e)}")
+        except Exception as exc:
+            logger.warning("Telegram getFile failed for file_id=%s: %s", file_id[:32], _redact(exc))
+            raise HTTPException(status_code=404, detail="File not found") from None
 
-            # Try to handle common file types based on file_id format
-            # This is a fallback for when Telegram API doesn't return file info
-            if "AgAC" in file_id:  # Photo file_id usually starts with AgAC
-                # For photos, we'll create a dummy file path
-                file_path = "photos/photo.jpg"
-            elif "BAAC" in file_id:  # Video file_id usually starts with BAAC
-                # For videos, we'll create a dummy file path
-                file_path = "videos/video.mp4"
-            else:
-                # If we can't determine the file type, raise an exception
-                raise HTTPException(status_code=400, detail=f"Unsupported file type or invalid file_id: {file_id}")
+        if not file_path:
+            raise HTTPException(status_code=404, detail="File not found")
 
-        # Get file URL
         file_url = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{file_path}"
 
-        # Download file with SSL verification disabled
-        async with aiohttp.ClientSession() as session:
-            try:
-                # Create a custom SSL context that doesn't verify certificates
-                import ssl
-                ssl_context = ssl.create_default_context()
-                ssl_context.check_hostname = False
-                ssl_context.verify_mode = ssl.CERT_NONE
+        try:
+            timeout = aiohttp.ClientTimeout(total=60)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                # TLS verification включена (по умолчанию); CERT_NONE / curl -k убраны.
+                async with session.get(file_url) as response:
+                    if response.status != 200:
+                        body_preview = _redact((await response.text())[:200])
+                        logger.warning(
+                            "Telegram file download failed: status=%s body=%s",
+                            response.status,
+                            body_preview,
+                        )
+                        raise HTTPException(
+                            status_code=502,
+                            detail="Failed to download file from Telegram",
+                        )
+                    content = await response.read()
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.error("Telegram file download error: %s", _redact(exc))
+            raise HTTPException(
+                status_code=502,
+                detail="Failed to download file from Telegram",
+            ) from None
 
-                async with session.get(file_url, ssl=ssl_context) as response:
-                    if response.status == 200:
-                        content = await response.read()
-
-                        # Determine content type
-                        content_type = "application/octet-stream"
-                        if file_path.endswith(".jpg") or file_path.endswith(".jpeg"):
-                            content_type = "image/jpeg"
-                        elif file_path.endswith(".png"):
-                            content_type = "image/png"
-                        elif file_path.endswith(".mp4"):
-                            content_type = "video/mp4"
-                        elif file_path.endswith(".mov"):
-                            content_type = "video/quicktime"
-
-                        return Response(content=content, media_type=content_type)
-                    else:
-                        # Log the error
-                        print(f"Failed to download file from Telegram: {response.status} - {await response.text()}")
-                        raise HTTPException(status_code=response.status, detail="Failed to download file from Telegram")
-            except Exception as e:
-                # Log the error
-                print(f"Error downloading file from Telegram: {str(e)}")
-
-                # Try alternative method using curl
-                try:
-                    import tempfile
-                    import os
-                    import subprocess
-
-                    # Create a temporary file
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=".bin") as temp_file:
-                        temp_path = temp_file.name
-
-                    # Use curl to download the file (curl handles SSL issues better)
-                    curl_cmd = [
-                        "curl",
-                        "-s",
-                        "-k",  # Skip SSL verification
-                        file_url,
-                        "-o", temp_path
-                    ]
-
-                    process = subprocess.run(curl_cmd, capture_output=True)
-
-                    if process.returncode == 0:
-                        # Read the file
-                        with open(temp_path, "rb") as f:
-                            content = f.read()
-
-                        # Clean up
-                        os.unlink(temp_path)
-
-                        # Determine content type
-                        content_type = "application/octet-stream"
-                        if file_path.endswith(".jpg") or file_path.endswith(".jpeg"):
-                            content_type = "image/jpeg"
-                        elif file_path.endswith(".png"):
-                            content_type = "image/png"
-                        elif file_path.endswith(".mp4"):
-                            content_type = "video/mp4"
-                        elif file_path.endswith(".mov"):
-                            content_type = "video/quicktime"
-
-                        return Response(content=content, media_type=content_type)
-                    else:
-                        # Log the error
-                        print(f"Curl failed with return code {process.returncode}: {process.stderr.decode()}")
-                        raise HTTPException(status_code=500, detail=f"Curl failed to download file: {process.stderr.decode()}")
-                except Exception as curl_e:
-                    # Log the error
-                    print(f"Error using curl fallback: {str(curl_e)}")
-                    raise HTTPException(status_code=500, detail=f"Error downloading file: {str(e)} (Curl fallback failed: {str(curl_e)})")
-    except HTTPException as he:
-        # Re-raise HTTP exceptions
-        raise he
-    except Exception as e:
-        # Log the error
-        print(f"Unexpected error getting file: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error getting file: {str(e)}")
+        return Response(content=content, media_type=_content_type_for_path(file_path))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Unexpected error in get_telegram_file: %s", _redact(exc))
+        raise HTTPException(status_code=500, detail="Error getting file") from None
     finally:
         await bot.session.close()

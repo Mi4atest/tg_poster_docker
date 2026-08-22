@@ -1,4 +1,5 @@
 """VK ID OAuth 2.1 (PKCE) → VK_MARKET_ACCESS_TOKEN. Legacy oauth.vk.ru для Web-приложений не работает."""
+import html
 import json
 from urllib.parse import urlencode
 
@@ -16,9 +17,14 @@ VKID_AUTHORIZE = "https://id.vk.ru/authorize"
 VKID_TOKEN = "https://id.vk.ru/oauth2/auth"
 
 
+def _esc(value: object) -> str:
+    """Экранирование для вставки в HTML (защита от отражённого XSS)."""
+    return html.escape("" if value is None else str(value), quote=True)
+
+
 def _html(title: str, body: str, status: int = 200) -> HTMLResponse:
     return HTMLResponse(
-        f"<!DOCTYPE html><html lang='ru'><head><meta charset='utf-8'><title>{title}</title>"
+        f"<!DOCTYPE html><html lang='ru'><head><meta charset='utf-8'><title>{_esc(title)}</title>"
         "<style>body{font-family:system-ui,sans-serif;max-width:760px;margin:2rem auto;padding:0 1rem}"
         "textarea{width:100%;height:120px;word-break:break-all}.ok{color:green}.err{color:#c00}"
         "code{font-size:13px}</style></head><body>"
@@ -47,7 +53,7 @@ def _exchange_vkid_code(code: str, device_id: str, state: str, verifier: str) ->
 
 @router.get("/vk/oauth/help", response_class=HTMLResponse)
 async def vk_oauth_help():
-    app_id = VK_APP_ID or "54604726"
+    app_id = _esc(VK_APP_ID or "54604726")
     body = f"""
 <h1>Токен для VK Market (<code>VK_MARKET_ACCESS_TOKEN</code>)</h1>
 <p><b>Standalone на dev.vk.ru больше не создаётся</b> — приложения перенесены в
@@ -122,7 +128,7 @@ async def vk_oauth_callback(
     if error:
         return _html(
             "VK ID — ошибка",
-            f'<p class="err">{error}</p><p>{error_description or ""}</p>'
+            f'<p class="err">{_esc(error)}</p><p>{_esc(error_description or "")}</p>'
             f'<p><a href="/vk/oauth/help">Назад к инструкции</a></p>',
             400,
         )
@@ -138,7 +144,7 @@ async def vk_oauth_callback(
         try:
             data = _exchange_vkid_code(code, device_id, state, verifier)
         except Exception as e:
-            return _html("VK ID", f"<p class='err'>Ошибка запроса: {e}</p>", 502)
+            return _html("VK ID", f"<p class='err'>Ошибка запроса: {_esc(e)}</p>", 502)
 
         if "access_token" in data:
             token = data["access_token"]
@@ -154,20 +160,23 @@ async def vk_oauth_callback(
 <h1 class="ok">Токен VK ID получен</h1>
 {vk2_warn}
 <p>Если токен <code>vk1.a.*</code> — в <code>.env</code> (только значение, без префикса имени переменной):</p>
-<pre>VK_MARKET_ACCESS_TOKEN={token}</pre>
+<pre>VK_MARKET_ACCESS_TOKEN={_esc(token)}</pre>
 <p>Затем: <code>docker-compose restart app</code> и
 <code>python -m app.scripts.verify_vk_tokens</code></p>
-<p>scope: {data.get('scope', '')} | expires_in: {data.get('expires_in', '')} | user_id: {data.get('user_id', '')}</p>
+<p>scope: {_esc(data.get('scope', ''))} | expires_in: {_esc(data.get('expires_in', ''))} | user_id: {_esc(data.get('user_id', ''))}</p>
 <p><a href="/vk/oauth/help">Как получить vk1.a для маркета</a></p>
 """
             if refresh:
-                body += f"<p>Refresh token (сохраните отдельно для продления):<br><textarea readonly>{refresh}</textarea></p>"
+                body += (
+                    "<p>Refresh token (сохраните отдельно для продления):<br>"
+                    f"<textarea readonly>{_esc(refresh)}</textarea></p>"
+                )
             body += "<p><a href='/vk/oauth/help'>Инструкция</a></p>"
             return _html("VK — токен", body)
 
         return _html(
             "VK ID — ошибка обмена",
-            f"<pre>{json.dumps(data, ensure_ascii=False, indent=2)}</pre>"
+            f"<pre>{_esc(json.dumps(data, ensure_ascii=False, indent=2))}</pre>"
             "<p><a href='/vk/oauth/help'>Помощь</a></p>",
             400,
         )
@@ -176,5 +185,5 @@ async def vk_oauth_callback(
         "VK OAuth callback",
         "<p>Нет параметра <code>code</code> в URL.</p>"
         "<p><a href='/vk/oauth/vkid/start'><b>Войти через VK ID</b></a></p>"
-        f"<p>Redirect URI: <code>{REDIRECT_URI}</code></p>",
+        f"<p>Redirect URI: <code>{_esc(REDIRECT_URI)}</code></p>",
     )

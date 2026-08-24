@@ -491,7 +491,8 @@ async def start_project_update(*, force: bool = False) -> Tuple[bool, str]:
         "-v", f"{host_bind}:{host_bind}",
         "-v", "/var/run/docker.sock:/var/run/docker.sock",
         "-v", f"{docker_bin}:{docker_bin}:ro",
-        "-v", f"{compose_bin}:{compose_bin}:ro",
+        # docker-compose НЕ монтируем с хоста: там Python-скрипт с shebang /usr/bin/python3,
+        # в slim-образе не работает. Updater использует apt docker-compose из образа app.
         "-e", f"TG_POSTER_DIR={host_bind}",
         "-e", "COMPOSE_PROJECT_NAME=tg_poster_docker",
         "-e", f"TG_POSTER_BRANCH={_branch()}",

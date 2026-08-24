@@ -26,6 +26,33 @@ info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
+# #region agent log
+_agent_log_update() {
+    local hypothesis_id="$1" message="$2" data_json="$3"
+    python3 - <<PY 2>/dev/null || true
+import json, time
+from pathlib import Path
+payload = {
+    "sessionId": "593e89",
+    "runId": "pre-fix",
+    "hypothesisId": "${hypothesis_id}",
+    "location": "scripts/update.sh:compose_select",
+    "message": """${message}""",
+    "data": json.loads("""${data_json}"""),
+    "timestamp": int(time.time() * 1000),
+}
+for rel in (".cursor/debug-593e89.log", "app/logs/debug-593e89.log"):
+    p = Path("${PROJECT_DIR}") / rel
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+PY
+}
+# #endregion
+
 write_meta() {
     local status="$1"
     local ok="${2:-true}"
@@ -66,10 +93,13 @@ fi
 
 if docker compose version >/dev/null 2>&1; then
     DC=(docker compose -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}")
-elif command -v docker-compose >/dev/null 2>&1; then
+    _agent_log_update "A" "selected docker compose v2" "{\"mode\":\"compose-v2\"}"
+elif docker-compose version >/dev/null 2>&1; then
     DC=(docker-compose -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}")
+    _agent_log_update "B" "selected docker-compose v1" "{\"mode\":\"compose-v1\",\"path\":\"$(command -v docker-compose)\"}"
 else
-    error "docker compose / docker-compose не найден"
+    _agent_log_update "C" "no working compose" "{\"compose_v2\":false,\"compose_v1_path\":\"$(command -v docker-compose || echo missing)\",\"usr_bin_python3\":\"$(test -x /usr/bin/python3 && echo yes || echo no)\"}"
+    error "docker compose / docker-compose не найден или не запускается"
     write_meta "failed" false
     exit 1
 fi

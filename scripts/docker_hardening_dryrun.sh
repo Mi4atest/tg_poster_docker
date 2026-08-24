@@ -21,9 +21,11 @@ for bad in ("gcc", "python3-dev", "libpq-dev"):
     if bad in runtime:
         raise SystemExit(f"runtime-слой Dockerfile содержит {bad!r}")
 
-for good in ("git", "postgresql-client", "fonts-dejavu-core", "libpq5", "docker-compose"):
+for good in ("git", "postgresql-client", "fonts-dejavu-core", "libpq5"):
     if good not in runtime:
         raise SystemExit(f"runtime-слой Dockerfile без {good!r}")
+if "docker-compose" in runtime:
+    raise SystemExit("runtime-слой Dockerfile не должен содержать docker-compose")
 
 print("OK: Dockerfile structure")
 PY
@@ -40,9 +42,7 @@ command -v python >/dev/null
 pyver=$(python -c "import sys; print(f\"{sys.version_info.major}.{sys.version_info.minor}\")")
 test "$pyver" = "3.12" || { echo "FAIL: Python $pyver, expected 3.12"; exit 1; }
 echo "python $pyver OK"
-command -v docker-compose >/dev/null
-docker-compose version >/dev/null
-echo "docker-compose OK"
+! command -v docker-compose >/dev/null 2>&1 || { echo "FAIL: docker-compose в runtime (обновление на хосте)"; exit 1; }
 ! command -v gcc >/dev/null 2>&1 || { echo "FAIL: gcc в runtime"; exit 1; }
 ! dpkg -l | grep -q python3-dev || { echo "FAIL: python3-dev в runtime"; exit 1; }
 python - <<PY

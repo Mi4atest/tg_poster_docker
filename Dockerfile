@@ -19,7 +19,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.lock
 
 
-# --- runtime: без gcc; git + docker-compose для update из бота (самодостаточный apt-пакет) ---
+# --- runtime: без gcc; git для проверки версии (обновление — на хосте через host_tasks.sh) ---
 FROM python:3.12-slim-bookworm AS runtime
 
 WORKDIR /app
@@ -29,7 +29,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     postgresql-client \
     fonts-dejavu-core \
     git \
-    docker-compose \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 

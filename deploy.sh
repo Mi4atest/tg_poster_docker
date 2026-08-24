@@ -191,10 +191,13 @@ if [ ! -f ".env" ]; then
         read -rp "    Токен обязателен. Введите TELEGRAM_BOT_TOKEN: " BOT_TOKEN
     done
 
-    read -rp "$(echo -e "${BLUE}[?]${NC} ") ID администраторов через запятую (ALLOWED_USER_IDS): " ADMIN_IDS
-    while [ -z "$ADMIN_IDS" ]; do
-        read -rp "    Нужен хотя бы один ID. Введите ALLOWED_USER_IDS: " ADMIN_IDS
+    read -rp "$(echo -e "${BLUE}[?]${NC} ") ID пользователей с доступом к боту через запятую (ALLOWED_USER_IDS): " ALLOWED_IDS
+    while [ -z "$ALLOWED_IDS" ]; do
+        read -rp "    Нужен хотя бы один ID. Введите ALLOWED_USER_IDS: " ALLOWED_IDS
     done
+
+    read -rp "$(echo -e "${BLUE}[?]${NC} ") ID администраторов (обновление, секреты) [Enter = те же]: " ADMIN_USER_IDS_INPUT
+    ADMIN_USER_IDS_INPUT="${ADMIN_USER_IDS_INPUT:-$ALLOWED_IDS}"
 
     if command -v openssl >/dev/null 2>&1; then
         MASTER_KEY="$(openssl rand -hex 32)"
@@ -208,7 +211,8 @@ if [ ! -f ".env" ]; then
     cat > .env <<EOF
 # Сгенерировано deploy.sh $(date +%Y-%m-%d\ %H:%M:%S)
 TELEGRAM_BOT_TOKEN=${BOT_TOKEN}
-ALLOWED_USER_IDS=${ADMIN_IDS}
+ALLOWED_USER_IDS=${ALLOWED_IDS}
+ADMIN_USER_IDS=${ADMIN_USER_IDS_INPUT}
 MASTER_KEY=${MASTER_KEY}
 
 DB_USER=postgres
@@ -304,6 +308,10 @@ info "  • «📣 Каналы публикации» — Telegram/Max кана
 info "  • «🔐 Интеграции и токены» — токены VK/Instagram/Max/Авито"
 info "  • «🗂 Отчёты и списки» — получатели и ID сообщений"
 info "  • «💾 Резервное копирование» — бэкап в Telegram по расписанию"
+info ""
+info "Обновление из бота (pull-модель): установите systemd timer на хосте:"
+info "  sudo cp deploy/systemd/tg-poster-host-tasks.* /etc/systemd/system/"
+info "  sudo systemctl daemon-reload && sudo systemctl enable --now tg-poster-host-tasks.timer"
 info ""
 info "Бэкап до деплоя: положите в ${BACKUP_ROOT}/ файл *_backup_*.sql.gz"
 info "Логи приложения:  $DC logs -f app"

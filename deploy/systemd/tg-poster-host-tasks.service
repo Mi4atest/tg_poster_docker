@@ -1,0 +1,15 @@
+[Unit]
+Description=tg_poster — фоновые задачи хоста (обновление, prune)
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/tg_poster_docker
+Environment=TG_POSTER_DIR=/root/tg_poster_docker
+ExecStart=/bin/bash /root/tg_poster_docker/scripts/host_tasks.sh
+# Путь WorkingDirectory/ExecStart замените при другом расположении проекта.
+
+[Install]
+WantedBy=multi-user.target

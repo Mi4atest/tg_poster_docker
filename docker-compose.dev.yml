@@ -1,0 +1,9 @@
+# Локальная разработка: hot-reload кода без пересборки образа.
+# Запуск: docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+services:
+  app:
+    read_only: false
+    volumes:
+      - ./.cursor:/app/.cursor
+      - ./app:/app/app
+      - ./main.py:/app/main.py

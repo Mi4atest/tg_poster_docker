@@ -57,6 +57,17 @@ trap _on_err ERR
 
 cd "$PROJECT_DIR"
 
+UPDATE_LOCK="${PROJECT_DIR}/backups/update.lock"
+if [ -f "$UPDATE_LOCK" ] && [ "${TG_POSTER_FROM_HOST_TASKS:-0}" != "1" ]; then
+    error "Обновление уже выполняется (backups/update.lock). Дождитесь окончания."
+    exit 1
+fi
+if [ "${TG_POSTER_FROM_HOST_TASKS:-0}" != "1" ]; then
+    mkdir -p "$(dirname "$UPDATE_LOCK")"
+    touch "$UPDATE_LOCK"
+    trap 'rm -f "$UPDATE_LOCK"' EXIT
+fi
+
 if [ -f ".env" ]; then
     set -a
     # shellcheck disable=SC1091

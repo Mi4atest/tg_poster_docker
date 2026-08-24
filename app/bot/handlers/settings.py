@@ -31,6 +31,11 @@ from app.utils.signatures import get_instagram_signature, get_telegram_signature
 from app.utils.telegram_post_markup import is_valid_catalog_button_url
 from app.config import settings as env_settings
 from app.workers.instagram.token_manager import InstagramGraphTokenManager
+from app.bot.utils.admin_auth import (
+    deny_unless_admin_callback,
+    deny_unless_admin_message,
+    is_admin_user,
+)
 
 router = Router()
 
@@ -319,9 +324,10 @@ def _build_integration_platform_text(platform: str) -> str:
 @router.callback_query(F.data == "open_settings")
 @router.callback_query(F.data == "settings_root")
 async def open_settings(callback: CallbackQuery):
+    uid = callback.from_user.id if callback.from_user else None
     await callback.message.edit_text(
         _status_text(),
-        reply_markup=get_settings_root_keyboard(),
+        reply_markup=get_settings_root_keyboard(is_admin=is_admin_user(uid)),
     )
     await callback.answer()
 
@@ -561,6 +567,8 @@ async def request_signature_value(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("settings_secret_"))
 async def request_secret_value(callback: CallbackQuery, state: FSMContext):
+    if not await deny_unless_admin_callback(callback):
+        return
     secret_name = callback.data.replace("settings_secret_", "")
     await state.set_state(SettingsState.waiting_for_secret_value)
     await state.update_data(secret_name=secret_name, input_return_callback="settings_integrations")
@@ -576,6 +584,8 @@ async def request_secret_value(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data.startswith("settings_edit_integration_"))
 async def request_integration_value(callback: CallbackQuery, state: FSMContext):
     field = callback.data.replace("settings_edit_integration_", "")
+    if field in SECRET_INTEGRATION_FIELDS and not await deny_unless_admin_callback(callback):
+        return
     return_callback = "settings_integrations"
     if field.startswith("vk_"):
         return_callback = "settings_integration_platform_vk"
@@ -617,6 +627,8 @@ async def toggle_instagram_mode(callback: CallbackQuery):
 
 @router.callback_query(F.data == "settings_instagram_exchange_long_lived")
 async def exchange_instagram_long_lived(callback: CallbackQuery):
+    if not await deny_unless_admin_callback(callback):
+        return
     manager = InstagramGraphTokenManager()
     token = manager.get_access_token()
     if not token:
@@ -645,6 +657,8 @@ async def exchange_instagram_long_lived(callback: CallbackQuery):
 
 @router.message(SettingsState.waiting_for_secret_value)
 async def save_secret_value(message: Message, state: FSMContext):
+    if not await deny_unless_admin_message(message):
+        return
     data = await state.get_data()
     secret_name = data.get("secret_name")
     if not secret_name:
@@ -731,6 +745,8 @@ async def save_integration_value(message: Message, state: FSMContext):
     if not field:
         await state.clear()
         await message.answer("❌ Не удалось определить поле интеграции.")
+        return
+    if field in SECRET_INTEGRATION_FIELDS and not await deny_unless_admin_message(message):
         return
     raw = (message.text or "").strip()
     return_cb = str(data.get("input_return_callback") or "")
@@ -1470,6 +1486,8 @@ async def backup_toggle_media(callback: CallbackQuery):
 
 @router.callback_query(F.data == "settings_backup_edit_token")
 async def backup_edit_token(callback: CallbackQuery, state: FSMContext):
+    if not await deny_unless_admin_callback(callback):
+        return
     await state.set_state(SettingsState.waiting_for_backup_value)
     await state.update_data(backup_field="token", input_return_callback="settings_backup")
     await callback.message.edit_text(
@@ -1528,6 +1546,8 @@ async def backup_run_now(callback: CallbackQuery):
 async def save_backup_value(message: Message, state: FSMContext):
     data = await state.get_data()
     field = data.get("backup_field")
+    if field == "token" and not await deny_unless_admin_message(message):
+        return
     raw = (message.text or "").strip()
     svc = get_settings_service()
     if field == "token":
@@ -1562,6 +1582,8 @@ async def save_backup_schedule(message: Message, state: FSMContext):
 
 @router.callback_query(F.data == "settings_update_project")
 async def settings_update_project(callback: CallbackQuery):
+    if not await deny_unless_admin_callback(callback):
+        return
     from app.services.project_update_service import build_update_screen
 
     await callback.answer("Проверяю GitHub…")
@@ -1583,9 +1605,12 @@ async def settings_update_project(callback: CallbackQuery):
 
 @router.callback_query(F.data == "settings_update_project_confirm")
 async def settings_update_project_confirm(callback: CallbackQuery):
+    if not await deny_unless_admin_callback(callback):
+        return
     from app.services.project_update_service import build_update_screen, start_project_update
 
-    ok, msg = await start_project_update(force=False)
+    uid = callback.from_user.id if callback.from_user else None
+    ok, msg = await start_project_update(force=False, requested_by=uid)
     await callback.answer("Запускаю обновление…" if ok else "Не запущено")
     _, check, running = await build_update_screen(refresh=False)
     if ok:
@@ -1608,9 +1633,12 @@ async def settings_update_project_confirm(callback: CallbackQuery):
 
 @router.callback_query(F.data == "settings_update_project_force")
 async def settings_update_project_force(callback: CallbackQuery):
+    if not await deny_unless_admin_callback(callback):
+        return
     from app.services.project_update_service import build_update_screen, start_project_update
 
-    ok, msg = await start_project_update(force=True)
+    uid = callback.from_user.id if callback.from_user else None
+    ok, msg = await start_project_update(force=True, requested_by=uid)
     await callback.answer("Принудительная пересборка…" if ok else "Не запущено")
     _, check, running = await build_update_screen(refresh=False)
     if ok:
@@ -1633,6 +1661,8 @@ async def settings_update_project_force(callback: CallbackQuery):
 
 @router.callback_query(F.data == "settings_update_project_status")
 async def settings_update_project_status(callback: CallbackQuery):
+    if not await deny_unless_admin_callback(callback):
+        return
     from app.services.project_update_service import (
         build_update_screen,
         get_update_details_message,
@@ -1660,13 +1690,16 @@ async def settings_update_project_status(callback: CallbackQuery):
 @router.callback_query(F.data == "settings_update_project_prune")
 async def settings_update_project_prune(callback: CallbackQuery):
     """Очистка неиспользуемых Docker-образов (без volumes / медиа / бэкапов)."""
+    if not await deny_unless_admin_callback(callback):
+        return
     from app.services.project_update_service import (
         build_update_screen,
         free_docker_disk_space,
     )
 
     await callback.answer("Очищаю Docker-кэш…")
-    _, msg = await free_docker_disk_space()
+    uid = callback.from_user.id if callback.from_user else None
+    _, msg = await free_docker_disk_space(requested_by=uid)
     _, check, running = await build_update_screen(refresh=False)
     try:
         await callback.message.edit_text(

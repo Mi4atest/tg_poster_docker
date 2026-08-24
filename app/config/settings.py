@@ -13,6 +13,13 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 # Telegram Bot settings
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ALLOWED_USER_IDS = [int(user_id) for user_id in os.getenv("ALLOWED_USER_IDS", "").split(",") if user_id]
+# Подмножество ALLOWED: обновление, prune, секреты. Пусто → все из ALLOWED (обратная совместимость).
+_admin_ids_raw = os.getenv("ADMIN_USER_IDS", "").strip()
+ADMIN_USER_IDS: List[int] = (
+    [int(user_id) for user_id in _admin_ids_raw.split(",") if user_id]
+    if _admin_ids_raw
+    else list(ALLOWED_USER_IDS)
+)
 
 # VK API settings
 VK_APP_ID = os.getenv("VK_APP_ID")

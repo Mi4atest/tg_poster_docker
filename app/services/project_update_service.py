@@ -1,7 +1,7 @@
-"""Обновление проекта с GitHub (git pull + пересборка app).
+"""Обновление проекта с GitHub (pull-модель: флаг → host_tasks.sh на хосте).
 
-Запускается из бота через отдельный контейнер-обновлятор, чтобы перезапуск app
-не обрывал сам процесс обновления.
+Бот не монтирует docker.sock: запрос пишется в backups/update_requested.json,
+systemd timer на хосте выполняет scripts/host_tasks.sh → scripts/update.sh.
 """
 from __future__ import annotations
 
@@ -20,22 +20,21 @@ from typing import Optional, Tuple
 logger = logging.getLogger(__name__)
 
 HOST_PROJECT = Path(os.environ.get("TG_POSTER_HOST_DIR", "/host_project"))
+BACKUPS_DIR = Path(os.environ.get("TG_POSTER_BACKUPS_DIR", "/app/backups"))
 UPDATE_SCRIPT = HOST_PROJECT / "scripts" / "update.sh"
-UPDATE_LOG = HOST_PROJECT / "backups" / "last_update.log"
-UPDATE_META = HOST_PROJECT / "backups" / "last_update_meta.json"
-UPDATER_CONTAINER = "tg_poster_updater"
-DEFAULT_APP_IMAGE = os.environ.get("TG_POSTER_APP_IMAGE", "tg_poster_docker_app:latest")
-DOCKER_BIN = os.environ.get("TG_POSTER_DOCKER_BIN", "/usr/bin/docker")
-DOCKER_COMPOSE_BIN = os.environ.get("TG_POSTER_DOCKER_COMPOSE_BIN", "/usr/bin/docker-compose")
+UPDATE_LOG = BACKUPS_DIR / "last_update.log"
+UPDATE_META = BACKUPS_DIR / "last_update_meta.json"
+UPDATE_FLAG = BACKUPS_DIR / "update_requested.json"
+UPDATE_LOCK = BACKUPS_DIR / "update.lock"
+PRUNE_FLAG = BACKUPS_DIR / "prune_requested.json"
+PRUNE_META = BACKUPS_DIR / "last_prune_meta.json"
 DEFAULT_BRANCH = os.environ.get("TG_POSTER_BRANCH", "Test_planner")
 
-# В контейнере app нет ssh — origin часто git@github.com. Подменяем на HTTPS только для команды.
 _GIT_HTTPS_INSTEADOF = (
     "-c", "url.https://github.com/.insteadOf=git@github.com:",
     "-c", "url.https://github.com/.insteadOf=ssh://git@github.com/",
 )
 
-# Кэш результата git fetch / сравнения (секунды)
 _FETCH_CACHE_TTL = 90
 _fetch_cache: dict = {"ts": 0.0, "result": None}
 
@@ -59,15 +58,6 @@ class UpdateCheck:
     up_to_date: bool
     fetch_ok: bool
     fetch_error: str = ""
-
-
-def _docker_binaries() -> tuple[Path, Path]:
-    return Path(DOCKER_BIN), Path(DOCKER_COMPOSE_BIN)
-
-
-def _docker_available() -> bool:
-    docker_bin, _ = _docker_binaries()
-    return Path("/var/run/docker.sock").exists() and docker_bin.is_file()
 
 
 def _branch() -> str:
@@ -103,15 +93,41 @@ async def _run_git(
     )
 
 
+async def _git_ls_remote(branch: str) -> Tuple[int, str, str]:
+    """Удалённый HEAD без git fetch (не нужна запись в .git)."""
+    proc = await asyncio.create_subprocess_exec(
+        "git", "-C", str(HOST_PROJECT),
+        *_GIT_HTTPS_INSTEADOF,
+        "ls-remote", "origin", f"refs/heads/{branch}",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=90.0)
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        return 1, "", "timeout"
+    out = (stdout or b"").decode(errors="replace").strip()
+    err = (stderr or b"").decode(errors="replace").strip()
+    if proc.returncode != 0:
+        return proc.returncode or 1, "", err
+    # "<hash>\trefs/heads/Branch"
+    remote_hash = out.split()[0] if out.split() else ""
+    return 0, remote_hash, ""
+
+
 def _ssh_missing_error(err: str) -> bool:
     low = (err or "").lower()
     return "cannot run ssh" in low or "no such file or directory" in low and "ssh" in low
 
 
 def get_disk_space_info() -> dict:
-    """Свободное место на разделе с проектом (хост через /host_project)."""
     try:
-        usage = shutil.disk_usage(str(HOST_PROJECT if HOST_PROJECT.exists() else "/"))
+        path = HOST_PROJECT if HOST_PROJECT.exists() else BACKUPS_DIR
+        usage = shutil.disk_usage(str(path))
         free_gb = usage.free / (1024 ** 3)
         total_gb = usage.total / (1024 ** 3)
         used_pct = round(100.0 * (1.0 - usage.free / usage.total), 1) if usage.total else 0.0
@@ -127,12 +143,10 @@ def get_disk_space_info() -> dict:
 
 
 def _format_git_date(raw: str) -> str:
-    """2026-07-15 22:09:36 +0000 → 15.07.2026, 22:09 UTC."""
     raw = (raw or "").strip()
     if not raw:
         return "—"
     try:
-        # git %ci: "2026-07-15 22:09:36 +0000"
         dt = datetime.strptime(raw[:19], "%Y-%m-%d %H:%M:%S")
         return dt.strftime("%d.%m.%Y, %H:%M")
     except ValueError:
@@ -141,6 +155,11 @@ def _format_git_date(raw: str) -> str:
 
 def _escape(text: str) -> str:
     return html.escape((text or "").strip() or "—", quote=False)
+
+
+def _short_commit(full_hash: str) -> str:
+    h = (full_hash or "").strip()
+    return h[:7] if len(h) >= 7 else h
 
 
 async def get_local_version() -> Optional[LocalVersion]:
@@ -179,8 +198,22 @@ def read_update_meta() -> Optional[dict]:
         return None
 
 
+def read_prune_meta() -> Optional[dict]:
+    if not PRUNE_META.is_file():
+        return None
+    try:
+        data = json.loads(PRUNE_META.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def is_update_pending() -> bool:
+    return UPDATE_FLAG.is_file()
+
+
 async def check_for_updates(*, use_cache: bool = True) -> UpdateCheck:
-    """git fetch + сравнение локального HEAD с origin/branch."""
+    """Сравнение локального HEAD с origin через git ls-remote (без fetch)."""
     global _fetch_cache
     now = time.monotonic()
     if use_cache and _fetch_cache["result"] is not None:
@@ -201,19 +234,7 @@ async def check_for_updates(*, use_cache: bool = True) -> UpdateCheck:
     if local is None:
         return empty
 
-    code, _, err = await _run_git("fetch", "origin", branch, timeout=90.0)
-    if code != 0 and _ssh_missing_error(err):
-        # В контейнере нет ssh — повторяем через HTTPS insteadOf
-        code, _, err = await _run_git(
-            "fetch", "origin", branch, timeout=90.0, https_instead_of=True,
-        )
-    elif code != 0:
-        code, _, err = await _run_git("fetch", "origin", timeout=90.0)
-        if code != 0 and _ssh_missing_error(err):
-            code, _, err = await _run_git(
-                "fetch", "origin", timeout=90.0, https_instead_of=True,
-            )
-
+    code, remote_full, err = await _git_ls_remote(branch)
     if code != 0:
         result = UpdateCheck(
             local=local,
@@ -222,14 +243,12 @@ async def check_for_updates(*, use_cache: bool = True) -> UpdateCheck:
             behind=0,
             up_to_date=False,
             fetch_ok=False,
-            fetch_error=(err or "git fetch не удался")[:200],
+            fetch_error=(err or "git ls-remote не удался")[:200],
         )
         _fetch_cache = {"ts": now, "result": result}
         return result
 
-    remote_ref = f"origin/{branch}"
-    code, remote_commit, _ = await _run_git("rev-parse", "--short", remote_ref)
-    if code != 0 or not remote_commit:
+    if not remote_full:
         result = UpdateCheck(
             local=local,
             remote_commit="",
@@ -237,24 +256,41 @@ async def check_for_updates(*, use_cache: bool = True) -> UpdateCheck:
             behind=0,
             up_to_date=False,
             fetch_ok=False,
-            fetch_error=f"нет ветки {remote_ref}",
+            fetch_error=f"нет ветки origin/{branch}",
         )
         _fetch_cache = {"ts": now, "result": result}
         return result
 
+    remote_commit = _short_commit(remote_full)
+    remote_ref = f"origin/{branch}"
     _, remote_subject, _ = await _run_git("log", "-1", "--format=%s", remote_ref)
-    code, behind_s, _ = await _run_git("rev-list", "--count", f"HEAD..{remote_ref}")
-    try:
-        behind = int(behind_s) if code == 0 else 0
-    except ValueError:
-        behind = 0
+    if not remote_subject:
+        _, remote_subject, _ = await _run_git(
+            "log", "-1", "--format=%s", remote_full, https_instead_of=True,
+        )
+
+    code, local_full, _ = await _run_git("rev-parse", "HEAD")
+    behind = 0
+    up_to_date = False
+    if code == 0 and local_full and remote_full:
+        up_to_date = local_full == remote_full
+        if not up_to_date:
+            code_b, behind_s, _ = await _run_git(
+                "rev-list", "--count", f"{local_full}..{remote_full}",
+            )
+            try:
+                behind = int(behind_s) if code_b == 0 else 1
+            except ValueError:
+                behind = 1
+            if behind == 0 and not up_to_date:
+                behind = 1
 
     result = UpdateCheck(
         local=local,
         remote_commit=remote_commit,
         remote_subject=remote_subject,
         behind=behind,
-        up_to_date=(behind == 0),
+        up_to_date=up_to_date,
         fetch_ok=True,
     )
     _fetch_cache = {"ts": now, "result": result}
@@ -282,7 +318,6 @@ def _meta_summary_html(meta: Optional[dict]) -> str:
     label = labels.get(status, status or "—")
     lines = [f"Последний запуск: <b>{_escape(label)}</b>"]
     if finished:
-        # ISO or plain
         display = finished
         try:
             dt = datetime.fromisoformat(finished.replace("Z", "+00:00"))
@@ -298,8 +333,8 @@ def _meta_summary_html(meta: Optional[dict]) -> str:
 
 
 async def build_update_screen(*, refresh: bool = True) -> Tuple[str, UpdateCheck, bool]:
-    """Текст экрана обновления + результат проверки + running."""
     running = await is_update_running()
+    pending = is_update_pending()
     check = await check_for_updates(use_cache=not refresh)
 
     lines = ["🔄 <b>Обновить с GitHub</b>", ""]
@@ -323,6 +358,8 @@ async def build_update_screen(*, refresh: bool = True) -> Tuple[str, UpdateCheck
     if running:
         lines.append("⏳ <b>Сейчас идёт обновление…</b>")
         lines.append("Бот может на 1–3 минуты перезапуститься — это нормально.")
+    elif pending:
+        lines.append("⏳ <b>Обновление в очереди</b> — хост выполнит его в ближайшую минуту.")
     elif not check.fetch_ok:
         lines.append(f"⚠️ Не удалось проверить GitHub: {_escape(check.fetch_error)}")
         lines.append("Можно попробовать обновить или зайти позже.")
@@ -364,47 +401,11 @@ async def build_update_screen(*, refresh: bool = True) -> Tuple[str, UpdateCheck
     )
     meta = read_update_meta()
     meta_block = _meta_summary_html(meta)
-    if meta_block and not running:
+    if meta_block and not running and not pending:
         lines.append("")
         lines.append(meta_block)
 
-    return "\n".join(lines), check, running
-
-
-async def _resolve_host_bind_path() -> str:
-    """Путь на хосте для docker run -v (не путать с /host_project внутри контейнера)."""
-    explicit = os.environ.get("TG_POSTER_HOST_BIND", "").strip()
-    if explicit and Path(explicit).is_dir():
-        return explicit
-
-    mountinfo = Path("/proc/self/mountinfo")
-    if mountinfo.is_file():
-        for line in mountinfo.read_text(encoding="utf-8", errors="replace").splitlines():
-            parts = line.split()
-            if len(parts) >= 5 and parts[4] == "/host_project":
-                candidate = parts[3]
-                if candidate.startswith("/"):
-                    return candidate
-
-    container = os.environ.get("TG_POSTER_CONTAINER_NAME", "tg_poster_app")
-    docker_bin, _ = _docker_binaries()
-    proc = await asyncio.create_subprocess_exec(
-        str(docker_bin),
-        "inspect",
-        container,
-        "--format",
-        '{{range .Mounts}}{{if eq .Destination "/host_project"}}{{.Source}}{{end}}{{end}}',
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, stderr = await proc.communicate()
-    source = (stdout or b"").decode().strip()
-    if source and Path(source).is_dir():
-        return source
-
-    err = (stderr or b"").decode(errors="replace").strip()
-    logger.warning("Не удалось определить host bind для /host_project: %s", err or "пусто")
-    return str(HOST_PROJECT)
+    return "\n".join(lines), check, running or pending
 
 
 def _read_update_log_tail(max_lines: int = 25) -> str:
@@ -412,7 +413,6 @@ def _read_update_log_tail(max_lines: int = 25) -> str:
         return "Лог обновления пока пуст."
     try:
         lines = UPDATE_LOG.read_text(encoding="utf-8", errors="replace").splitlines()
-        # Убрать ANSI-цвета для читаемости в Telegram
         cleaned = []
         for line in lines:
             s = line
@@ -426,19 +426,20 @@ def _read_update_log_tail(max_lines: int = 25) -> str:
 
 
 async def is_update_running() -> bool:
-    if not _docker_available():
-        return False
-    proc = await asyncio.create_subprocess_exec(
-        str(_docker_binaries()[0]), "ps", "--filter", f"name={UPDATER_CONTAINER}", "--format", "{{.Names}}",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL,
-    )
-    stdout, _ = await proc.communicate()
-    return UPDATER_CONTAINER in (stdout or b"").decode()
+    return UPDATE_LOCK.is_file()
 
 
-async def start_project_update(*, force: bool = False) -> Tuple[bool, str]:
-    """Запускает фоновое обновление. Возвращает (успех_старта, сообщение)."""
+def _write_json_flag(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+async def start_project_update(
+    *,
+    force: bool = False,
+    requested_by: Optional[int] = None,
+) -> Tuple[bool, str]:
+    """Ставит флаг обновления; хост выполняет scripts/host_tasks.sh."""
     if not UPDATE_SCRIPT.is_file():
         return (
             False,
@@ -447,18 +448,16 @@ async def start_project_update(*, force: bool = False) -> Tuple[bool, str]:
             "<code>cd /root/tg_poster_docker && bash scripts/update.sh</code>",
         )
 
-    if not _docker_available():
-        return (
-            False,
-            "Docker socket не смонтирован в контейнер app.\n"
-            "Обновление из бота недоступно — используйте SSH и "
-            "<code>bash scripts/update.sh</code>.",
-        )
-
     if await is_update_running():
         return False, (
             "Обновление уже выполняется.\n\n"
             f"<pre>{_escape(_read_update_log_tail())}</pre>"
+        )
+
+    if is_update_pending():
+        return False, (
+            "Обновление уже запрошено и ждёт выполнения на хосте (обычно до 1 мин).\n"
+            "Откройте этот раздел позже."
         )
 
     if not force:
@@ -471,56 +470,21 @@ async def start_project_update(*, force: bool = False) -> Tuple[bool, str]:
                 "Если нужна принудительная пересборка — нажмите «Обновить всё равно»."
             )
 
-    docker_bin, compose_bin = _docker_binaries()
-    host_bind = await _resolve_host_bind_path()
-    logger.info(
-        "Запуск обновления: host_bind=%s image=%s force=%s",
-        host_bind, DEFAULT_APP_IMAGE, force,
-    )
-
-    UPDATE_LOG.parent.mkdir(parents=True, exist_ok=True)
     invalidate_update_cache()
-
-    force_env = "1" if force else "0"
-    cmd = [
-        str(docker_bin), "run", "--rm", "-d",
-        "--name", UPDATER_CONTAINER,
-        "--entrypoint", "bash",
-        # Монтируем по тому же абсолютному пути, что на хосте — иначе docker-compose v1
-        # внутри updater подставляет /host_project/... с хоста (пустая папка).
-        "-v", f"{host_bind}:{host_bind}",
-        "-v", "/var/run/docker.sock:/var/run/docker.sock",
-        "-v", f"{docker_bin}:{docker_bin}:ro",
-        # docker-compose НЕ монтируем с хоста: там Python-скрипт с shebang /usr/bin/python3,
-        # в slim-образе не работает. Updater использует apt docker-compose из образа app.
-        "-e", f"TG_POSTER_DIR={host_bind}",
-        "-e", "COMPOSE_PROJECT_NAME=tg_poster_docker",
-        "-e", f"TG_POSTER_BRANCH={_branch()}",
-        "-e", f"TG_POSTER_FORCE_UPDATE={force_env}",
-        "-w", host_bind,
-        DEFAULT_APP_IMAGE,
-        "-c", f"bash scripts/update.sh > {host_bind}/backups/last_update.log 2>&1",
-    ]
-
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await proc.communicate()
-        out = (stdout or b"").decode(errors="replace").strip()
-        err = (stderr or b"").decode(errors="replace").strip()
-        if proc.returncode != 0:
-            logger.error("Updater container failed to start: %s", err or out)
-            return False, f"Не удалось запустить обновление:\n<pre>{_escape((err or out)[:500])}</pre>"
-    except Exception as exc:
-        logger.exception("start_project_update")
-        return False, f"Ошибка запуска: {_escape(str(exc))}"
+    _write_json_flag(
+        UPDATE_FLAG,
+        {
+            "force": bool(force),
+            "requested_by": requested_by,
+            "requested_at": datetime.now().astimezone().isoformat(),
+        },
+    )
+    logger.info("Запрос обновления записан в %s force=%s user=%s", UPDATE_FLAG, force, requested_by)
 
     return True, (
-        "⏳ <b>Обновление запущено</b>\n\n"
-        "Сейчас подтягивается код с GitHub и пересобирается контейнер app.\n"
+        "⏳ <b>Запрос на обновление принят</b>\n\n"
+        "Хост подтянет код с GitHub и пересоберёт контейнер app "
+        "(обычно в течение минуты).\n"
         "Бот на 1–3 минуты перезапустится — это нормально.\n\n"
         "База данных и токены <b>не затрагиваются</b>.\n"
         "После перезапуска откройте этот раздел снова — увидите новую версию."
@@ -528,10 +492,11 @@ async def start_project_update(*, force: bool = False) -> Tuple[bool, str]:
 
 
 async def get_update_details_message() -> str:
-    """Подробности: meta + хвост лога (вторичный экран)."""
     parts: list[str] = []
     if await is_update_running():
         parts.append("⏳ Обновление выполняется…")
+    elif is_update_pending():
+        parts.append("⏳ Обновление в очереди на хосте…")
     meta = read_update_meta()
     meta_block = _meta_summary_html(meta)
     if meta_block:
@@ -544,91 +509,43 @@ async def get_update_details_message() -> str:
     return "\n".join(parts)
 
 
-async def free_docker_disk_space() -> Tuple[bool, str]:
-    """Очистка неиспользуемых Docker-образов/кэша (без volumes).
-
-    Не трогает postgres_data, media, backups, .env. Работающие контейнеры
-    и их текущие образы остаются.
-    """
-    if not _docker_available():
-        return (
-            False,
-            "Docker socket недоступен в контейнере app.\n"
-            "Очистите через SSH:\n"
-            "<code>docker system prune -af</code>",
-        )
-
+async def free_docker_disk_space(*, requested_by: Optional[int] = None) -> Tuple[bool, str]:
+    """Запрос очистки Docker-кэша на хосте (без volumes)."""
     if await is_update_running():
         return False, (
             "Сейчас идёт обновление — дождитесь окончания, "
             "затем повторите «Освободить место»."
         )
 
+    if PRUNE_FLAG.is_file():
+        return False, "Очистка уже запрошена — дождитесь выполнения на хосте."
+
     before = get_disk_space_info()
     free_before = before.get("free_gb", 0)
-    docker_bin = str(_docker_binaries()[0])
-    logger.info("Освобождение места: docker system prune -af (без volumes)")
-
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            docker_bin, "system", "prune", "-af",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=300.0)
-        except asyncio.TimeoutError:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-            return False, "Очистка превысила 5 минут и была прервана. Попробуйте через SSH."
-    except Exception as exc:
-        logger.exception("free_docker_disk_space")
-        return False, f"Ошибка запуска очистки: {_escape(str(exc))}"
-
-    out = (stdout or b"").decode(errors="replace").strip()
-    err = (stderr or b"").decode(errors="replace").strip()
-    if proc.returncode != 0:
-        logger.error("docker system prune failed: %s", err or out)
-        return False, (
-            f"Не удалось очистить Docker:\n"
-            f"<pre>{_escape((err or out)[:500])}</pre>"
-        )
-
-    reclaimed = ""
-    for line in reversed(out.splitlines()):
-        if "reclaimed" in line.lower() or "освобождено" in line.lower() or "Total" in line:
-            reclaimed = line.strip()
-            break
-
-    after = get_disk_space_info()
-    free_after = after.get("free_gb", 0)
-    try:
-        freed = round(float(free_after) - float(free_before), 1)
-    except (TypeError, ValueError):
-        freed = 0.0
+    _write_json_flag(
+        PRUNE_FLAG,
+        {
+            "requested_by": requested_by,
+            "requested_at": datetime.now().astimezone().isoformat(),
+        },
+    )
+    logger.info("Запрос prune записан в %s user=%s", PRUNE_FLAG, requested_by)
 
     lines = [
-        "🧹 <b>Освобождение места</b>",
+        "🧹 <b>Запрос на освобождение места принят</b>",
         "",
-        "Выполнено: <code>docker system prune -af</code>",
-        "(старые образы и кэш сборки; volumes / БД / медиа / бэкапы не трогались)",
+        "Хост выполнит <code>docker system prune -af</code> "
+        "(старые образы и кэш; volumes / БД / медиа / бэкапы не трогаются).",
+        "Обычно это занимает до минуты — обновите экран.",
         "",
-        f"Свободно было: <b>{_escape(str(free_before))} ГБ</b>",
-        f"Свободно сейчас: <b>{_escape(str(free_after))} ГБ</b>",
+        f"Свободно сейчас: <b>{_escape(str(free_before))} ГБ</b>",
     ]
-    if freed > 0:
-        lines.append(f"Прирост: <b>+{freed} ГБ</b>")
-    elif freed == 0:
-        lines.append("Лишнего Docker-кэша почти не было — освобождать было нечего.")
-    if reclaimed:
+    prune_meta = read_prune_meta()
+    if prune_meta and prune_meta.get("finished_at"):
         lines.append("")
-        lines.append(f"Docker: <code>{_escape(reclaimed)}</code>")
-
+        lines.append(f"Последняя очистка: {_escape(str(prune_meta.get('finished_at')))}")
     return True, "\n".join(lines)
 
 
-# Обратная совместимость имени
 async def get_update_status_message() -> str:
     return await get_update_details_message()

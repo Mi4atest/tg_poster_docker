@@ -18,7 +18,6 @@ BRANCH="${TG_POSTER_BRANCH:-Test_planner}"
 SKIP_GIT="${TG_POSTER_SKIP_GIT:-0}"
 FORCE_UPDATE="${TG_POSTER_FORCE_UPDATE:-0}"
 COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-tg_poster_docker}"
-COMPOSE_FILE="${PROJECT_DIR}/docker-compose.yml"
 META_FILE="${PROJECT_DIR}/backups/last_update_meta.json"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
@@ -75,10 +74,17 @@ if [ -f ".env" ]; then
     set +a
 fi
 
+# Сервер dev+prod: TG_POSTER_USE_DEV_COMPOSE=1 в .env → hot-reload после update.sh
+compose_file_args=(-f "${PROJECT_DIR}/docker-compose.yml")
+if [ "${TG_POSTER_USE_DEV_COMPOSE:-0}" = "1" ] && [ -f "${PROJECT_DIR}/docker-compose.dev.yml" ]; then
+    compose_file_args+=(-f "${PROJECT_DIR}/docker-compose.dev.yml")
+    info "Compose: docker-compose.yml + docker-compose.dev.yml (dev hot-reload)"
+fi
+
 if docker compose version >/dev/null 2>&1; then
-    DC=(docker compose -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}")
+    DC=(docker compose -p "${COMPOSE_PROJECT_NAME}" "${compose_file_args[@]}")
 elif docker-compose version >/dev/null 2>&1; then
-    DC=(docker-compose -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}")
+    DC=(docker-compose -p "${COMPOSE_PROJECT_NAME}" "${compose_file_args[@]}")
 else
     error "docker compose / docker-compose не найден или не запускается"
     write_meta "failed" false

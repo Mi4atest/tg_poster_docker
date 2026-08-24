@@ -84,13 +84,24 @@ class VKStoryPublisher:
         model_name = extract_model_name_without_code(post.text or "") if post.text else None
         _, price = extract_model_and_price(post.text or "") if post.text else (None, None)
         brand, logo_blob = await asyncio.to_thread(self._fetch_brand_assets)
+        style = self._story_style()
         return build_story_image(
             blobs,
             title=model_name,
             price=price,
             brand_name=brand,
             logo_blob=logo_blob,
+            style=style,
         )
+
+    @staticmethod
+    def _story_style() -> str:
+        try:
+            from app.services.settings_service import get_settings_service
+
+            return get_settings_service().get_vk_stories_style()
+        except Exception:
+            return "bubble"
 
     @staticmethod
     def preview_path_for_post(post_id: str) -> str:
@@ -240,6 +251,7 @@ class VKStoryPublisher:
                 price=price,
                 brand_name=brand,
                 logo_blob=logo_blob,
+                style=self._story_style(),
             )
             if not image_bytes:
                 self._log(db, story.id, "error", "Failed to compose story image")

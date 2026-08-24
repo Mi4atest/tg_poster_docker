@@ -74,6 +74,8 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
         "vk_market_enabled": env_settings.VK_MARKET_ENABLED,
         # Автопубликация сторис ВК после успешного wall.post (независимо от Товаров ВК).
         "vk_stories_auto_enabled": False,
+        # Визуал сторис: bubble (крупный бабл) | social (компактный IG-like).
+        "vk_stories_style": "bubble",
         # Default из .env при первом сиде; дальше — тумблеры в меню Настройки → VK.
         "vk_upload_strict_mode": bool(
             getattr(env_settings, "VK_UPLOAD_STRICT_MODE", True)
@@ -475,6 +477,30 @@ class SettingsService:
     def set_vk_stories_auto_enabled(self, enabled: bool) -> None:
         self.update({"features": {"vk_stories_auto_enabled": bool(enabled)}})
 
+    def get_vk_stories_style(self) -> str:
+        from app.workers.vk.story_composer import normalize_story_style
+
+        features = self.get_all().get("features", {})
+        return normalize_story_style(features.get("vk_stories_style"))
+
+    def set_vk_stories_style(self, style: str) -> str:
+        from app.workers.vk.story_composer import (
+            STORY_STYLE_BUBBLE,
+            STORY_STYLE_SOCIAL,
+            normalize_story_style,
+        )
+
+        value = normalize_story_style(style)
+        self.update({"features": {"vk_stories_style": value}})
+        return value
+
+    def cycle_vk_stories_style(self) -> str:
+        from app.workers.vk.story_composer import STORY_STYLE_BUBBLE, STORY_STYLE_SOCIAL
+
+        current = self.get_vk_stories_style()
+        nxt = STORY_STYLE_SOCIAL if current == STORY_STYLE_BUBBLE else STORY_STYLE_BUBBLE
+        return self.set_vk_stories_style(nxt)
+
     def is_vk_upload_strict_mode(self) -> bool:
         """Не публиковать в VK/Market, если не все фото/видео загрузились."""
         features = self.get_all().get("features", {})
@@ -685,6 +711,10 @@ class SettingsService:
         lines.append("🟢 Товары ВК" if vk_market_enabled else "🔴 Товары ВК")
         vk_stories_auto = bool(data.get("features", {}).get("vk_stories_auto_enabled", False))
         lines.append("🟢 Сторис ВК (авто)" if vk_stories_auto else "🔴 Сторис ВК (авто)")
+        from app.workers.vk.story_composer import story_style_label
+
+        style = data.get("features", {}).get("vk_stories_style", "bubble")
+        lines.append(f"🎨 Сторис стиль: {story_style_label(style)}")
         return lines
 
 

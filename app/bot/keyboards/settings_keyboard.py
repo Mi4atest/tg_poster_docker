@@ -122,6 +122,7 @@ def get_settings_signatures_keyboard(
     catalog_enabled: bool,
     *,
     vk_stories_auto_enabled: bool = False,
+    vk_stories_style_label: str = "Bubble",
 ) -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton(
@@ -135,6 +136,10 @@ def get_settings_signatures_keyboard(
         [InlineKeyboardButton(
             text=("🟢" if vk_stories_auto_enabled else "🔴") + " Сторис ВК (авто)",
             callback_data="settings_toggle_vk_stories_auto"
+        )],
+        [InlineKeyboardButton(
+            text=f"🎨 Сторис стиль: {vk_stories_style_label}",
+            callback_data="settings_cycle_vk_stories_style"
         )],
         [InlineKeyboardButton(
             text=("🟢" if catalog_enabled else "🔴") + " Блок «Каталог б/у» в постах",

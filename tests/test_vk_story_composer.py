@@ -32,6 +32,24 @@ def test_build_story_image_six_photos_bubble():
         price="23500р.",
         brand_name="appleshop43",
         logo_blob=logo,
+        style="bubble",
+    )
+    assert data is not None
+    img = Image.open(BytesIO(data))
+    assert img.size == (STORY_WIDTH, STORY_HEIGHT)
+    assert img.format == "JPEG"
+
+
+def test_build_story_image_six_photos_social():
+    blobs = [_jpeg_blob((30 + i * 30, 80, 160), size=(600, 800)) for i in range(6)]
+    logo = _jpeg_blob((200, 0, 0), size=(200, 200))
+    data = build_story_image(
+        blobs,
+        title="iPhone 15 Pro 256Gb White Titanium",
+        price="53500р.",
+        brand_name="appleshop43",
+        logo_blob=logo,
+        style="social",
     )
     assert data is not None
     img = Image.open(BytesIO(data))
@@ -51,3 +69,4 @@ def test_font_is_readable_size():
     draw = ImageDraw.Draw(im)
     bbox = draw.textbbox((0, 0), "23500р.", font=font)
     assert bbox[3] - bbox[1] >= 35, (bbox, font_source())
+    assert font_source() and "Inter" in font_source()

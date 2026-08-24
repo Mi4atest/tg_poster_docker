@@ -86,11 +86,14 @@ def _build_signatures_contacts_text() -> str:
     data = service.get_all()
     contacts = data["contacts"]
     signatures = data["signatures"]
+    from app.workers.vk.story_composer import story_style_label
+
     return (
         "📇 Контакты и подписи\n\n"
         f"Подпись: {'включена' if service.is_signature_enabled() else 'выключена'}\n"
         f"Товары ВК: {'включены' if service.is_vk_market_enabled() else 'выключены'}\n"
         f"Сторис ВК (авто): {'включены' if service.is_vk_stories_auto_enabled() else 'выключены'}\n"
+        f"Сторис стиль: {story_style_label(service.get_vk_stories_style())}\n"
         f"Блок «Каталог б/у» в постах: {'включен' if service.is_telegram_used_catalog_button_enabled() else 'выключен'}\n\n"
         "Текущие контакты Telegram:\n"
         f"- username: {contacts.get('telegram_username') or 'не задан'}\n"
@@ -334,13 +337,17 @@ async def open_settings(callback: CallbackQuery):
 
 @router.callback_query(F.data == "settings_signatures")
 async def open_signatures(callback: CallbackQuery):
+    service = get_settings_service()
+    from app.workers.vk.story_composer import story_style_label
+
     await callback.message.edit_text(
         _build_signatures_contacts_text(),
         reply_markup=get_settings_signatures_keyboard(
-            enabled=get_settings_service().is_signature_enabled(),
-            vk_market_enabled=get_settings_service().is_vk_market_enabled(),
-            catalog_enabled=get_settings_service().is_telegram_used_catalog_button_enabled(),
-            vk_stories_auto_enabled=get_settings_service().is_vk_stories_auto_enabled(),
+            enabled=service.is_signature_enabled(),
+            vk_market_enabled=service.is_vk_market_enabled(),
+            catalog_enabled=service.is_telegram_used_catalog_button_enabled(),
+            vk_stories_auto_enabled=service.is_vk_stories_auto_enabled(),
+            vk_stories_style_label=story_style_label(service.get_vk_stories_style()),
         ),
     )
     await callback.answer()
@@ -367,6 +374,12 @@ async def toggle_vk_stories_auto(callback: CallbackQuery):
     service = get_settings_service()
     next_state = not service.is_vk_stories_auto_enabled()
     service.set_vk_stories_auto_enabled(next_state)
+    await open_signatures(callback)
+
+
+@router.callback_query(F.data == "settings_cycle_vk_stories_style")
+async def cycle_vk_stories_style(callback: CallbackQuery):
+    get_settings_service().cycle_vk_stories_style()
     await open_signatures(callback)
 
 

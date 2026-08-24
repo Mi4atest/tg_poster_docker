@@ -84,11 +84,8 @@ TELEGRAM_CONTACT_PHONE = os.getenv("TELEGRAM_CONTACT_PHONE", "")
 # Database settings
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./app.db")
 
-# Security settings
-SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key")
+# Security settings (Fernet для секретов в БД; JWT не используется)
 MASTER_KEY = os.getenv("MASTER_KEY", "")
-ALGORITHM = os.getenv("ALGORITHM", "HS256")
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
 
 # API settings
 API_HOST = os.getenv("API_HOST", "localhost")

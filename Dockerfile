@@ -15,12 +15,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Копирование файлов зависимостей
-COPY requirements.txt .
+# Копирование файлов зависимостей (lock = полный pin транзитивных версий)
+COPY requirements.txt requirements.lock ./
 
-# Установка зависимостей Python
+# Установка зависимостей Python строго по lock (без дрейфа при rebuild)
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir -r requirements.lock
 
 # Копирование исходного кода
 COPY . .

@@ -1,36 +1,40 @@
-FROM python:3.10-slim-bookworm
+# --- builder: компилятор и dev-заголовки только для pip install ---
+FROM python:3.10-slim-bookworm AS builder
 
-# Установка рабочей директории
-WORKDIR /app
+WORKDIR /build
 
-# Установка зависимостей (postgresql-client нужен для pg_dump/pg_isready — бэкап и entrypoint)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     python3-dev \
     libpq-dev \
-    postgresql-client \
-    fonts-dejavu-core \
-    git \
-    docker-compose \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Копирование файлов зависимостей (lock = полный pin транзитивных версий)
 COPY requirements.txt requirements.lock ./
 
-# Установка зависимостей Python строго по lock (без дрейфа при rebuild)
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.lock
 
-# Копирование исходного кода
-COPY . .
 
-# Создание директорий для медиа-файлов и бэкапов + entrypoint
-RUN mkdir -p /app/media /app/backups && chmod 777 /app/media /app/backups \
-    && chmod +x /app/entrypoint.sh
+# --- runtime: без gcc; git для update из бота; compose — с хоста (/usr/bin/docker-compose) ---
+FROM python:3.10-slim-bookworm AS runtime
 
-# Переменные окружения по умолчанию
-ENV PYTHONUNBUFFERED=1 \
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 \
+    postgresql-client \
+    fonts-dejavu-core \
+    git \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     API_HOST=0.0.0.0 \
     API_PORT=8002 \
@@ -40,8 +44,11 @@ ENV PYTHONUNBUFFERED=1 \
     INSTAGRAM_GRAPH_TOKEN_DAILY_CHECK_INTERVAL_SECONDS=86400 \
     INSTAGRAM_STORY_MODE=disabled
 
-# Открытие порта
+COPY . .
+
+RUN mkdir -p /app/media /app/backups && chmod 777 /app/media /app/backups \
+    && chmod +x /app/entrypoint.sh
+
 EXPOSE 8002
 
-# Запуск приложения: ожидание БД + миграции + старт (см. entrypoint.sh)
 ENTRYPOINT ["/app/entrypoint.sh"]

@@ -155,98 +155,17 @@ async def safe_edit_message(message, text, reply_markup=None):
 
 # API client functions
 async def get_posts_api(is_archived=False, search_query=None):
-    """Get posts from API with optional search query."""
+    """Search posts in archive (direct DB, no HTTP loopback)."""
+    if not search_query:
+        return []
+
+    from app.db.database import run_db
+    from app.services.archive_service import fetch_posts_search
+
     try:
-        async with aiohttp.ClientSession() as session:
-            url = f"http://{API_HOST}:{API_PORT}/api/posts/"
-
-            # Add search parameter if provided
-            params = {}
-            if search_query:
-                params["search"] = search_query
-                print(f"Searching posts with query: {search_query}")
-
-            print(f"Fetching posts from {url}")
-
-            try:
-                async with session.get(url, params=params) as response:
-                    print(f"API response status: {response.status}")
-
-                    if response.status == 200:
-                        data = await response.json()
-
-                        # Check if data is None
-                        if data is None:
-                            print("Warning: API returned None")
-                            posts = []
-                        # Handle different response formats
-                        elif isinstance(data, dict):
-                            posts = data.get("posts", [])
-                        elif hasattr(data, "posts"):
-                            # If data is a Pydantic model
-                            posts = data.posts if data.posts else []
-                        elif isinstance(data, list):
-                            # If API returns list directly
-                            posts = data
-                        else:
-                            print(f"Warning: Unexpected data type from API: {type(data)}")
-                            posts = []
-                        
-                        # Ensure posts is a list and filter out None values
-                        if posts is None:
-                            posts = []
-                        if not isinstance(posts, list):
-                            posts = []
-                        
-                        # Filter out None values and ensure each post is a dict
-                        filtered_posts = []
-                        for p in posts:
-                            if p is None:
-                                continue
-                            # Convert Pydantic model to dict if needed
-                            if hasattr(p, "dict"):
-                                p = p.dict()
-                            elif hasattr(p, "model_dump"):
-                                p = p.model_dump()
-                            elif not isinstance(p, dict):
-                                print(f"Warning: Post is not a dict: {type(p)}")
-                                continue
-                            filtered_posts.append(p)
-                        posts = filtered_posts
-                        print(f"Received {len(posts)} posts from API")
-
-                        # Отладочный вывод для поиска
-                        if search_query:
-                            print(f"Search results for '{search_query}':")
-                            for i, post in enumerate(posts, 1):
-                                if post and isinstance(post, dict):
-                                    print(f"{i}. Post ID: {post.get('id')}, Name: {post.get('name')}")
-                                    text = post.get('text', '') or ''
-                                    print(f"   Text: {text[:100]}...")
-
-                        # If searching, return all posts without filtering by archive status
-                        if search_query:
-                            return posts
-
-                        # Filter posts based on archive status
-                        if is_archived:
-                            # В архиве показываем ВСЕ посты, независимо от статуса публикации
-                            filtered_posts = posts
-                        else:
-                            # Черновики — через /api/posts/pending
-                            filtered_posts = []
-
-                        print(f"Filtered to {len(filtered_posts)} posts (is_archived={is_archived})")
-                        return filtered_posts
-                    else:
-                        error_text = await response.text()
-                        print(f"API Error: {response.status} - {error_text}")
-                        return []
-            except Exception as e:
-                print(f"Error during API request: {str(e)}")
-                return []
+        return await run_db(fetch_posts_search, search_query.strip())
     except Exception as e:
-        print(f"Error in get_posts_api: {str(e)}")
+        logger.error("get_posts_api search failed: %s", e)
         return []
 
 async def get_archive_summary_api():

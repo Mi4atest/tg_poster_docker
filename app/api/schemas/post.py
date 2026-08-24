@@ -64,3 +64,16 @@ class PostList(BaseModel):
 
     class Config:
         orm_mode = True
+
+
+class PostSearchItem(BaseModel):
+    id: str
+    name: Optional[str] = None
+    text: str
+    created_at: Optional[datetime] = None
+    photos: List[str] = Field(default_factory=list)
+    videos: List[str] = Field(default_factory=list)
+
+
+class PostSearchList(BaseModel):
+    posts: List[PostSearchItem]

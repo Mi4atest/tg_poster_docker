@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Body, Response
+from fastapi import APIRouter, Depends, HTTPException, status, Body, Response, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from typing import List, Optional
@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from app.db.database import get_db
 from app.api.models.post import Post, PublicationLog
-from app.api.schemas.post import PostCreate, Post as PostSchema, PostList
+from app.api.schemas.post import PostCreate, Post as PostSchema, PostSearchList
 from app.config.settings import MEDIA_DIR, MEDIA_STRUCTURE
 from app.integrations.avito.errors import AvitoAutoCreateUnavailableError
 
@@ -238,132 +238,22 @@ def get_pending_posts(db: Session = Depends(get_db)):
     }
 
 
-@router.get("/", response_model=PostList)
-def get_posts(skip: int = 0, limit: int = 10000, search: str = None, db: Session = Depends(get_db)):
-    """Get all posts with optional search by text or date."""
-    from sqlalchemy import or_, extract, func
-    import re
+@router.get("/", response_model=PostSearchList)
+def get_posts(
+    search: str = Query(..., min_length=1, max_length=200),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    """Search posts by text or date (lightweight response, capped limit)."""
+    from app.services.archive_service import POST_SEARCH_LIMIT_MAX, query_posts_search
 
-    query = db.query(Post)
-
-    # If search parameter is provided, filter posts
-    if search:
-        # Check if search is a date pattern
-        is_date_search = False
-        year = None
-        month = None
-        day = None
-
-        # Try to parse different date formats
-
-        # Format: YYYY (year only)
-        if re.match(r'^\d{4}$', search):
-            year_value = int(search)
-            # Проверяем, что год находится в разумных пределах (1900-2100)
-            if 1900 <= year_value <= 2100:
-                year = year_value
-                is_date_search = True
-            else:
-                # Если год за пределами разумного диапазона, ищем как текст
-                is_date_search = False
-
-        # Format: MMYY or MM.YY (month and 2-digit year)
-        elif re.match(r'^\d{2}(\.|\/|-)?\d{2}$', search):
-            # Extract month and year
-            if '.' in search or '/' in search or '-' in search:
-                parts = re.split(r'[./-]', search)
-                month = int(parts[0])
-                year = int(parts[1])
-                if year < 100:  # Convert 2-digit year to 4-digit
-                    year += 2000
-            else:
-                month = int(search[:2])
-                year = int(search[2:]) + 2000
-            is_date_search = True
-
-        # Format: DDMMYY or DD.MM.YY (day, month and 2-digit year)
-        elif re.match(r'^\d{2}(\.|\/|-)?\d{2}(\.|\/|-)?\d{2}$', search):
-            # Extract day, month and year
-            if '.' in search or '/' in search or '-' in search:
-                parts = re.split(r'[./-]', search)
-                day = int(parts[0])
-                month = int(parts[1])
-                year = int(parts[2])
-                if year < 100:  # Convert 2-digit year to 4-digit
-                    year += 2000
-            else:
-                day = int(search[:2])
-                month = int(search[2:4])
-                year = int(search[4:]) + 2000
-            is_date_search = True
-
-        # Format: YYYYMM or YYYY.MM (year and month)
-        elif re.match(r'^\d{4}(\.|\/|-)?\d{2}$', search):
-            # Extract year and month
-            if '.' in search or '/' in search or '-' in search:
-                parts = re.split(r'[./-]', search)
-                year = int(parts[0])
-                month = int(parts[1])
-            else:
-                year = int(search[:4])
-                month = int(search[4:])
-            is_date_search = True
-
-        # Format: YYYYMMDD or YYYY.MM.DD (full date)
-        elif re.match(r'^\d{4}(\.|\/|-)?\d{2}(\.|\/|-)?\d{2}$', search):
-            # Extract year, month and day
-            if '.' in search or '/' in search or '-' in search:
-                parts = re.split(r'[./-]', search)
-                year = int(parts[0])
-                month = int(parts[1])
-                day = int(parts[2])
-            else:
-                year = int(search[:4])
-                month = int(search[4:6])
-                day = int(search[6:])
-            is_date_search = True
-
-        # Всегда выполняем поиск по тексту
-        search_term = f"%{search}%"
-        text_query = query.filter(Post.text.ilike(search_term))
-
-        # Отладочный вывод
-        print(f"Searching for text: '{search}' with pattern: '{search_term}'")
-        # Выведем все посты и их тексты для отладки
-        all_posts = db.query(Post).all()
-        for post in all_posts:
-            if search in post.text:
-                print(f"Found match in post {post.id}: '{post.text[:100]}...'")
-            else:
-                print(f"No match in post {post.id}: '{post.text[:50]}...'")
-        print(f"Total posts: {len(all_posts)}")
-
-        if is_date_search:
-            # Если это похоже на дату, также ищем по дате
-            date_query = db.query(Post)
-            date_filters = []
-
-            if year:
-                date_filters.append(extract('year', Post.created_at) == year)
-
-            if month:
-                date_filters.append(extract('month', Post.created_at) == month)
-
-            if day:
-                date_filters.append(extract('day', Post.created_at) == day)
-
-            # Apply date filters
-            for date_filter in date_filters:
-                date_query = date_query.filter(date_filter)
-
-            # Объединяем результаты поиска по тексту и по дате
-            query = text_query.union(date_query)
-        else:
-            # Только поиск по тексту
-            query = text_query
-
-    # Order by creation date and apply pagination
-    posts = query.order_by(Post.created_at.desc()).offset(skip).limit(limit).all()
+    posts = query_posts_search(
+        db,
+        search.strip(),
+        skip=skip,
+        limit=min(limit, POST_SEARCH_LIMIT_MAX),
+    )
     return {"posts": posts}
 
 @router.get("/{post_id}", response_model=PostSchema)

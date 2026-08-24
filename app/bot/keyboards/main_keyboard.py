@@ -72,12 +72,20 @@ def get_create_post_entry_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def get_post_actions_keyboard(from_archive=False) -> InlineKeyboardMarkup:
+def get_post_actions_keyboard(from_archive=False, from_search=False) -> InlineKeyboardMarkup:
     """Create the keyboard for post actions.
 
     Args:
         from_archive: Whether the post is being viewed from the archive
+        from_search: Whether the post was opened from archive search results
     """
+    if from_search:
+        back_label, back_cb = "⬅️ Назад к поиску", "back_to_archive"
+    elif from_archive:
+        back_label, back_cb = "⬅️ Назад к архиву", "back_to_archive"
+    else:
+        back_label, back_cb = "⬅️ Назад к черновикам", "back_to_posts"
+
     buttons = [
         [ikb("📤 Отправить во все соцсети", "publish_all")],
         [
@@ -95,21 +103,19 @@ def get_post_actions_keyboard(from_archive=False) -> InlineKeyboardMarkup:
             ikb("✏️ Редактировать", "edit"),
             ikb("🗑 Удалить пост", "delete"),
         ],
-        [ikb(
-            "⬅️ Назад к архиву" if from_archive else "⬅️ Назад к черновикам",
-            "back_to_archive" if from_archive else "back_to_posts",
-        )],
+        [ikb(back_label, back_cb)],
     ]
 
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 def post_actions_kb_for_user(user_data: dict | None = None) -> InlineKeyboardMarkup:
-    """Клавиатура действий с постом с учётом контекста (архив / черновики)."""
+    """Клавиатура действий с постом с учётом контекста (поиск / архив / черновики)."""
     ud = user_data or {}
     archive_state = ud.get("archive_state") or {}
+    from_search = bool(ud.get("from_post_search"))
     from_archive = bool(ud.get("in_archive") or archive_state.get("year") is not None)
-    return get_post_actions_keyboard(from_archive=from_archive)
+    return get_post_actions_keyboard(from_archive=from_archive, from_search=from_search)
 
 def get_media_management_keyboard() -> InlineKeyboardMarkup:
     """Create a keyboard for managing photos and videos."""

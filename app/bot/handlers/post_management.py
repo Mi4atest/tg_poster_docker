@@ -56,6 +56,125 @@ from app.bot.utils.button_styles import ikb
 
 logger = logging.getLogger(__name__)
 
+POST_SEARCH_PER_PAGE = 10
+
+
+def _clear_post_search_context(ud: dict) -> None:
+    ud["from_post_search"] = False
+    ud.pop("post_search_query", None)
+    ud.pop("post_search_page", None)
+    ud.pop("post_search_results", None)
+
+
+def _clamp_search_page(page: int, total_items: int, per_page: int = POST_SEARCH_PER_PAGE) -> int:
+    if total_items <= 0:
+        return 0
+    last_page = (total_items - 1) // per_page
+    return min(max(0, page), last_page)
+
+
+def _post_search_results_keyboard(
+    posts: List[dict],
+    page: int,
+    per_page: int = POST_SEARCH_PER_PAGE,
+) -> InlineKeyboardMarkup:
+    """Кнопки результатов поиска архива постов с пагинацией (без сворачивания)."""
+    start = page * per_page
+    end = min(start + per_page, len(posts))
+    buttons: List[List[InlineKeyboardButton]] = []
+
+    for i in range(start, end):
+        post = posts[i] or {}
+        name = post.get("name") or "Без названия"
+        label = f"{i + 1}. {name[:30]}{'...' if len(name) > 30 else ''}"
+        buttons.append(
+            [InlineKeyboardButton(text=label, callback_data=f"view_post_{post.get('id')}")]
+        )
+
+    nav: List[InlineKeyboardButton] = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"psearch_posts_{page - 1}"))
+    if end < len(posts):
+        nav.append(InlineKeyboardButton(text="Вперед ➡️", callback_data=f"psearch_posts_{page + 1}"))
+    if nav:
+        buttons.append(nav)
+
+    buttons.append([InlineKeyboardButton(text="🔍 Новый поиск", callback_data="search_posts")])
+    buttons.append([InlineKeyboardButton(text="📁 Вернуться в архив", callback_data="archive_root")])
+    buttons.append(
+        [InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+async def _render_post_search(
+    message: Message,
+    *,
+    bot,
+    user_id: int,
+    query: Optional[str] = None,
+    page: Optional[int] = None,
+    results: Optional[List[dict]] = None,
+) -> None:
+    """Отрисовать страницу результатов поиска архива постов."""
+    ud = _user_data_for(bot, user_id)
+    query = (query if query is not None else ud.get("post_search_query") or "").strip()
+    if not query:
+        await message.edit_text(
+            "🔍 Введите текст для поиска по постам в архиве.",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="📁 Вернуться в архив", callback_data="archive_root")],
+                ]
+            ),
+        )
+        return
+
+    if results is None:
+        results = ud.get("post_search_results")
+    if results is None:
+        results = await get_posts_api(is_archived=True, search_query=query)
+        results = [
+            post
+            for post in (results or [])
+            if post and post.get("id") and post.get("created_at")
+        ]
+
+    if not results:
+        _clear_post_search_context(ud)
+        ud["in_archive"] = True
+        await message.edit_text(
+            f'🔍 По запросу "{query}" ничего не найдено.',
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="🔍 Новый поиск", callback_data="search_posts")],
+                    [InlineKeyboardButton(text="📁 Вернуться в архив", callback_data="archive_root")],
+                    [InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")],
+                ]
+            ),
+        )
+        return
+
+    if page is None:
+        page = int(ud.get("post_search_page") or 0)
+    page = _clamp_search_page(page, len(results))
+
+    ud["post_search_query"] = query
+    ud["post_search_page"] = page
+    ud["post_search_results"] = results
+    ud["from_post_search"] = True
+    ud["in_archive"] = True
+
+    total_pages = max(1, (len(results) - 1) // POST_SEARCH_PER_PAGE + 1)
+    text = (
+        f'🔍 Результаты поиска: «{query}»\n\n'
+        f"Найдено: {len(results)}\n"
+        f"Стр. {page + 1}/{total_pages}"
+    )
+    keyboard = _post_search_results_keyboard(results, page)
+    await message.edit_text(text, reply_markup=keyboard)
+
+
 # Определение состояний для поиска постов
 class PostSearch(StatesGroup):
     waiting_for_query = State()
@@ -642,6 +761,8 @@ async def _show_archived_posts_fast(message: Message, year=None, month=None, day
         # post-detail keyboard shows "⬅️ Назад к архиву" even on the root level
         # (where archive_state.year is None).
         message.bot.user_data[resolved_user_id]["in_archive"] = True
+        # Browse-by-date is not search: back from a card must return to archive.
+        _clear_post_search_context(message.bot.user_data[resolved_user_id])
         if day is not None:
             posts_to_store = day_posts if "day_posts" in locals() else []
             message.bot.user_data[resolved_user_id].update(
@@ -2468,6 +2589,8 @@ async def back_to_posts(callback: CallbackQuery):
 async def archive_root(callback: CallbackQuery):
     """Show the root archive view."""
     await callback.answer()
+    ud = _user_data_for(callback.bot, callback.from_user.id)
+    _clear_post_search_context(ud)
     await callback.message.edit_text("⏳ Загружаю архив постов...")
     await show_archived_posts(callback.message, user_id=callback.from_user.id)
 
@@ -2476,6 +2599,8 @@ async def archive_root(callback: CallbackQuery):
 async def archive_year(callback: CallbackQuery):
     """Show archive for a specific year."""
     await callback.answer()
+    ud = _user_data_for(callback.bot, callback.from_user.id)
+    _clear_post_search_context(ud)
     year = int(callback.data.replace("archive_year_", ""))
     await callback.message.edit_text(f"⏳ Загружаю архив постов за {year} год...")
     await show_archived_posts(callback.message, year=year, user_id=callback.from_user.id)
@@ -2485,6 +2610,8 @@ async def archive_year(callback: CallbackQuery):
 async def archive_month(callback: CallbackQuery):
     """Show archive for a specific month."""
     await callback.answer()
+    ud = _user_data_for(callback.bot, callback.from_user.id)
+    _clear_post_search_context(ud)
     parts = callback.data.replace("archive_month_", "").split("_")
     year = int(parts[0])
     month = int(parts[1])
@@ -2499,6 +2626,8 @@ async def archive_month(callback: CallbackQuery):
 async def archive_day(callback: CallbackQuery):
     """Show archive for a specific day."""
     await callback.answer()
+    ud = _user_data_for(callback.bot, callback.from_user.id)
+    _clear_post_search_context(ud)
     parts = callback.data.replace("archive_day_", "").split("_")
     year = int(parts[0])
     month = int(parts[1])
@@ -2514,14 +2643,20 @@ async def archive_day(callback: CallbackQuery):
 
 @router.callback_query(F.data == "back_to_archive")
 async def back_to_archive(callback: CallbackQuery):
-    """Return to the archive screen stored in user_data."""
+    """Return to archive browse or search results, depending on context."""
     await callback.answer()
     user_id = callback.from_user.id
-    user_data = (
-        callback.bot.user_data.get(user_id, {})
-        if hasattr(callback.bot, "user_data")
-        else {}
-    )
+    user_data = _user_data_for(callback.bot, user_id)
+
+    if user_data.get("from_post_search") and user_data.get("post_search_query"):
+        await callback.message.edit_text("⏳ Возвращаюсь к результатам поиска...")
+        await _render_post_search(
+            callback.message,
+            bot=callback.bot,
+            user_id=user_id,
+        )
+        return
+
     archive_state = user_data.get("archive_state") or {}
     year = archive_state.get("year")
     month = archive_state.get("month")
@@ -2555,11 +2690,11 @@ async def search_posts_callback(callback: CallbackQuery, state: FSMContext):
 
     await state.set_state(PostSearch.waiting_for_query)
 
-    if not hasattr(callback.bot, "user_data"):
-        callback.bot.user_data = {}
-    if callback.from_user.id not in callback.bot.user_data:
-        callback.bot.user_data[callback.from_user.id] = {}
-    callback.bot.user_data[callback.from_user.id]["in_search_mode"] = True
+    ud = _user_data_for(callback.bot, callback.from_user.id)
+    ud["in_search_mode"] = True
+    # Новый ввод запроса — не держим старую страницу/выдачу.
+    ud.pop("post_search_results", None)
+    ud.pop("post_search_page", None)
 
     await callback.answer()
 
@@ -2569,11 +2704,29 @@ async def cancel_search(callback: CallbackQuery, state: FSMContext):
     """Cancel search and return to archive."""
     await state.clear()
 
-    if hasattr(callback.bot, "user_data") and callback.from_user.id in callback.bot.user_data:
-        callback.bot.user_data[callback.from_user.id]["in_search_mode"] = False
+    ud = _user_data_for(callback.bot, callback.from_user.id)
+    ud["in_search_mode"] = False
+    _clear_post_search_context(ud)
 
     await callback.message.edit_text("⏳ Возвращаюсь к архиву постов...")
     await archive_root(callback)
+
+
+@router.callback_query(F.data.startswith("psearch_posts_"))
+async def post_search_page(callback: CallbackQuery):
+    """Пагинация результатов поиска архива постов."""
+    try:
+        page = int(callback.data.replace("psearch_posts_", ""))
+    except ValueError:
+        await callback.answer("Ошибка пагинации")
+        return
+    await callback.answer()
+    await _render_post_search(
+        callback.message,
+        bot=callback.bot,
+        user_id=callback.from_user.id,
+        page=page,
+    )
 
 
 @router.message(PostSearch.waiting_for_query)
@@ -2594,60 +2747,26 @@ async def process_search_query(message: Message, state: FSMContext):
 
     await state.clear()
 
-    if hasattr(message.bot, "user_data") and message.from_user.id in message.bot.user_data:
-        message.bot.user_data[message.from_user.id]["in_search_mode"] = False
+    ud = _user_data_for(message.bot, message.from_user.id)
+    ud["in_search_mode"] = False
 
     status_message = await message.reply(f'🔍 Ищу посты по запросу: "{search_query}"...')
 
     search_results = await get_posts_api(is_archived=True, search_query=search_query)
-
     valid_results = [
         post
         for post in search_results
         if post and "id" in post and post.get("created_at")
     ]
 
-    if not valid_results:
-        await status_message.edit_text(
-            f'🔍 По запросу "{search_query}" ничего не найдено.',
-            reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [InlineKeyboardButton(text="🔍 Новый поиск", callback_data="search_posts")],
-                    [InlineKeyboardButton(text="📁 Вернуться в архив", callback_data="archive_root")],
-                    [InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")],
-                ]
-            ),
-        )
-        return
-
-    response_text = f'🔍 Результаты поиска по запросу "{search_query}":\n\n'
-    buttons = []
-
-    for i, post in enumerate(valid_results, 1):
-        post_name = post.get("name") or "Без названия"
-        photos = post.get("photos") or []
-        videos = post.get("videos") or []
-        photo_count = len(photos) if isinstance(photos, list) else 0
-        video_count = len(videos) if isinstance(videos, list) else 0
-        text = post.get("text", "") or ""
-        text = text[:100] + "..." if len(text) > 100 else text
-
-        response_text += f"{i}. {post_name}\n"
-        response_text += f"   Медиа: {photo_count}📷 {video_count}📹\n"
-        response_text += f"   Текст: {text}\n\n"
-
-        safe_post_name = post_name or "Без названия"
-        button_text = f"{i}. {safe_post_name[:30]}{'...' if len(safe_post_name) > 30 else ''}"
-        buttons.append(
-            [InlineKeyboardButton(text=button_text, callback_data=f"view_post_{post.get('id')}")]
-        )
-
-    buttons.append([InlineKeyboardButton(text="🔍 Новый поиск", callback_data="search_posts")])
-    buttons.append([InlineKeyboardButton(text="📁 Вернуться в архив", callback_data="archive_root")])
-    buttons.append([InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")])
-
-    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
-    await status_message.edit_text(response_text, reply_markup=keyboard)
+    await _render_post_search(
+        status_message,
+        bot=message.bot,
+        user_id=message.from_user.id,
+        query=search_query,
+        page=0,
+        results=valid_results,
+    )
 
 
 @router.callback_query(F.data == "edit")

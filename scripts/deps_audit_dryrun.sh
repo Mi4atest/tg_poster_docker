@@ -42,10 +42,10 @@ if errors:
 print(f"OK: {len(req)} прямых pin совпадают с lock ({len(lock)} пакетов)")
 PY
 
-echo "[2] pip-audit (Docker python:3.10-slim-bookworm)..."
+echo "[2] pip-audit (Docker python:3.12-slim-bookworm)..."
 docker run --rm \
   -v "$ROOT/requirements.lock:/requirements.lock:ro" \
-  python:3.10-slim-bookworm \
+  python:3.12-slim-bookworm \
   bash -c 'pip install -q --no-cache-dir "pip-audit>=2.7,<3" && pip-audit -r /requirements.lock --progress-spinner off'
 
 echo "[OK] deps-audit dry-run passed"

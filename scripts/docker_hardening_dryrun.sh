@@ -11,7 +11,7 @@ python3 <<'PY'
 from pathlib import Path
 
 text = Path("Dockerfile").read_text(encoding="utf-8")
-need = ["AS builder", "AS runtime", "requirements.lock", "COPY --from=builder"]
+need = ["AS builder", "AS runtime", "requirements.lock", "COPY --from=builder", "python:3.12-slim-bookworm"]
 for n in need:
     if n not in text:
         raise SystemExit(f"Dockerfile: нет {n!r}")
@@ -37,6 +37,9 @@ set -e
 command -v git >/dev/null
 command -v pg_isready >/dev/null
 command -v python >/dev/null
+pyver=$(python -c "import sys; print(f\"{sys.version_info.major}.{sys.version_info.minor}\")")
+test "$pyver" = "3.12" || { echo "FAIL: Python $pyver, expected 3.12"; exit 1; }
+echo "python $pyver OK"
 ! command -v gcc >/dev/null 2>&1 || { echo "FAIL: gcc в runtime"; exit 1; }
 ! command -v docker-compose >/dev/null 2>&1 || { echo "FAIL: docker-compose в runtime"; exit 1; }
 ! dpkg -l | grep -q python3-dev || { echo "FAIL: python3-dev в runtime"; exit 1; }

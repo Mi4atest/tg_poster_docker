@@ -1,5 +1,5 @@
 # --- builder: компилятор и dev-заголовки только для pip install ---
-FROM python:3.10-slim-bookworm AS builder
+FROM python:3.12-slim-bookworm AS builder
 
 WORKDIR /build
 
@@ -20,7 +20,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 
 # --- runtime: без gcc; git для update из бота; compose — с хоста (/usr/bin/docker-compose) ---
-FROM python:3.10-slim-bookworm AS runtime
+FROM python:3.12-slim-bookworm AS runtime
 
 WORKDIR /app
 

@@ -89,9 +89,14 @@ run_update() {
     else
         export TG_POSTER_FORCE_UPDATE=0
     fi
-    bash "$PROJECT_DIR/scripts/update.sh"
+    local update_log="${BACKUPS_DIR}/last_update.log"
+    : > "$update_log"
+    bash "$PROJECT_DIR/scripts/update.sh" >> "$update_log" 2>&1
     rm -f "$flag_tmp" "$UPDATE_LOCK"
     trap - EXIT
+    # #region agent log
+    python3 -c "import json,time,os; p='${BACKUPS_DIR}/last_update.log'; open('/root/tg_poster_docker/.cursor/debug-a7d656.log','a').write(json.dumps({'sessionId':'a7d656','hypothesisId':'C','location':'host_tasks.sh:run_update','message':'update finished','data':{'log_size':os.path.getsize(p) if os.path.isfile(p) else 0},'timestamp':int(time.time()*1000)})+'\n')" 2>/dev/null || true
+    # #endregion
     echo "[host_tasks] update finished"
 }
 

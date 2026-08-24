@@ -1663,6 +1663,7 @@ async def settings_update_project_force(callback: CallbackQuery):
 async def settings_update_project_status(callback: CallbackQuery):
     if not await deny_unless_admin_callback(callback):
         return
+    await callback.answer()
     from app.services.project_update_service import (
         build_update_screen,
         get_update_details_message,
@@ -1684,7 +1685,6 @@ async def settings_update_project_status(callback: CallbackQuery):
     except TelegramBadRequest as e:
         if "message is not modified" not in str(e).lower():
             raise
-    await callback.answer()
 
 
 @router.callback_query(F.data == "settings_update_project_prune")

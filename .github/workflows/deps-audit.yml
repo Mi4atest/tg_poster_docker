@@ -1,0 +1,85 @@
+# SCA: проверка зависимостей на известные уязвимости + согласованность pin/lock.
+# Запускается на push/PR. Прод не трогает — только отчёт в GitHub Actions.
+name: deps-audit
+
+on:
+  push:
+    branches: [Test_planner, main, master]
+    paths:
+      - "requirements.txt"
+      - "requirements.lock"
+      - "Dockerfile"
+      - ".github/workflows/deps-audit.yml"
+  pull_request:
+    branches: [Test_planner, main, master]
+    paths:
+      - "requirements.txt"
+      - "requirements.lock"
+      - "Dockerfile"
+      - ".github/workflows/deps-audit.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: pip-audit + lock check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install pip-audit
+        run: pip install --no-cache-dir "pip-audit>=2.7,<3"
+
+      - name: Check requirements.txt pins are in requirements.lock
+        run: |
+          python <<'PY'
+          from pathlib import Path
+
+          def parse(path: str):
+              out = {}
+              for line in Path(path).read_text(encoding="utf-8").splitlines():
+                  line = line.strip()
+                  if not line or line.startswith("#") or "==" not in line:
+                      continue
+                  name, ver = line.split("==", 1)
+                  out[name.lower().replace("_", "-")] = (name, ver)
+              return out
+
+          req = parse("requirements.txt")
+          lock = parse("requirements.lock")
+          errors = []
+          for key, (name, ver) in req.items():
+              if key not in lock:
+                  errors.append(f"нет в lock: {name}=={ver}")
+              elif lock[key][1] != ver:
+                  errors.append(
+                      f"версия {name}: requirements.txt={ver}, lock={lock[key][1]}"
+                  )
+          dead = ("python-jose", "passlib", "bcrypt", "ecdsa", "rsa", "pyasn1")
+          for d in dead:
+              if d in lock or d.replace("-", "_") in lock:
+                  errors.append(f"мёртвый JWT-пакет в lock: {d}")
+          if "cryptography" not in req:
+              errors.append("cryptography должен быть прямой зависимостью (Fernet)")
+          dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
+          if "requirements.lock" not in dockerfile:
+              errors.append("Dockerfile должен ставить зависимости из requirements.lock")
+          if errors:
+              print("FAIL:")
+              print("\n".join(errors))
+              raise SystemExit(1)
+          print(f"OK: {len(req)} прямых pin совпадают с lock ({len(lock)} пакетов)")
+          PY
+
+      - name: pip-audit requirements.lock
+        run: pip-audit -r requirements.lock --progress-spinner off

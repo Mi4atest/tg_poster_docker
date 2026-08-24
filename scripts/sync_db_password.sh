@@ -14,13 +14,17 @@ set -e
 cd "$(dirname "$0")/.."
 
 COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-tg_poster_docker}"
-COMPOSE_FILE="$(pwd)/docker-compose.yml"
 
 if [ -f ".env" ]; then
     set -a
     # shellcheck disable=SC1091
     source .env
     set +a
+fi
+
+compose_file_args=(-f "$(pwd)/docker-compose.yml")
+if [ "${TG_POSTER_USE_DEV_COMPOSE:-0}" = "1" ] && [ -f "$(pwd)/docker-compose.dev.yml" ]; then
+    compose_file_args+=(-f "$(pwd)/docker-compose.dev.yml")
 fi
 
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
@@ -37,9 +41,9 @@ DB_PASSWORD="${DB_PASSWORD:-postgres}"
 DB_NAME="${DB_NAME:-tg_poster}"
 
 if docker compose version >/dev/null 2>&1; then
-    DC=(docker compose -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}")
+    DC=(docker compose -p "${COMPOSE_PROJECT_NAME}" "${compose_file_args[@]}")
 else
-    DC=(docker-compose -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}")
+    DC=(docker-compose -p "${COMPOSE_PROJECT_NAME}" "${compose_file_args[@]}")
 fi
 
 if ! "${DC[@]}" ps --status running 2>/dev/null | grep -qE 'tg_poster_db|db'; then

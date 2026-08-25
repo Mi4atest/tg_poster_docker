@@ -111,8 +111,75 @@ class InstagramGraphPublisher:
         return bool(self.access_token and self.ig_user_id)
 
     @property
+    def last_error(self) -> Optional[str]:
+        return self._last_graph_error
+
+    @property
     def base_url(self) -> str:
         return f"https://graph.facebook.com/{self.api_version}"
+
+    @staticmethod
+    def story_container_params(image_url: str) -> dict:
+        """Параметры контейнера органической сторис (без стикеров — Graph API их не ставит)."""
+        return {
+            "image_url": image_url,
+            "media_type": "STORIES",
+        }
+
+    def public_url_for_media_path(self, file_path: Path) -> str:
+        return self._to_public_url(file_path)
+
+    async def publish_story_image(self, image_url: str) -> Optional[str]:
+        """Опубликовать JPEG как Instagram Story. Возвращает media_id или None."""
+        self._last_published_media_id = None
+        self._last_graph_error = None
+        self._last_graph_error_code = None
+        self._last_graph_error_subcode = None
+
+        if not self.enabled:
+            self._last_graph_error = (
+                "Graph API не настроен. Нужны INSTAGRAM_GRAPH_ACCESS_TOKEN и INSTAGRAM_GRAPH_USER_ID"
+            )
+            return None
+        image_url = (image_url or "").strip()
+        if not image_url:
+            self._last_graph_error = "Пустой image_url для сторис"
+            return None
+
+        preflight_ok, preflight_error = await self.token_manager.preflight_or_error()
+        if not preflight_ok:
+            self._last_graph_error = f"Preflight Graph token failed: {preflight_error}"
+            logger.error(self._last_graph_error)
+            return None
+        self.access_token = self.token_manager.get_access_token()
+
+        creation_id = await self._create_container(self.story_container_params(image_url))
+        if not creation_id:
+            return None
+
+        logger.info(
+            "IG story container ok creation_id=%s url=%s",
+            creation_id,
+            _redact_url(image_url),
+        )
+        ready = await self._wait_for_container_ready(
+            creation_id,
+            timeout_seconds=min(60, self.video_ready_timeout_seconds),
+            missing_status_ok=True,
+        )
+        if not ready:
+            if not self._last_graph_error:
+                self._last_graph_error = "Story container not ready"
+            logger.error(
+                "IG story container not ready id=%s err=%s",
+                creation_id,
+                self._last_graph_error,
+            )
+            return None
+
+        if not await self._publish_creation(creation_id):
+            return None
+        return self._last_published_media_id
 
     async def publish_post(self, post_id: str) -> bool:
         db = SessionLocal()
@@ -745,20 +812,40 @@ class InstagramGraphPublisher:
             return None
         return container_id
 
-    async def _wait_for_container_ready(self, container_id: str) -> bool:
-        deadline = time.monotonic() + self.video_ready_timeout_seconds
+    async def _wait_for_container_ready(
+        self,
+        container_id: str,
+        *,
+        timeout_seconds: Optional[int] = None,
+        missing_status_ok: bool = False,
+    ) -> bool:
+        limit = int(timeout_seconds or self.video_ready_timeout_seconds)
+        deadline = time.monotonic() + max(2, limit)
+        missing = 0
         while time.monotonic() < deadline:
             status = await self._get_creation_status_code(container_id=container_id)
             if status == "FINISHED":
                 return True
             if status in ("ERROR", "EXPIRED"):
+                self._last_graph_error = f"IG container status={status}"
                 logger.error("IG container status=%s id=%s", status, container_id)
                 return False
+            if missing_status_ok and not status:
+                missing += 1
+                if missing >= 2:
+                    return True
             await asyncio.sleep(2)
+        if missing_status_ok:
+            logger.warning(
+                "IG container status poll timeout id=%s after %ss, trying publish",
+                container_id,
+                limit,
+            )
+            return True
         logger.error(
             "IG container ready timeout id=%s after %ss",
             container_id,
-            self.video_ready_timeout_seconds,
+            limit,
         )
         return False
 

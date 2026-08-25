@@ -106,7 +106,7 @@ async def toggle_vk_stories_from_create_post(callback: CallbackQuery, state: FSM
     )
     await state.set_state(PostCreation.waiting_for_text)
     await callback.answer(
-        "Сторис ВК: включены" if next_state else "Сторис ВК: выключены"
+        "Сторис (авто): включены" if next_state else "Сторис (авто): выключены"
     )
 
 @router.callback_query(F.data == "pending_posts")

@@ -87,27 +87,33 @@ async def preview_vk_story(post_id: str, db: Session = Depends(get_db)):
 
 @router.post("/{story_id}/publish", response_model=StorySchema)
 async def publish_story(story_id: str, db: Session = Depends(get_db)):
-    """Publish a story. Для VK повторная публикация разрешена."""
+    """Publish a story. Для VK и Instagram повторная публикация разрешена."""
     story = db.query(Story).filter(Story.id == story_id).first()
     if story is None:
         raise HTTPException(status_code=404, detail="Story not found")
 
-    # Для VK не возвращаем early — истории эфемерны, нужна возможность перепубликации
-    if story.is_published and story.platform != "vk":
+    # VK/IG сторис эфемерны — не возвращаем early, можно переопубликовать
+    if story.is_published and story.platform not in ("vk", "instagram"):
         return story
 
-    if story.platform == "vk" and story.is_published:
+    if story.platform in ("vk", "instagram") and story.is_published:
         story.is_published = False
         db.commit()
         db.refresh(story)
 
+    post = db.query(Post).filter(Post.id == story.post_id).first() if story.post_id else None
     if story.platform == "vk":
-        post = db.query(Post).filter(Post.id == story.post_id).first()
         if not post or not post.is_published_vk or not post.vk_post_id:
             raise HTTPException(
                 status_code=400,
                 detail="VK story requires the post to be published on the community wall first",
             )
+    elif story.platform == "instagram":
+        from app.workers.instagram.story_publisher import ig_story_block_reason
+
+        blocked = ig_story_block_reason(post)
+        if blocked:
+            raise HTTPException(status_code=400, detail=blocked)
 
     success = False
     try:
@@ -122,14 +128,19 @@ async def publish_story(story_id: str, db: Session = Depends(get_db)):
             success = await publish_story_to_instagram(story_id)
 
         if not success:
+            fail_detail = f"Failed to publish story to {story.platform}"
+            if story.platform == "instagram":
+                from app.workers.instagram.story_publisher import last_instagram_story_error
+
+                fail_detail = last_instagram_story_error() or fail_detail
             log = StoryPublicationLog(
                 story_id=story.id,
                 status="error",
-                message=f"Failed to publish story to {story.platform}",
+                message=fail_detail,
             )
             db.add(log)
             db.commit()
-            raise HTTPException(status_code=500, detail=f"Failed to publish story to {story.platform}")
+            raise HTTPException(status_code=500, detail=fail_detail)
     except HTTPException:
         raise
     except Exception as e:

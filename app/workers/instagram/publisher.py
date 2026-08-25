@@ -665,8 +665,21 @@ async def publish_post_to_instagram(post_id: str) -> bool:
     graph_publisher = InstagramGraphPublisher()
     if graph_publisher.enabled:
         logger.info("Публикация в Instagram через Graph API")
-        return await graph_publisher.publish_post(post_id)
+        ok = await graph_publisher.publish_post(post_id)
+    else:
+        logger.warning("Graph API не настроен, используем instagrapi fallback")
+        publisher = InstagramPublisher()
+        ok = await publisher.publish_post(post_id)
 
-    logger.warning("Graph API не настроен, используем instagrapi fallback")
-    publisher = InstagramPublisher()
-    return await publisher.publish_post(post_id)
+    if ok:
+        try:
+            from app.workers.instagram.story_publisher import maybe_auto_publish_instagram_story
+
+            await maybe_auto_publish_instagram_story(post_id)
+        except Exception as story_err:
+            logger.error(
+                "Auto IG story after feed publish failed for %s: %s",
+                post_id,
+                story_err,
+            )
+    return bool(ok)

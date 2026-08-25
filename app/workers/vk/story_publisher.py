@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import tempfile
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
@@ -18,10 +19,96 @@ from app.config.settings import API_HOST, API_PORT, MEDIA_DIR
 from app.db.database import SessionLocal
 from app.utils.text_extractor import extract_model_and_price, extract_model_name_without_code
 from app.utils.vk_client import community_token, resolved_vk_group_id_int
-from app.utils.vk_urls import story_url, wall_post_url
+from app.utils.vk_urls import api_method_url, story_url, wall_post_url
 from app.workers.vk.story_composer import build_story_image
 
 logger = logging.getLogger(__name__)
+
+_VK_STORY_REF_RE = re.compile(r"stories(-?\d+)_(\d+)", re.IGNORECASE)
+
+
+def parse_vk_story_ref(link: Optional[str]) -> Optional[str]:
+    """Из ссылки вида https://vk.ru/stories-123_456 → '-123_456'."""
+    if not link:
+        return None
+    match = _VK_STORY_REF_RE.search(str(link))
+    if not match:
+        return None
+    return f"{match.group(1)}_{match.group(2)}"
+
+
+def pick_largest_photo_url(sizes: List[dict]) -> Optional[str]:
+    best_url = None
+    best_area = -1
+    for size in sizes or []:
+        url = (size.get("url") or "").strip()
+        if not url:
+            continue
+        area = int(size.get("width") or 0) * int(size.get("height") or 0)
+        if area > best_area:
+            best_area = area
+            best_url = url
+    return best_url
+
+
+def fetch_vk_story_photo_url(story_ref: str) -> Optional[str]:
+    """Публичный JPEG URL кадра опубликованной сторис (stories.getById)."""
+    ref = (story_ref or "").strip()
+    if not ref:
+        return None
+    token = community_token()
+    if not token:
+        logger.warning("VK story photo URL: no community token")
+        return None
+    try:
+        response = requests.get(
+            api_method_url("stories.getById"),
+            params={"stories": ref, "access_token": token, "v": "5.199"},
+            timeout=30,
+        )
+        payload = response.json()
+    except Exception as exc:
+        logger.warning("VK stories.getById failed for %s: %s", ref, exc)
+        return None
+    if payload.get("error"):
+        logger.warning("VK stories.getById error for %s: %s", ref, payload.get("error"))
+        return None
+    items = (payload.get("response") or {}).get("items") or []
+    if not items:
+        return None
+    story_item = items[0] if isinstance(items[0], dict) else None
+    if not story_item:
+        return None
+    if story_item.get("is_expired") or story_item.get("is_deleted"):
+        logger.info("VK story %s expired/deleted", ref)
+        return None
+    photo = story_item.get("photo") or {}
+    return pick_largest_photo_url(photo.get("sizes") or [])
+
+
+async def resolve_vk_story_photo_url_for_post(post_id: str) -> Optional[str]:
+    """URL кадра живой VK-сторис для поста (из Story.post_link)."""
+    db = SessionLocal()
+    try:
+        story = (
+            db.query(Story)
+            .filter(
+                Story.post_id == post_id,
+                Story.platform == "vk",
+                Story.is_published.is_(True),
+            )
+            .order_by(Story.published_at.desc(), Story.created_at.desc())
+            .first()
+        )
+        if not story:
+            return None
+        ref = parse_vk_story_ref(story.post_link)
+        if not ref:
+            logger.info("VK story for post %s has no parseable post_link=%s", post_id, story.post_link)
+            return None
+        return await asyncio.to_thread(fetch_vk_story_photo_url, ref)
+    finally:
+        db.close()
 
 
 class VKStoryPublisher:
@@ -354,13 +441,13 @@ async def ensure_vk_story_record(post_id: str) -> Optional[str]:
 
 async def maybe_auto_publish_vk_story(post_id: str) -> bool:
     """
-    Если включён тумблер «Сторис ВК (авто)» — опубликовать сторис после стены.
+    Если включён тумблер «Сторис (авто)» — опубликовать сторис ВК после стены.
     Не зависит от «Товары ВК». Ошибки не пробрасываются наружу (лента уже ушла).
     """
     try:
         from app.services.settings_service import get_settings_service
 
-        if not get_settings_service().is_vk_stories_auto_enabled():
+        if not get_settings_service().is_stories_auto_enabled():
             return False
         db = SessionLocal()
         try:

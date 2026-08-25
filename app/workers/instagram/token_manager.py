@@ -75,10 +75,17 @@ class InstagramGraphTokenManager:
         return (getattr(env_settings, "INSTAGRAM_GRAPH_USER_ID", "") or "").strip()
 
     def get_media_base_url(self) -> str:
-        media_base_url = self._get_integrations().get("instagram_graph_media_base_url") or ""
+        media_base_url = (self._get_integrations().get("instagram_graph_media_base_url") or "").strip()
         if media_base_url:
             return media_base_url.rstrip("/")
-        return (getattr(env_settings, "INSTAGRAM_GRAPH_MEDIA_BASE_URL", "") or "").rstrip("/")
+        env_url = (getattr(env_settings, "INSTAGRAM_GRAPH_MEDIA_BASE_URL", "") or "").strip()
+        if env_url:
+            return env_url.rstrip("/")
+        # Тот же публичный хост, что и для Avito feed (Meta должна скачать JPEG по HTTPS).
+        public = (getattr(env_settings, "AVITO_FEED_PUBLIC_BASE_URL", "") or "").strip().rstrip("/")
+        if public:
+            return f"{public}/media"
+        return ""
 
     def get_app_id(self) -> str:
         app_id = (self._get_integrations().get("instagram_graph_app_id") or "").strip()

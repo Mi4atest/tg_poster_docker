@@ -470,12 +470,19 @@ class SettingsService:
         self.update({"features": {"vk_market_enabled": bool(enabled)}})
 
     def is_vk_stories_auto_enabled(self) -> bool:
-        """Автосторис ВК после публикации поста на стену (не зависит от Товаров ВК)."""
+        """Автосторис (ВК после стены + IG после ленты). Ключ БД прежний для совместимости."""
         features = self.get_all().get("features", {})
         return bool(features.get("vk_stories_auto_enabled", False))
 
+    def is_stories_auto_enabled(self) -> bool:
+        """Алиас: автопубликация сторис (ВК + Instagram)."""
+        return self.is_vk_stories_auto_enabled()
+
     def set_vk_stories_auto_enabled(self, enabled: bool) -> None:
         self.update({"features": {"vk_stories_auto_enabled": bool(enabled)}})
+
+    def set_stories_auto_enabled(self, enabled: bool) -> None:
+        self.set_vk_stories_auto_enabled(enabled)
 
     def get_vk_stories_style(self) -> str:
         from app.workers.vk.story_composer import normalize_story_style
@@ -710,11 +717,11 @@ class SettingsService:
         vk_market_enabled = bool(data.get("features", {}).get("vk_market_enabled", True))
         lines.append("🟢 Товары ВК" if vk_market_enabled else "🔴 Товары ВК")
         vk_stories_auto = bool(data.get("features", {}).get("vk_stories_auto_enabled", False))
-        lines.append("🟢 Сторис ВК (авто)" if vk_stories_auto else "🔴 Сторис ВК (авто)")
         from app.workers.vk.story_composer import story_style_label
 
         style = data.get("features", {}).get("vk_stories_style", "bubble")
-        lines.append(f"🎨 Сторис стиль: {story_style_label(style)}")
+        auto_mark = "🟢" if vk_stories_auto else "🔴"
+        lines.append(f"{auto_mark} Сторис (авто) · {story_style_label(style)}")
         return lines
 
 

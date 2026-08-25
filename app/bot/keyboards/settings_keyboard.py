@@ -122,7 +122,7 @@ def get_settings_signatures_keyboard(
     catalog_enabled: bool,
     *,
     vk_stories_auto_enabled: bool = False,
-    vk_stories_style_label: str = "Bubble",
+    vk_stories_style_label: str = "Карточка",
 ) -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton(
@@ -134,11 +134,11 @@ def get_settings_signatures_keyboard(
             callback_data="settings_toggle_vk_market"
         )],
         [InlineKeyboardButton(
-            text=("🟢" if vk_stories_auto_enabled else "🔴") + " Сторис ВК (авто)",
+            text=("🟢" if vk_stories_auto_enabled else "🔴") + " Сторис (авто)",
             callback_data="settings_toggle_vk_stories_auto"
         )],
         [InlineKeyboardButton(
-            text=f"🎨 Сторис стиль: {vk_stories_style_label}",
+            text=f"🎨 Стиль: {vk_stories_style_label}",
             callback_data="settings_cycle_vk_stories_style"
         )],
         [InlineKeyboardButton(

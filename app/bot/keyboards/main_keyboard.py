@@ -42,7 +42,7 @@ def get_create_post_entry_keyboard(
     avito_body_level: int = 1,
     vk_stories_auto_enabled: bool = False,
 ) -> InlineKeyboardMarkup:
-    """Клавиатура шага «текст»: Назад, Товары ВК, Сторис ВК; Экран/Корпус — если Авито вкл."""
+    """Клавиатура шага «текст»: Назад, Товары ВК, Сторис (авто); Экран/Корпус — если Авито вкл."""
     vk_market_icon = "🟢" if vk_market_enabled else "🔴"
     vk_stories_icon = "🟢" if vk_stories_auto_enabled else "🔴"
     row1 = [
@@ -51,7 +51,7 @@ def get_create_post_entry_keyboard(
     ]
     row2 = [
         InlineKeyboardButton(
-            text=f"{vk_stories_icon} Сторис ВК",
+            text=f"{vk_stories_icon} Сторис (авто)",
             callback_data="create_post_toggle_vk_stories",
         ),
     ]

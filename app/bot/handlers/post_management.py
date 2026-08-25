@@ -545,28 +545,44 @@ async def create_story_api(post_id, platform):
 
 async def publish_story_api(story_id):
     """Publish a story via API."""
+    result, _error = await publish_story_api_with_error(story_id)
+    return result
+
+
+def _story_publish_error_detail(status: int, body: str) -> str:
+    text = (body or "").strip()
+    if not text:
+        return f"HTTP {status}"
+    try:
+        payload = json.loads(text)
+    except Exception:
+        return text[:400]
+    detail = payload.get("detail") if isinstance(payload, dict) else None
+    if isinstance(detail, str) and detail.strip():
+        return detail.strip()[:400]
+    return text[:400]
+
+
+async def publish_story_api_with_error(story_id):
+    """Публикация сторис: (json|None, error_text)."""
     try:
         async with aiohttp.ClientSession() as session:
             url = f"http://{API_HOST}:{API_PORT}/api/stories/{story_id}/publish"
             print(f"Publishing story via {url}")
-
             try:
                 async with session.post(url) as response:
                     print(f"API response status: {response.status}")
-
                     if response.status == 200:
-                        result = await response.json()
-                        return result
-                    else:
-                        error_text = await response.text()
-                        print(f"API Error: {response.status} - {error_text}")
-                        return None
+                        return await response.json(), ""
+                    error_text = await response.text()
+                    print(f"API Error: {response.status} - {error_text}")
+                    return None, _story_publish_error_detail(response.status, error_text)
             except Exception as e:
                 print(f"Error during API request: {str(e)}")
-                return None
+                return None, str(e)
     except Exception as e:
         print(f"Error in publish_story_api: {str(e)}")
-        return None
+        return None, str(e)
 
 async def update_post_api(post_id, text=None, photos=None, videos=None, avito_draft=None):
     """Update a post via API."""
@@ -1779,7 +1795,12 @@ async def show_stories_menu(callback: CallbackQuery):
 
     # Show stories menu
     await callback.message.edit_text(
-        f"{callback.message.text}\n\n📱 Сторис ВК: сначала превью в этом чате, потом публикация.\nВыберите действие:",
+        f"{callback.message.text}\n\n"
+        "📱 Сторис ВК: сначала превью в этом чате, потом публикация.\n"
+        "📸 Сторис IG: тот же кадр через Graph API (нужен пост в ленте IG; "
+        "при сбое своего MEDIA_BASE — fallback на живую VK-сторис).\n"
+        "Авто: тумблер «Сторис (авто)» — ВК после стены и IG после ленты.\n"
+        "Выберите действие:",
         reply_markup=keyboard
     )
 
@@ -2025,11 +2046,9 @@ async def publish_story_to_telegram(callback: CallbackQuery):
 
 @router.callback_query(F.data == "story_instagram")
 async def publish_story_to_instagram(callback: CallbackQuery):
-    """Publish story to Instagram."""
-    # Сразу отвечаем на callback, чтобы избежать ошибки "query is too old"
+    """Публикация сторис в Instagram через Graph API (тот же кадр, что для ВК)."""
     await callback.answer("Публикую сторис в Instagram...")
 
-    # Get selected post ID
     user_data = callback.bot.user_data.get(callback.from_user.id, {})
     post_id = user_data.get("selected_post")
 
@@ -2037,23 +2056,24 @@ async def publish_story_to_instagram(callback: CallbackQuery):
         await callback.message.answer("❌ Пост не выбран.")
         return
 
-    # Get post details
     post = await get_post_api(post_id)
 
     if not post:
         await callback.message.answer("❌ Пост не найден.")
         return
 
-    # Check if post has photos
-    if not post.get("photos"):
-        await callback.message.answer("❌ Пост не содержит фотографий для сторис.")
+    from app.workers.instagram.story_publisher import ig_story_block_reason
+
+    blocked = ig_story_block_reason(post)
+    if blocked:
+        await callback.message.answer(f"❌ {blocked}")
         return
 
-    # Publish story
-    status_message = await callback.message.edit_text(f"{callback.message.text}\n\n⏳ Публикую сторис в Instagram...")
+    status_message = await callback.message.edit_text(
+        f"{callback.message.text}\n\n⏳ Публикую сторис в Instagram..."
+    )
 
     try:
-        # Create story
         story = await create_story_api(post_id, "instagram")
 
         if not story:
@@ -2063,17 +2083,23 @@ async def publish_story_to_instagram(callback: CallbackQuery):
             )
             return
 
-        # Publish story
-        result = await publish_story_api(story.get("id"))
+        result, publish_error = await publish_story_api_with_error(story.get("id"))
 
         if result:
+            feed_link = (post.get("instagram_link") or "").strip()
+            extra = f"\nПост в ленте: {feed_link}" if feed_link else ""
             await status_message.edit_text(
-                f"{status_message.text.split('⏳')[0]}\n\n✅ Сторис опубликован в Instagram!",
+                f"{status_message.text.split('⏳')[0]}\n\n"
+                "✅ Сторис опубликован в Instagram."
+                f"{extra}\n\n"
+                "Graph API не ставит кликабельный бабл «Публикация» — в сторис будет кадр без кнопки на пост.",
                 reply_markup=_post_actions_kb(callback.bot, callback.from_user.id)
             )
         else:
+            detail = f"\n{publish_error}" if publish_error else ""
             await status_message.edit_text(
-                f"{status_message.text.split('⏳')[0]}\n\n❌ Ошибка при публикации сторис в Instagram.",
+                f"{status_message.text.split('⏳')[0]}\n\n"
+                f"❌ Ошибка при публикации сторис в Instagram.{detail}",
                 reply_markup=_post_actions_kb(callback.bot, callback.from_user.id)
             )
     except Exception as e:

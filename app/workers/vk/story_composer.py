@@ -32,7 +32,10 @@ def normalize_story_style(style: Optional[str]) -> str:
 
 
 def story_style_label(style: Optional[str]) -> str:
-    return "Social" if normalize_story_style(style) == STORY_STYLE_SOCIAL else "Bubble"
+    """Короткая подпись стиля для UI (рус.)."""
+    if normalize_story_style(style) == STORY_STYLE_SOCIAL:
+        return "Компакт"
+    return "Карточка"
 
 
 def _font_candidates(bold: bool) -> Tuple[str, ...]:

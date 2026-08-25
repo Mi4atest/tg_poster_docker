@@ -5,7 +5,6 @@ Revises: merge_max_heads
 Create Date: 2026-05-12
 """
 from alembic import op
-import sqlalchemy as sa
 
 
 revision = "add_avito_fields"
@@ -14,14 +13,32 @@ branch_labels = None
 depends_on = None
 
 
+def _add_column_if_missing(table: str, column: str, ddl: str) -> None:
+    op.execute(
+        f"""
+        DO $$ BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = '{table}'
+                  AND column_name = '{column}'
+            ) THEN
+                ALTER TABLE {table} ADD COLUMN {ddl};
+            END IF;
+        END $$;
+        """
+    )
+
+
 def upgrade():
-    op.add_column("posts", sa.Column("is_published_avito", sa.Boolean(), nullable=True, server_default="false"))
-    op.add_column("posts", sa.Column("published_avito_at", sa.DateTime(), nullable=True))
-    op.add_column("posts", sa.Column("avito_item_id", sa.String(), nullable=True))
-    op.add_column("posts", sa.Column("avito_url", sa.String(), nullable=True))
-    op.add_column("posts", sa.Column("avito_draft", sa.JSON(), nullable=True))
-    op.add_column("products", sa.Column("avito_item_id", sa.String(), nullable=True))
-    op.add_column("products", sa.Column("avito_url", sa.String(), nullable=True))
+    _add_column_if_missing(
+        "posts", "is_published_avito", "is_published_avito BOOLEAN DEFAULT 'false'"
+    )
+    _add_column_if_missing("posts", "published_avito_at", "published_avito_at TIMESTAMP")
+    _add_column_if_missing("posts", "avito_item_id", "avito_item_id VARCHAR")
+    _add_column_if_missing("posts", "avito_url", "avito_url VARCHAR")
+    _add_column_if_missing("posts", "avito_draft", "avito_draft JSON")
+    _add_column_if_missing("products", "avito_item_id", "avito_item_id VARCHAR")
+    _add_column_if_missing("products", "avito_url", "avito_url VARCHAR")
     op.execute("UPDATE posts SET is_published_avito = FALSE WHERE is_published_avito IS NULL")
 
 

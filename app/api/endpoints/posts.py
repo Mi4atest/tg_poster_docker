@@ -1,10 +1,12 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Body, Response, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Body, Response, Query, BackgroundTasks
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from typing import List, Optional
 from datetime import datetime, timezone
 import logging
 import os
+import re
+import unicodedata
 
 from pydantic import BaseModel
 
@@ -88,6 +90,16 @@ def generate_post_name(text: str, max_length: int = 70) -> str:
     
     return name
 
+def ascii_storage_name(post_name: str) -> str:
+    """Каталог на диске без emoji/кириллицы — Graph API не качает non-ASCII URI."""
+    raw = (post_name or "").replace(" ", "_").replace("/", "_")
+    raw = unicodedata.normalize("NFKD", raw)
+    raw = raw.encode("ascii", "ignore").decode("ascii")
+    raw = re.sub(r"[^A-Za-z0-9._-]+", "_", raw)
+    raw = re.sub(r"_+", "_", raw).strip("._-")
+    return (raw[:80] or "post")
+
+
 def create_storage_path(post_name: str) -> str:
     """Create a storage path for the post based on current date and post name."""
     now = datetime.now()
@@ -95,14 +107,42 @@ def create_storage_path(post_name: str) -> str:
         year=now.strftime("%Y"),
         month=now.strftime("%m"),
         day=now.strftime("%d"),
-        post_name=post_name.replace(" ", "_").replace("/", "_")
+        post_name=ascii_storage_name(post_name),
     )
     full_path = MEDIA_DIR / path
     os.makedirs(full_path, exist_ok=True)
     return path
 
+
+def _persist_created_post_media(
+    storage_path: str,
+    text: str,
+    photos: list,
+    videos: list,
+    post_id: str,
+) -> None:
+    persist_result = persist_post_media(storage_path, photos, videos)
+    write_post_sidecar(
+        storage_path,
+        text,
+        photos=photos,
+        videos=videos,
+        persist_result=persist_result,
+    )
+    if persist_result.get("errors"):
+        logger.warning(
+            "Post %s created but media persist incomplete: %s",
+            post_id,
+            persist_result["errors"],
+        )
+
+
 @router.post("/", response_model=PostSchema, status_code=status.HTTP_201_CREATED)
-def create_post(post_data: PostCreate, db: Session = Depends(get_db)):
+def create_post(
+    post_data: PostCreate,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
     """Create a new post."""
     # Generate post name from text
     post_name = generate_post_name(post_data.text)
@@ -132,20 +172,15 @@ def create_post(post_data: PostCreate, db: Session = Depends(get_db)):
     updated_at = db_post.updated_at
     db.commit()
 
-    persist_result = persist_post_media(storage_path, photos, videos)
-    write_post_sidecar(
+    write_post_sidecar(storage_path, post_data.text, photos=photos, videos=videos)
+    background_tasks.add_task(
+        _persist_created_post_media,
         storage_path,
         post_data.text,
-        photos=photos,
-        videos=videos,
-        persist_result=persist_result,
+        list(photos),
+        list(videos),
+        post_id,
     )
-    if persist_result.get("errors"):
-        logger.warning(
-            "Post %s created but media persist incomplete: %s",
-            post_id,
-            persist_result["errors"],
-        )
 
     result = PostSchema.model_validate(
         {
@@ -309,7 +344,6 @@ def get_post_card(
         .mappings()
         .first()
     )
-    # #endregion
     if row is None:
         raise HTTPException(status_code=404, detail="Post not found")
     return _row_as_post_schema(db, dict(row))

@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import ssl
+import threading
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -20,6 +21,18 @@ from app.config.settings import MEDIA_DIR, TELEGRAM_BOT_TOKEN
 logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT_SECONDS = 60
+
+_path_locks_guard = threading.Lock()
+_path_locks: dict[str, threading.Lock] = {}
+
+
+def _lock_for_storage_path(storage_path: str) -> threading.Lock:
+    with _path_locks_guard:
+        lock = _path_locks.get(storage_path)
+        if lock is None:
+            lock = threading.Lock()
+            _path_locks[storage_path] = lock
+        return lock
 
 
 def is_telegram_bot_file_url(url: str) -> bool:
@@ -133,6 +146,25 @@ def persist_post_media(
     if not storage_path:
         result["errors"].append("empty_storage_path")
         return result
+
+    with _lock_for_storage_path(storage_path):
+        return _persist_post_media_unlocked(
+            storage_path,
+            photos_list,
+            videos_list,
+            result,
+            timeout=timeout,
+        )
+
+
+def _persist_post_media_unlocked(
+    storage_path: str,
+    photos_list: List[str],
+    videos_list: List[str],
+    result: dict[str, Any],
+    *,
+    timeout: float,
+) -> dict[str, Any]:
 
     post_dir = MEDIA_DIR / storage_path
     post_dir.mkdir(parents=True, exist_ok=True)

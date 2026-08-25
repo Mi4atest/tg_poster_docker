@@ -141,6 +141,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
         ),
     },
     "integrations": {
+        "vk_group_id": str(getattr(env_settings, "VK_GROUP_ID", "") or ""),
         "instagram_mode": "graph",
         "instagram_graph_access_token": "",
         "instagram_graph_app_id": getattr(env_settings, "INSTAGRAM_GRAPH_APP_ID", "") or "",
@@ -293,8 +294,19 @@ class SettingsService:
                 merged = self._deep_merge(DEFAULT_SETTINGS, cfg)
                 merged["_env_bootstrapped"] = True
                 row.config = merged
+                cfg = merged
                 changed = True
                 logger.info("Конфиг из .env перенесён в БД (единоразовый bootstrap)")
+
+            # vk_group_id раньше не входил в DEFAULT_SETTINGS — после очистки .env
+            # публикация в VK падала, хотя токен уже был в БД.
+            env_gid = str(getattr(env_settings, "VK_GROUP_ID", "") or "").strip()
+            integ = dict((cfg.get("integrations") or {}))
+            if env_gid and not str(integ.get("vk_group_id") or "").strip():
+                integ["vk_group_id"] = env_gid
+                cfg["integrations"] = integ
+                row.config = cfg
+                changed = True
 
             if changed:
                 db.commit()

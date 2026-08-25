@@ -5,12 +5,16 @@ import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import aiohttp
 
 from app.config.settings import APP_LOG_DIR, MEDIA_DIR
-from app.services.media_persist_service import download_telegram_file, is_telegram_bot_file_url
+from app.services.media_persist_service import (
+    download_telegram_file,
+    is_telegram_bot_file_url,
+    persist_post_media,
+)
 from app.db.database import SessionLocal
 from app.db.post_queries import (
     fetch_post,
@@ -208,6 +212,14 @@ class InstagramGraphPublisher:
                 return False
 
             self.access_token = self.token_manager.get_access_token()
+
+            if getattr(post, "storage_path", None):
+                await asyncio.to_thread(
+                    persist_post_media,
+                    post.storage_path,
+                    list(post.photos or []),
+                    list(post.videos or []),
+                )
 
             caption = format_for_instagram(post.text)
             merged_items, _slot_audit = await self._assemble_merged_media_items(post)
@@ -617,7 +629,8 @@ class InstagramGraphPublisher:
 
     def _to_public_url(self, file_path: Path) -> str:
         relative = file_path.relative_to(MEDIA_DIR).as_posix()
-        return f"{self.media_base_url}/{relative}"
+        encoded = "/".join(quote(part, safe=".-_~") for part in relative.split("/") if part)
+        return f"{self.media_base_url.rstrip('/')}/{encoded}"
 
     def _reject_bot_token_media(self, params: dict) -> bool:
         """True если params содержат telegram bot-token URL — в Graph не отправляем."""

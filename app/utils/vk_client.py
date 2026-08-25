@@ -30,11 +30,11 @@ def community_token() -> str:
 
 
 def resolve_vk_group_id() -> str:
-    """ID VK-группы: .env -> DB integrations.vk_group_id."""
-    env_gid = str(VK_GROUP_ID or "").strip()
-    if env_gid:
-        return env_gid
-    return _get_integration_value("vk_group_id")
+    """ID VK-группы: БД integrations.vk_group_id -> .env fallback."""
+    db_gid = _get_integration_value("vk_group_id")
+    if db_gid:
+        return db_gid
+    return str(VK_GROUP_ID or "").strip()
 
 
 def resolved_vk_group_id_int() -> int:

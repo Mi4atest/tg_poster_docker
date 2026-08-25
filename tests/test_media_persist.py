@@ -106,6 +106,27 @@ def test_graph_local_urls_have_no_bot_token(tmp_path, monkeypatch):
     assert {row["source"] for row in audit} == {"local"}
 
 
+def test_ascii_storage_name_strips_emoji_and_cyrillic():
+    from app.api.endpoints.posts import ascii_storage_name
+
+    slug = ascii_storage_name("🔥iPhone 11 Pro 64Gb Midnight Green 3199 (Б/у, [25081547]")
+    assert "🔥" not in slug
+    assert all(ord(ch) < 128 for ch in slug)
+    assert "iPhone_11_Pro" in slug
+
+
+def test_graph_public_url_percent_encodes_unicode(tmp_path, monkeypatch):
+    post_dir = tmp_path / "2026/08/25" / "🔥iPhone_Б_у"
+    post_dir.mkdir(parents=True)
+    (post_dir / "photo_0.jpg").write_bytes(b"jpg")
+    pub = _publisher_with_media_dir(tmp_path, monkeypatch)
+    url = pub._to_public_url(post_dir / "photo_0.jpg")
+    assert "🔥" not in url
+    assert "Б" not in url
+    assert "%F0%9F%94%A5" in url or "%D0%91" in url
+    assert url.endswith("/photo_0.jpg")
+
+
 def test_create_container_refuses_bot_token_url(tmp_path, monkeypatch):
     pub = _publisher_with_media_dir(tmp_path, monkeypatch)
 

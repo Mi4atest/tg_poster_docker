@@ -421,7 +421,7 @@ def _format_media_summary(photos: list, videos: list) -> str:
     return format_media_summary(photos, videos)
 
 
-@router.message(PostCreation.waiting_for_text, F.photo | F.video | F.media_group_id)
+@router.message(PostCreation.waiting_for_text, F.photo | F.video | F.document | F.media_group_id)
 async def process_text_with_media(
     message: Message,
     state: FSMContext,
@@ -536,7 +536,7 @@ async def _update_photos_status(message: Message, state: FSMContext, status_text
     )
 
 
-@router.message(PostCreation.waiting_for_photos, F.photo | F.video | F.media_group_id)
+@router.message(PostCreation.waiting_for_photos, F.photo | F.video | F.document | F.media_group_id)
 async def process_media_in_photos(
     message: Message,
     state: FSMContext,

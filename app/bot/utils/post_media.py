@@ -52,4 +52,12 @@ def collect_album_media(
                 continue
             videos.append(file_id)
             videos_added += 1
+        elif msg.document and str(getattr(msg.document, "mime_type", "") or "").startswith("video/"):
+            file_id = msg.document.file_id
+            if file_id in videos:
+                continue
+            if len(videos) >= VIDEO_LIMIT:
+                continue
+            videos.append(file_id)
+            videos_added += 1
     return photos_added, videos_added, photo_limit_hit

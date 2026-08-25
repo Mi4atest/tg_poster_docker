@@ -39,6 +39,15 @@ class MaxPublisher:
             product_row = fetch_product_row_by_post_id(db, post_id) or {}
             vk_product_id = product_row.get("vk_product_id")
             storage_path = getattr(post, "storage_path", None)
+            if storage_path and (post.photos or post.videos):
+                from app.services.media_persist_service import persist_post_media
+
+                await asyncio.to_thread(
+                    persist_post_media,
+                    storage_path,
+                    list(post.photos or []),
+                    list(post.videos or []),
+                )
             try:
                 db.rollback()
             except Exception:
@@ -263,6 +272,9 @@ class MaxPublisher:
         vk_product_id,
         storage_path,
     ) -> tuple[bytes, str, str]:
+        local, local_name = self._read_local_media(storage_path, media_type, local_idx)
+        if local:
+            return local, local_name or f"local_{local_idx}", "local"
         try:
             content, filename = await self._download_telegram_media(file_id, media_type)
             return content, filename, "telegram"

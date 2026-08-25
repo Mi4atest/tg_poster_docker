@@ -1,6 +1,5 @@
 import logging
 import os
-import ssl
 import asyncio
 import time
 from logging.handlers import RotatingFileHandler
@@ -11,6 +10,7 @@ from urllib.parse import urlparse
 import aiohttp
 
 from app.config.settings import APP_LOG_DIR, MEDIA_DIR
+from app.services.media_persist_service import download_telegram_file, is_telegram_bot_file_url
 from app.db.database import SessionLocal
 from app.db.post_queries import (
     fetch_post,
@@ -393,12 +393,11 @@ class InstagramGraphPublisher:
         return self._is_uri_reject_error() or self._is_aspect_ratio_error()
 
     async def _collect_media_candidates(self, post: Any) -> List[Tuple[str, List[MediaItem]]]:
-        """Полные наборы по источнику (fallback): Telegram → local → VK wall."""
-        candidates: List[Tuple[str, List[MediaItem]]] = []
+        """Полные наборы по источнику (fallback): local disk → VK wall.
 
-        telegram_items = await self._get_telegram_media_items(post)
-        if telegram_items:
-            candidates.append(("telegram", telegram_items[:IG_CAROUSEL_MAX_ITEMS]))
+        Telegram bot-token URL в Graph API не передаём.
+        """
+        candidates: List[Tuple[str, List[MediaItem]]] = []
 
         local_items = await self._get_local_media_items(post)
         if local_items:
@@ -414,7 +413,7 @@ class InstagramGraphPublisher:
     async def _assemble_merged_media_items(
         self, post: Any
     ) -> Tuple[List[MediaItem], List[dict]]:
-        """Собирает медиагруппу по слотам: Telegram → local → VK wall → VK market."""
+        """Собирает медиагруппу по слотам: local disk → VK wall → VK market."""
         items: List[MediaItem] = []
         slot_audit: List[dict] = []
 
@@ -424,82 +423,57 @@ class InstagramGraphPublisher:
             await self._get_vk_market_photo_urls(vk_product_id) if vk_product_id else []
         )
 
-        bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-        timeout = aiohttp.ClientTimeout(total=self.timeout_seconds)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            for index, file_id in enumerate(post.photos or []):
-                if len(items) >= IG_CAROUSEL_MAX_ITEMS:
-                    break
-                resolved: Optional[MediaItem] = None
-                source = "missing"
-                tg_error = None
+        for index, _file_id in enumerate(post.photos or []):
+            if len(items) >= IG_CAROUSEL_MAX_ITEMS:
+                break
+            resolved: Optional[MediaItem] = None
+            source = "missing"
 
-                if bot_token:
-                    tg_url, tg_error = await self._get_telegram_file_url_detailed(
-                        session, bot_token, file_id
-                    )
-                    if tg_url:
-                        resolved = ("photo", tg_url)
-                        source = "telegram"
+            local_url = await self._resolve_local_photo_url(post, index)
+            if local_url:
+                resolved = ("photo", local_url)
+                source = "local"
 
-                if not resolved:
-                    local_url = await self._resolve_local_photo_url(post, index)
-                    if local_url:
-                        resolved = ("photo", local_url)
-                        source = "local"
+            if not resolved and index < len(vk_wall_urls):
+                resolved = ("photo", vk_wall_urls[index])
+                source = "vk_wall"
 
-                if not resolved and index < len(vk_wall_urls):
-                    resolved = ("photo", vk_wall_urls[index])
-                    source = "vk_wall"
+            if not resolved and index < len(vk_market_urls):
+                resolved = ("photo", vk_market_urls[index])
+                source = "vk_market"
 
-                if not resolved and index < len(vk_market_urls):
-                    resolved = ("photo", vk_market_urls[index])
-                    source = "vk_market"
+            slot_audit.append(
+                {
+                    "slot": index,
+                    "kind": "photo",
+                    "source": source,
+                    "resolved": bool(resolved),
+                }
+            )
+            if resolved:
+                items.append(resolved)
 
-                slot_audit.append(
-                    {
-                        "slot": index,
-                        "kind": "photo",
-                        "source": source,
-                        "tg_error": tg_error,
-                        "resolved": bool(resolved),
-                    }
-                )
-                if resolved:
-                    items.append(resolved)
+        for index, _file_id in enumerate(post.videos or []):
+            if len(items) >= IG_CAROUSEL_MAX_ITEMS:
+                break
+            resolved = None
+            source = "missing"
 
-            for index, file_id in enumerate(post.videos or []):
-                if len(items) >= IG_CAROUSEL_MAX_ITEMS:
-                    break
-                resolved = None
-                source = "missing"
-                tg_error = None
+            local_url = await self._resolve_local_video_url(post, index)
+            if local_url:
+                resolved = ("video", local_url)
+                source = "local"
 
-                if bot_token:
-                    tg_url, tg_error = await self._get_telegram_file_url_detailed(
-                        session, bot_token, file_id
-                    )
-                    if tg_url:
-                        resolved = ("video", tg_url)
-                        source = "telegram"
-
-                if not resolved:
-                    local_url = await self._resolve_local_video_url(post, index)
-                    if local_url:
-                        resolved = ("video", local_url)
-                        source = "local"
-
-                slot_audit.append(
-                    {
-                        "slot": index,
-                        "kind": "video",
-                        "source": source,
-                        "tg_error": tg_error,
-                        "resolved": bool(resolved),
-                    }
-                )
-                if resolved:
-                    items.append(resolved)
+            slot_audit.append(
+                {
+                    "slot": index,
+                    "kind": "video",
+                    "source": source,
+                    "resolved": bool(resolved),
+                }
+            )
+            if resolved:
+                items.append(resolved)
 
         logger.info(
             "IG merged assembly post_id=%s photos=%s/%s videos=%s/%s total=%s audit=%s",
@@ -641,70 +615,43 @@ class InstagramGraphPublisher:
                 return candidate
         return post_dir / f"video_{index}.mp4"
 
-    async def _get_telegram_media_items(self, post: Any) -> List[MediaItem]:
-        bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-        if not bot_token:
-            return []
-
-        photos = post.photos or []
-        videos = post.videos or []
-        if not photos and not videos:
-            return []
-
-        items: List[MediaItem] = []
-        timeout = aiohttp.ClientTimeout(total=self.timeout_seconds)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            for file_id in photos:
-                if len(items) >= IG_CAROUSEL_MAX_ITEMS:
-                    break
-                file_url = await self._get_telegram_file_url(session, bot_token, file_id)
-                if file_url:
-                    items.append(("photo", file_url))
-
-            for file_id in videos:
-                if len(items) >= IG_CAROUSEL_MAX_ITEMS:
-                    break
-                file_url = await self._get_telegram_file_url(session, bot_token, file_id)
-                if file_url:
-                    items.append(("video", file_url))
-        return items
-
-    async def _get_telegram_file_url(
-        self,
-        session: aiohttp.ClientSession,
-        bot_token: str,
-        file_id: str,
-    ) -> Optional[str]:
-        url, _error = await self._get_telegram_file_url_detailed(session, bot_token, file_id)
-        return url
-
-    async def _get_telegram_file_url_detailed(
-        self,
-        session: aiohttp.ClientSession,
-        bot_token: str,
-        file_id: str,
-    ) -> Tuple[Optional[str], Optional[str]]:
-        file_info_url = f"https://api.telegram.org/bot{bot_token}/getFile?file_id={file_id}"
-        try:
-            async with session.get(file_info_url) as response:
-                if response.status != 200:
-                    return None, f"http_{response.status}"
-                payload = await response.json(content_type=None)
-        except Exception as exc:
-            return None, str(exc)
-        if not payload.get("ok"):
-            return None, payload.get("description") or "telegram_getFile_failed"
-        file_path = payload.get("result", {}).get("file_path")
-        if file_path:
-            return f"https://api.telegram.org/file/bot{bot_token}/{file_path}", None
-        return None, "missing_file_path"
-
     def _to_public_url(self, file_path: Path) -> str:
         relative = file_path.relative_to(MEDIA_DIR).as_posix()
         return f"{self.media_base_url}/{relative}"
 
+    def _reject_bot_token_media(self, params: dict) -> bool:
+        """True если params содержат telegram bot-token URL — в Graph не отправляем."""
+        for key in ("image_url", "video_url"):
+            url = str(params.get(key) or "")
+            if is_telegram_bot_file_url(url):
+                self._last_graph_error = (
+                    "Отказ: URL с токеном Telegram-бота нельзя передавать в Graph API"
+                )
+                logger.error(
+                    "IG refuse bot-token URL key=%s url=%s",
+                    key,
+                    _redact_url(url),
+                )
+                return True
+        return False
+
+    def _safe_media_items(self, media_items: List[MediaItem]) -> List[MediaItem]:
+        safe: List[MediaItem] = []
+        dropped = 0
+        for item in media_items:
+            if is_telegram_bot_file_url(item[1]):
+                dropped += 1
+                logger.error("IG drop bot-token media url=%s", _redact_url(item[1]))
+                continue
+            safe.append(item)
+        if dropped and not safe:
+            self._last_graph_error = (
+                "Нет безопасных медиа URL для Graph API (отфильтрованы telegram bot-token URL)"
+            )
+        return safe
+
     async def _create_media_container(self, media_items: List[MediaItem], caption: str) -> Optional[str]:
-        media_items = media_items[:IG_CAROUSEL_MAX_ITEMS]
+        media_items = self._safe_media_items(media_items[:IG_CAROUSEL_MAX_ITEMS])
         if not media_items:
             return None
 
@@ -913,6 +860,8 @@ class InstagramGraphPublisher:
         return best
 
     async def _create_container(self, params: dict) -> Optional[str]:
+        if self._reject_bot_token_media(params):
+            return None
         endpoint = f"{self.base_url}/{self.ig_user_id}/media"
         payload = {**params, "access_token": self.access_token}
         timeout = aiohttp.ClientTimeout(total=self.timeout_seconds)
@@ -1023,34 +972,4 @@ class InstagramGraphPublisher:
             return None
 
     async def _download_telegram_file(self, file_id: str, save_path: Path) -> bool:
-        bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
-        if not bot_token:
-            logger.error("Отсутствует TELEGRAM_BOT_TOKEN для скачивания медиа")
-            return False
-
-        ssl_context = ssl.create_default_context()
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
-        connector = aiohttp.TCPConnector(ssl=ssl_context)
-
-        file_info_url = f"https://api.telegram.org/bot{bot_token}/getFile?file_id={file_id}"
-        async with aiohttp.ClientSession(connector=connector) as session:
-            async with session.get(file_info_url) as response:
-                if response.status != 200:
-                    logger.error(f"Ошибка Telegram getFile: {response.status}")
-                    return False
-                payload = await response.json()
-                file_path = payload.get("result", {}).get("file_path")
-                if not payload.get("ok") or not file_path:
-                    logger.error(f"Ошибка Telegram API getFile: {payload}")
-                    return False
-
-            download_url = f"https://api.telegram.org/file/bot{bot_token}/{file_path}"
-            async with session.get(download_url) as media_response:
-                if media_response.status != 200:
-                    logger.error(f"Ошибка скачивания файла Telegram: {media_response.status}")
-                    return False
-
-                save_path.parent.mkdir(parents=True, exist_ok=True)
-                save_path.write_bytes(await media_response.read())
-                return True
+        return await asyncio.to_thread(download_telegram_file, file_id, Path(save_path))

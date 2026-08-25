@@ -36,8 +36,8 @@ async def main() -> None:
         candidates = await pub._collect_media_candidates(post)
         summary = {name: len(urls) for name, urls in candidates}
         log_app(f"candidates={summary}")
-        assert "vk" in summary and summary["vk"] == 6, summary
-        assert "telegram" in summary and summary["telegram"] == 6, summary
+        assert "telegram" not in summary, summary
+        assert "local" in summary or "vk" in summary, summary
 
         call_log: list[dict] = []
 
@@ -88,7 +88,7 @@ async def main() -> None:
             break
 
         assert creation_id == "carousel-dry-1", creation_id
-        assert used_source == "telegram", used_source
+        assert used_source in {"local", "vk"}, used_source
         assert pub._last_children_count == 6, pub._last_children_count
         carousel_calls = [c for c in call_log if c.get("media_type") == "CAROUSEL"]
         assert len(carousel_calls) == 1 and carousel_calls[0]["children_n"] == 6, carousel_calls

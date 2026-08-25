@@ -71,8 +71,9 @@ server {
         proxy_set_header X-Forwarded-Proto https;
     }
 
-    # JPEG превью сторис для Instagram Graph API (Meta скачивает image_url)
-    location /media/story_previews/ {
+    # JPEG/MP4 постов и превью сторис для Instagram Graph API (без токена бота).
+    # Не открываем весь /media/ (avito_feed, служебные файлы).
+    location ~ ^/media/(20[0-9][0-9]|story_previews)/ {
         proxy_pass http://127.0.0.1:8080;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;

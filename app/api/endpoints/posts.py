@@ -5,7 +5,6 @@ from typing import List, Optional
 from datetime import datetime, timezone
 import logging
 import os
-import json
 
 from pydantic import BaseModel
 
@@ -14,6 +13,7 @@ from app.api.models.post import Post, PublicationLog
 from app.api.schemas.post import PostCreate, Post as PostSchema, PostSearchList
 from app.config.settings import MEDIA_DIR, MEDIA_STRUCTURE
 from app.integrations.avito.errors import AvitoAutoCreateUnavailableError
+from app.services.media_persist_service import persist_post_media, write_post_sidecar
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -132,17 +132,20 @@ def create_post(post_data: PostCreate, db: Session = Depends(get_db)):
     updated_at = db_post.updated_at
     db.commit()
 
-    # Save post text to file
-    post_dir = MEDIA_DIR / storage_path
-    with open(post_dir / "text.txt", "w", encoding="utf-8") as f:
-        f.write(post_data.text)
-
-    # Save media references to file
-    with open(post_dir / "media.json", "w", encoding="utf-8") as f:
-        json.dump({
-            "photos": photos,
-            "videos": videos
-        }, f, ensure_ascii=False, indent=2)
+    persist_result = persist_post_media(storage_path, photos, videos)
+    write_post_sidecar(
+        storage_path,
+        post_data.text,
+        photos=photos,
+        videos=videos,
+        persist_result=persist_result,
+    )
+    if persist_result.get("errors"):
+        logger.warning(
+            "Post %s created but media persist incomplete: %s",
+            post_id,
+            persist_result["errors"],
+        )
 
     result = PostSchema.model_validate(
         {
@@ -375,45 +378,27 @@ async def update_post(post_id: str, data: dict, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(post)
 
-    # Проверяем, есть ли у поста путь хранения
-    if post.storage_path:
-        # Проверяем существование директории и создаем её при необходимости
-        post_dir = MEDIA_DIR / post.storage_path
-        os.makedirs(post_dir, exist_ok=True)
-        
-        # Обновляем текстовый файл
-        with open(post_dir / "text.txt", "w", encoding="utf-8") as f:
-            f.write(post.text)
-        
-        # Обновляем файл с медиа
-        with open(post_dir / "media.json", "w", encoding="utf-8") as f:
-            json.dump({
-                "photos": post.photos,
-                "videos": post.videos
-            }, f, ensure_ascii=False, indent=2)
-    else:
-        # Если у поста нет пути хранения, создаем новый
+    if not post.storage_path:
         year = datetime.now().strftime("%Y")
         month = datetime.now().strftime("%m")
         day = datetime.now().strftime("%d")
-        
-        # Создаем директорию для хранения файлов поста
-        post_dir = MEDIA_DIR / year / month / day / post.name
-        os.makedirs(post_dir, exist_ok=True)
-        
-        # Обновляем путь хранения в базе данных
         post.storage_path = f"{year}/{month}/{day}/{post.name}"
         db.commit()
-        
-        # Сохраняем текст и медиа
-        with open(post_dir / "text.txt", "w", encoding="utf-8") as f:
-            f.write(post.text)
-        
-        with open(post_dir / "media.json", "w", encoding="utf-8") as f:
-            json.dump({
-                "photos": post.photos,
-                "videos": post.videos
-            }, f, ensure_ascii=False, indent=2)
+
+    persist_result = persist_post_media(post.storage_path, post.photos or [], post.videos or [])
+    write_post_sidecar(
+        post.storage_path,
+        post.text,
+        photos=post.photos or [],
+        videos=post.videos or [],
+        persist_result=persist_result,
+    )
+    if persist_result.get("errors"):
+        logger.warning(
+            "Post %s updated but media persist incomplete: %s",
+            post_id,
+            persist_result["errors"],
+        )
 
     return _post_id_to_schema(db, post_id)
 

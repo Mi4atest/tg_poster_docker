@@ -9,14 +9,23 @@ from app.bot.keyboards.post_avito_keyboard import (
 from app.integrations.avito.condition_maps import clamp_avito_level
 
 
-def get_main_keyboard(queue_count: int = 0, drafts_count: int = 0) -> InlineKeyboardMarkup:
+def get_main_keyboard(
+    queue_count: int = 0,
+    drafts_count: int = 0,
+    notes_count: int = 0,
+) -> InlineKeyboardMarkup:
     """Create the main keyboard for the bot.
     
     Args:
         queue_count: Количество постов в очереди (для динамического отображения)
         drafts_count: Количество черновиков; кнопка показывается только при count > 0
+        notes_count: Активные напоминалки; ✅ только если есть хотя бы одна
     """
+    note_row = [ikb("📌", "note_add")]
+    if notes_count > 0:
+        note_row.append(ikb("✅", "note_done"))
     buttons = [
+        note_row,
         [ikb("🆕 Создать пост", "create_post")],
     ]
     if drafts_count > 0:

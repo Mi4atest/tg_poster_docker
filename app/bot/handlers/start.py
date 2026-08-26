@@ -2,29 +2,21 @@ from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-import random
 
 from app.bot.keyboards.main_keyboard import get_create_post_entry_keyboard
 from app.bot.keyboards.post_avito_keyboard import format_post_creation_text_prompt
 from app.bot.handlers.post_creation import PostCreation
-from app.bot.utils.spoiler_phrases import SPOILER_PHRASES
 from app.bot.utils.platform_status import get_platform_status_hint_text
-from app.bot.utils.main_menu import build_main_keyboard
+from app.bot.utils.main_menu import show_home
 from app.services.settings_service import get_settings_service
 
 router = Router()
 
 @router.message(Command("start"))
-async def cmd_start(message: Message):
+async def cmd_start(message: Message, state: FSMContext):
     """Handle the /start command."""
-    spoiler_phrase = random.choice(SPOILER_PHRASES)
-
-    await message.answer(
-        "Приветы! Нажимай \"Создать пост\"\n\n"
-        f"<tg-spoiler>{spoiler_phrase}</tg-spoiler>",
-        parse_mode="HTML",
-        reply_markup=await build_main_keyboard(message.bot),
-    )
+    await state.clear()
+    await show_home(message, message.bot, edit=False)
 
 @router.callback_query(F.data == "create_post")
 async def create_post_callback(callback: CallbackQuery, state: FSMContext):
@@ -149,11 +141,5 @@ async def back_to_main_callback(callback: CallbackQuery, state: FSMContext):
         if isinstance(ud, dict):
             ud["in_archive"] = False
             ud.pop("archive_state", None)
-    spoiler_phrase = random.choice(SPOILER_PHRASES)
-    await callback.message.edit_text(
-        "Приветы! Нажимай \"Создать пост\"\n\n"
-        f"<tg-spoiler>{spoiler_phrase}</tg-spoiler>",
-        parse_mode="HTML",
-        reply_markup=await build_main_keyboard(callback.bot),
-    )
+    await show_home(callback.message, callback.bot, edit=True)
     await callback.answer()

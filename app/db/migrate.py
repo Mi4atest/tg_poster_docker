@@ -492,6 +492,41 @@ def ensure_evening_reports_index() -> bool:
         return False
 
 
+def ensure_shop_notes_table() -> bool:
+    """Напоминалки главного экрана."""
+    try:
+        inspector = inspect(engine)
+        if "shop_notes" in inspector.get_table_names():
+            return False
+        with engine.connect() as conn:
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE shop_notes (
+                        id SERIAL PRIMARY KEY,
+                        body TEXT NOT NULL,
+                        category VARCHAR(32),
+                        is_done BOOLEAN NOT NULL DEFAULT FALSE,
+                        created_at TIMESTAMP,
+                        done_at TIMESTAMP
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_shop_notes_is_done "
+                    "ON shop_notes (is_done)"
+                )
+            )
+            conn.commit()
+        logger.info("Таблица shop_notes создана")
+        return True
+    except Exception as e:
+        logger.error("Ошибка создания shop_notes: %s", e)
+        return False
+
+
 def ensure_database_schema():
     """Обеспечивает актуальность схемы базы данных."""
     logger.info("Проверка схемы базы данных...")
@@ -511,6 +546,7 @@ def ensure_database_schema():
     ensure_product_price_history_schema()
     ensure_evening_reports_table()
     ensure_evening_reports_index()
+    ensure_shop_notes_table()
 
     init_alembic_version_table()
 

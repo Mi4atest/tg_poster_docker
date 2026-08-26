@@ -17,6 +17,7 @@ from app.bot.handlers import (
     price_tags,
     settings,
     menu_constructor,
+    shop_notes,
 )
 from app.bot.middlewares.auth import AuthMiddleware
 from app.bot.middlewares.album import AlbumMiddleware
@@ -48,6 +49,7 @@ dp.message.middleware(AlbumMiddleware())
 # Важно: product_management должен быть зарегистрирован ПЕРЕД post_management,
 # чтобы обработчики товаров (с состояниями FSM) обрабатывались раньше общих обработчиков постов
 dp.include_router(start.router)
+dp.include_router(shop_notes.router)
 dp.include_router(post_creation.router)
 dp.include_router(product_management.router)  # Перемещено выше для приоритета
 dp.include_router(evening_report.router)

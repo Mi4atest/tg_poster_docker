@@ -15,3 +15,4 @@ from app.api.models.new_menu_button import NewMenuButton  # noqa: F401
 from app.api.models.story import Story, StoryPublicationLog  # noqa: F401
 from app.api.models.avito_feed_operation import AvitoFeedOperation  # noqa: F401
 from app.api.models.evening_report import EveningReportRecord  # noqa: F401
+from app.api.models.shop_note import ShopNote  # noqa: F401

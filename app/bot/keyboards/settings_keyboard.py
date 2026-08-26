@@ -393,9 +393,6 @@ def get_integration_platform_keyboard(platform: str) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="App Secret (Meta)", callback_data="settings_edit_integration_instagram_graph_app_secret")],
             [InlineKeyboardButton(text="ID Instagram-аккаунта (Graph User ID)", callback_data="settings_edit_integration_instagram_graph_user_id")],
             [InlineKeyboardButton(text="Обменять в long-lived сейчас", callback_data="settings_instagram_exchange_long_lived")],
-            [InlineKeyboardButton(text="Логин Instagram (legacy)", callback_data="settings_edit_integration_instagram_username")],
-            [InlineKeyboardButton(text="Пароль Instagram (legacy)", callback_data="settings_edit_integration_instagram_password")],
-            [InlineKeyboardButton(text="Переключить IG режим (Graph/Legacy)", callback_data="settings_toggle_instagram_mode")],
         ]
     else:
         buttons = [
@@ -404,9 +401,6 @@ def get_integration_platform_keyboard(platform: str) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="App Secret (Meta)", callback_data="settings_edit_integration_instagram_graph_app_secret")],
             [InlineKeyboardButton(text="ID Instagram-аккаунта (Graph User ID)", callback_data="settings_edit_integration_instagram_graph_user_id")],
             [InlineKeyboardButton(text="Обменять в long-lived сейчас", callback_data="settings_instagram_exchange_long_lived")],
-            [InlineKeyboardButton(text="Логин Instagram (legacy)", callback_data="settings_edit_integration_instagram_username")],
-            [InlineKeyboardButton(text="Пароль Instagram (legacy)", callback_data="settings_edit_integration_instagram_password")],
-            [InlineKeyboardButton(text="Переключить IG режим (Graph/Legacy)", callback_data="settings_toggle_instagram_mode")],
         ]
 
     buttons.append([InlineKeyboardButton(text="⬅️ Назад к соцсетям", callback_data="settings_integrations")])

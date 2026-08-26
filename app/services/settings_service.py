@@ -142,7 +142,6 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     },
     "integrations": {
         "vk_group_id": str(getattr(env_settings, "VK_GROUP_ID", "") or ""),
-        "instagram_mode": "graph",
         "instagram_graph_access_token": "",
         "instagram_graph_app_id": getattr(env_settings, "INSTAGRAM_GRAPH_APP_ID", "") or "",
         "instagram_graph_app_secret": getattr(env_settings, "INSTAGRAM_GRAPH_APP_SECRET", "") or "",
@@ -174,7 +173,6 @@ ENV_SECRET_DEFAULTS: Dict[str, str] = {
     "max_bot_token": env_settings.MAX_BOT_TOKEN or "",
     "instagram_graph_access_token": getattr(env_settings, "INSTAGRAM_GRAPH_ACCESS_TOKEN", "") or "",
     "instagram_graph_app_secret": getattr(env_settings, "INSTAGRAM_GRAPH_APP_SECRET", "") or "",
-    "instagram_password": getattr(env_settings, "INSTAGRAM_PASSWORD", "") or "",
     "backup_bot_token": getattr(env_settings, "BACKUP_BOT_TOKEN", "") or "",
 }
 

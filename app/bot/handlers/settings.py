@@ -49,7 +49,6 @@ SECRET_INTEGRATION_FIELDS = {
     "max_bot_token",
     "instagram_graph_access_token",
     "instagram_graph_app_secret",
-    "instagram_password",
     "avito_client_secret",
 }
 
@@ -310,14 +309,11 @@ def _build_integration_platform_text(platform: str) -> str:
     return (
         "🔐 Instagram интеграция\n\n"
         f"{status_line}\n\n"
-        f"Режим: {integrations.get('instagram_mode', 'graph')}\n"
         f"Graph token: {'задан' if token_present else 'не задан'}\n"
         f"Graph token TTL: {_token_ttl_text()}\n"
         f"Graph app_id: {'задан' if app_id else 'не задан'}\n"
         f"Graph app_secret: {'задан' if app_secret else 'не задан'}\n"
         f"Graph user_id (куда постим): {integrations.get('instagram_graph_user_id') or getattr(env_settings, 'INSTAGRAM_GRAPH_USER_ID', None) or 'не задан'}\n"
-        f"Legacy username: {integrations.get('instagram_username') or 'не задан'}\n"
-        f"Legacy password: {'задан' if service.get_secret('instagram_password') else 'не задан'}\n"
         f"Последняя ошибка refresh/check: {token_last_error or 'нет'}"
     )
 
@@ -623,15 +619,6 @@ async def request_integration_value(callback: CallbackQuery, state: FSMContext):
         disable_web_page_preview=True,
     )
     await callback.answer()
-
-
-@router.callback_query(F.data == "settings_toggle_instagram_mode")
-async def toggle_instagram_mode(callback: CallbackQuery):
-    service = get_settings_service()
-    current = service.get_all()["integrations"].get("instagram_mode", "graph")
-    new_mode = "legacy" if current == "graph" else "graph"
-    service.update({"integrations": {"instagram_mode": new_mode}})
-    await open_integrations(callback)
 
 
 @router.callback_query(F.data == "settings_instagram_exchange_long_lived")

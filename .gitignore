@@ -14,7 +14,6 @@ venv/
 backups/
 media/
 *.session
-instagram_session.json
 vk_products_export.json
 
 # Логи и отладка

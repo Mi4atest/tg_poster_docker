@@ -291,10 +291,8 @@ def get_product_status_confirmation_keyboard(
             f"{int(report_enabled)}_{int(mark_telegram_enabled)}"
         )
 
-    buttons.append([
-        ikb(confirm_label, confirm_cb, style=confirm_style),
-        ikb("❌ Отмена", f"product_{product_id}"),
-    ])
+    buttons.append([ikb(confirm_label, confirm_cb, style=confirm_style)])
+    buttons.append([ikb("❌ Отмена", f"product_{product_id}")])
 
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 

@@ -151,6 +151,7 @@ async def _show_unavailable_confirm(
             mark_telegram_enabled=mark_telegram_enabled,
             archive_kind=kind,
         ),
+        parse_mode="HTML",
     )
     if answer_text:
         await callback.answer(answer_text)

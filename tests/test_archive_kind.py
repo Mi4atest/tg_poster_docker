@@ -35,14 +35,23 @@ def test_normalize_archive_kind():
 
 def test_unavailable_confirm_text_sale_and_transfer():
     sale = format_unavailable_confirm_text("iPhone 13 Pro 128Gb", ARCHIVE_KIND_SALE)
-    assert sale.startswith("💰 Продажа")
+    assert "🚨" in sale
+    assert "ПОСМОТРИТЕ ВНИЗ" in sale
+    assert "💰 <b>Продажа</b>" in sale
     assert "сводку месяца" in sale
-    assert "нажмите «Продажа» ниже" in sale
+    assert "переключите" in sale
 
     transfer = format_unavailable_confirm_text("iPhone 13 Pro 128Gb", ARCHIVE_KIND_TRANSFER)
-    assert transfer.startswith("📦 Перемещение")
+    assert "🚨" in transfer
+    assert "📦 <b>Перемещение</b>" in transfer
     assert "не попадёт" in transfer
     assert "Отчет" not in transfer
+
+
+def test_unavailable_confirm_escapes_html_in_name():
+    text = format_unavailable_confirm_text("A <B> & C", ARCHIVE_KIND_SALE)
+    assert "A &lt;B&gt; &amp; C" in text
+    assert "A <B>" not in text
 
 
 def test_toggle_answer():
@@ -59,6 +68,12 @@ def test_sale_keyboard_default():
     assert "✅ В архив как продажу" in labels
     assert "product_toggle_archive_kind_42" in _callbacks(kb)
     assert "product_confirm_unavailable_42_0_1_0" in _callbacks(kb)
+    rows = kb.inline_keyboard
+    confirm_row = next(r for r in rows if r and "В архив как продажу" in r[0].text)
+    cancel_row = next(r for r in rows if r and r[0].text == "❌ Отмена")
+    assert confirm_row is not cancel_row
+    assert len(confirm_row) == 1
+    assert len(cancel_row) == 1
 
 
 def test_transfer_keyboard_hides_report():
@@ -70,6 +85,11 @@ def test_transfer_keyboard_hides_report():
     assert "✅ В архив как перемещение" in labels
     assert all("Отчет Иван/Саша" not in t for t in labels)
     assert "product_confirm_unavailable_42_0_1_1" in _callbacks(kb)
+    rows = kb.inline_keyboard
+    confirm_row = next(r for r in rows if r and "В архив как перемещение" in r[0].text)
+    cancel_row = next(r for r in rows if r and r[0].text == "❌ Отмена")
+    assert confirm_row is not cancel_row
+    assert len(confirm_row) == 1
 
 
 def test_transfer_forces_report_flag_off_in_confirm():

@@ -51,6 +51,10 @@ class PlatformWorker:
         self.last_published_at: Optional[datetime] = None
         self.current_task: Optional[asyncio.Task] = None
 
+    def _is_effectively_paused(self) -> bool:
+        global_paused = bool(self.orchestrator and self.orchestrator.global_pause)
+        return self.is_paused or global_paused
+
     def _platform_interval_seconds(self) -> int:
         try:
             return get_settings_service().get_platform_interval_minutes(self.platform) * 60
@@ -129,19 +133,25 @@ class PlatformWorker:
             self._handle_publish_failure(queue_item_id, post_id, error_msg)
             return False
 
-    async def wait_for_interval(self):
-        """Ожидание интервала между публикациями."""
+    async def wait_for_interval(self) -> bool:
+        """Ожидание интервала между публикациями.
+
+        Returns:
+            True если интервал истёк и можно публиковать, False если пауза прервала ожидание.
+        """
         if self.last_published_at is None:
-            # Первая публикация, не ждем
-            return
+            return not self._is_effectively_paused()
 
         interval = self._platform_interval_seconds()
-        elapsed = (datetime.now(timezone.utc) - self.last_published_at).total_seconds()
-        
-        if elapsed < interval:
-            wait_time = interval - elapsed
-            logger.info(f"Waiting {wait_time:.1f} seconds before next publication to {self.platform}")
-            await asyncio.sleep(wait_time)
+        while True:
+            if self._is_effectively_paused():
+                logger.info("Interval wait for %s aborted by pause", self.platform)
+                return False
+            elapsed = (datetime.now(timezone.utc) - self.last_published_at).total_seconds()
+            remaining = interval - elapsed
+            if remaining <= 0:
+                return not self._is_effectively_paused()
+            await asyncio.sleep(min(1.0, remaining))
 
     async def _run_avito_batch_cycle(self) -> None:
         """Авито: накопление в очереди; выгрузка — через AvitoFeedDispatcher (worker archive)."""
@@ -163,15 +173,14 @@ class PlatformWorker:
 
         while self.is_running:
             try:
-                global_paused = self.orchestrator.global_pause if self.orchestrator else False
+                if self._is_effectively_paused():
+                    await asyncio.sleep(1)
+                    continue
+
                 try:
                     disabled_in_settings = not get_settings_service().is_platform_enabled(self.platform)
                 except Exception:
                     disabled_in_settings = False
-
-                if self.is_paused or global_paused:
-                    await asyncio.sleep(1)
-                    continue
 
                 if self.platform == "avito":
                     if disabled_in_settings and not self.queue_manager.get_pending_items("avito"):
@@ -189,7 +198,9 @@ class PlatformWorker:
                     queue_item = self.queue_manager.get_next_post(self.platform)
 
                 if queue_item:
-                    await self.wait_for_interval()
+                    waited = await self.wait_for_interval()
+                    if not waited or self._is_effectively_paused():
+                        continue
                     if not self.queue_manager.mark_as_publishing(queue_item.id):
                         continue
                     await self.publish_post(queue_item.id, queue_item.post_id)

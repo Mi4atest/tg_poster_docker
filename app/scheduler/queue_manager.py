@@ -363,7 +363,10 @@ class QueueManager:
         with self._isolated_session() as db:
             try:
                 row = db.execute(
-                    text("UPDATE publication_queue SET status = 'publishing' WHERE id = :id RETURNING id"),
+                    text(
+                        "UPDATE publication_queue SET status = 'publishing' "
+                        "WHERE id = :id AND status = 'pending' RETURNING id"
+                    ),
                     {"id": queue_item_id},
                 ).first()
                 if not row:
@@ -620,6 +623,34 @@ class QueueManager:
             self.db.rollback()
             return False
 
+    def resume_paused_for_post_platform(self, post_id: str, platform: str) -> int:
+        """Снять pause у задач post+platform. Возвращает число обновлённых строк."""
+        try:
+            rows = (
+                self.db.query(PublicationQueue)
+                .filter(
+                    and_(
+                        PublicationQueue.post_id == post_id,
+                        PublicationQueue.platform == platform,
+                        PublicationQueue.status == "paused",
+                    )
+                )
+                .all()
+            )
+            n = 0
+            for row in rows:
+                row.status = "pending"
+                n += 1
+            if n:
+                self.db.commit()
+            else:
+                self.db.rollback()
+            return n
+        except Exception as e:
+            logger.error("Error resuming paused queue items for %s/%s: %s", post_id, platform, e)
+            self.db.rollback()
+            return 0
+
     def remove_from_queue(self, queue_item_id: int) -> bool:
         """Удалить запись из очереди (возврат в отложенные).
         
@@ -641,12 +672,17 @@ class QueueManager:
             self.db.delete(queue_item)
             
             # Проверяем, остались ли еще записи для этого поста
-            remaining = self.db.query(PublicationQueue).filter(
-                PublicationQueue.post_id == post_id
-            ).count()
-            
+            remaining = (
+                self.db.query(PublicationQueue)
+                .filter(
+                    PublicationQueue.post_id == post_id,
+                    PublicationQueue.status.in_(["pending", "publishing", "paused"]),
+                )
+                .count()
+            )
+
             if remaining == 0:
-                # Больше нет записей в очереди, обновляем статус поста
+                # Больше нет активных записей в очереди, обновляем статус поста
                 post = self.db.query(Post).filter(Post.id == post_id).first()
                 if post:
                     post.in_queue = False
@@ -682,7 +718,10 @@ class QueueManager:
             self.db.flush()
             remaining = (
                 self.db.query(PublicationQueue)
-                .filter(PublicationQueue.post_id == post_id)
+                .filter(
+                    PublicationQueue.post_id == post_id,
+                    PublicationQueue.status.in_(["pending", "publishing", "paused"]),
+                )
                 .count()
             )
             if remaining == 0:

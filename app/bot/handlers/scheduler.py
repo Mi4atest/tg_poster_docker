@@ -4,14 +4,15 @@ from typing import Optional
 import html
 
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import CallbackQuery
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 
 from app.bot.keyboards.scheduler_keyboard import (
     get_queue_menu_keyboard,
     get_platform_queue_keyboard,
-    get_post_queue_actions_keyboard
+    get_post_queue_actions_keyboard,
+    get_avito_platform_keyboard,
 )
 from app.bot.keyboards.main_keyboard import get_create_post_entry_keyboard
 from app.bot.keyboards.post_avito_keyboard import format_post_creation_text_prompt
@@ -21,13 +22,12 @@ from app.bot.handlers.queue_avito_ui import (
     build_avito_platform_text,
     build_queue_menu_text,
 )
-from app.bot.keyboards.scheduler_keyboard import get_avito_platform_keyboard
 from app.integrations.avito.archive_queue import (
     list_pending as list_archive_pending,
     reconcile_pending_with_avito,
 )
 from app.integrations.avito.avito_feed_dispatcher import get_queue_summary
-from app.scheduler.queue_ui import queue_item_display_name
+from app.scheduler.queue_ui import PLATFORM_TITLES, format_queue_pause_status, queue_item_display_name
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +49,10 @@ def _parse_queue_publish_now_callback(data: str) -> tuple[Optional[str], str]:
     return None, rest
 
 
+def _strip_prefix(data: str, prefix: str) -> str:
+    return data[len(prefix) :] if data.startswith(prefix) else ""
+
+
 async def safe_edit_message(message, text, reply_markup=None, parse_mode=None):
     """Безопасно редактирует сообщение или отправляет новое."""
     edit_kw = {"reply_markup": reply_markup}
@@ -60,13 +64,24 @@ async def safe_edit_message(message, text, reply_markup=None, parse_mode=None):
         await message.edit_text(text, **edit_kw)
         return message
     except TelegramBadRequest as e:
-        if "message can't be edited" in str(e):
+        err = str(e).lower()
+        if "message is not modified" in err or "message not modified" in err:
+            return message
+        if "message can't be edited" in err:
             return await message.reply(text, **reply_kw)
-        else:
-            raise e
+        raise e
     except Exception as e:
         logger.error(f"Error editing message: {str(e)}")
         return await message.reply(text, **reply_kw)
+
+
+async def _answer_quietly(callback: CallbackQuery, text: str = "", *, show_alert: bool = False) -> None:
+    try:
+        await callback.answer(text, show_alert=show_alert)
+    except TelegramBadRequest:
+        pass
+    except Exception as e:
+        logger.debug("callback.answer failed: %s", e)
 
 
 def get_orchestrator(bot):
@@ -75,7 +90,6 @@ def get_orchestrator(bot):
         from app.scheduler.orchestrator import PublicationOrchestrator
         bot.orchestrator = PublicationOrchestrator(signature_enabled=getattr(bot, 'signature_enabled', True))
         bot.orchestrator.start()
-        # Запускаем workers, если event loop уже работает
         try:
             import asyncio
             loop = asyncio.get_event_loop()
@@ -86,79 +100,131 @@ def get_orchestrator(bot):
     return bot.orchestrator
 
 
+async def _render_queue_menu(callback: CallbackQuery) -> None:
+    orchestrator = get_orchestrator(callback.bot)
+    await reconcile_pending_with_avito()
+    stats = orchestrator.get_queue_stats()
+    pauses = orchestrator.get_platform_pauses()
+    text = build_queue_menu_text(
+        stats,
+        orchestrator.queue_manager,
+        global_pause=orchestrator.global_pause,
+        platform_pauses=pauses,
+    )
+    keyboard = get_queue_menu_keyboard(stats, global_pause=orchestrator.global_pause)
+    await safe_edit_message(
+        callback.message, text, reply_markup=keyboard, parse_mode="HTML"
+    )
+
+
+async def _render_platform_queue(callback: CallbackQuery, platform: str) -> None:
+    orchestrator = get_orchestrator(callback.bot)
+
+    if platform == "avito":
+        await reconcile_pending_with_avito()
+        summary = get_queue_summary(orchestrator.queue_manager)
+        publish_items = orchestrator.get_queue_for_platform("avito")
+        archive_items = list_archive_pending()
+        platform_paused = orchestrator.is_platform_paused("avito")
+        text = build_avito_platform_text(
+            summary,
+            publish_items,
+            archive_items,
+            global_pause=orchestrator.global_pause,
+            platform_paused=platform_paused,
+        )
+        keyboard = get_avito_platform_keyboard(
+            can_upload=summary.can_upload_now,
+            has_work=bool(publish_items or archive_items),
+            platform_paused=platform_paused,
+            global_pause=orchestrator.global_pause,
+        )
+        await safe_edit_message(callback.message, text, reply_markup=keyboard, parse_mode="HTML")
+        return
+
+    queue_items = orchestrator.get_queue_for_platform(platform)
+    platform_name = PLATFORM_TITLES.get(platform, platform)
+    platform_paused = orchestrator.is_platform_paused(platform)
+    pauses = orchestrator.get_platform_pauses()
+
+    text = f"📋 Очередь публикаций: {platform_name}\n\n"
+    text += format_queue_pause_status(
+        global_pause=orchestrator.global_pause,
+        platform_pauses=pauses,
+        platform=platform,
+    )
+    text += "\n\n"
+
+    if not queue_items:
+        text += "Очередь пуста."
+    else:
+        text += f"Всего постов: {len(queue_items)}\n\n"
+        for i, item in enumerate(queue_items[:10], 1):
+            post_name = queue_item_display_name(item)
+            status_icon = "⏸" if item.status == "paused" else "⏳" if item.status == "pending" else "🔄"
+            text += f"{i}. {status_icon} {post_name}\n"
+
+        if len(queue_items) > 10:
+            text += f"\n... и еще {len(queue_items) - 10} постов"
+
+    keyboard = get_platform_queue_keyboard(
+        platform, queue_items, platform_paused=platform_paused
+    )
+    await safe_edit_message(callback.message, text, reply_markup=keyboard)
+
+
+async def _render_post_actions(callback: CallbackQuery, queue_item_id: int) -> None:
+    orchestrator = get_orchestrator(callback.bot)
+    queue_item = orchestrator.queue_manager.fetch_queue_item(queue_item_id)
+    if not queue_item:
+        await _answer_quietly(callback, "❌ Запись не найдена", show_alert=True)
+        return
+
+    platform = queue_item.platform
+    platform_name = PLATFORM_TITLES.get(platform, platform)
+    status_names = {
+        "pending": "⏳ Ожидает",
+        "publishing": "🔄 Публикуется",
+        "paused": "⏸ На паузе",
+        "completed": "✅ Завершено",
+        "failed": "❌ Ошибка",
+    }
+    status_name = status_names.get(queue_item.status, queue_item.status)
+
+    text = "📋 Пост в очереди\n\n"
+    text += f"📝 {queue_item_display_name(queue_item)}\n"
+    text += f"📱 Платформа: {platform_name}\n"
+    text += f"📊 Статус: {status_name}\n"
+    text += "\nПауза и отмена действуют только на эту платформу.\n"
+
+    if queue_item.error_message:
+        text += f"\n❌ Ошибка: {queue_item.error_message}\n"
+
+    keyboard = get_post_queue_actions_keyboard(queue_item_id, queue_item.post_id, platform)
+    await safe_edit_message(callback.message, text, reply_markup=keyboard)
+
+
 @router.callback_query(F.data == "queue_menu")
 async def show_queue_menu(callback: CallbackQuery):
     """Показать меню очереди."""
     try:
-        orchestrator = get_orchestrator(callback.bot)
-        await reconcile_pending_with_avito()
-        stats = orchestrator.get_queue_stats()
-        text = build_queue_menu_text(stats, orchestrator.queue_manager)
-        keyboard = get_queue_menu_keyboard(stats)
-        await safe_edit_message(
-            callback.message, text, reply_markup=keyboard, parse_mode="HTML"
-        )
-        await callback.answer()
+        await _render_queue_menu(callback)
+        await _answer_quietly(callback)
     except Exception as e:
         logger.error(f"Error showing queue menu: {str(e)}")
-        await callback.answer("❌ Ошибка при загрузке очереди", show_alert=True)
+        await _answer_quietly(callback, "❌ Ошибка при загрузке очереди", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("queue_platform_"))
 async def show_platform_queue(callback: CallbackQuery):
     """Показать очередь для конкретной платформы."""
-    import time as _time
-
-    _t0 = _time.time()
     try:
-        platform = callback.data.replace("queue_platform_", "")
-        orchestrator = get_orchestrator(callback.bot)
-
-        if platform == "avito":
-            await reconcile_pending_with_avito()
-            summary = get_queue_summary(orchestrator.queue_manager)
-            publish_items = orchestrator.get_queue_for_platform("avito")
-            archive_items = list_archive_pending()
-            text = build_avito_platform_text(summary, publish_items, archive_items)
-            keyboard = get_avito_platform_keyboard(
-                can_upload=summary.can_upload_now,
-                has_work=bool(publish_items or archive_items),
-            )
-            await safe_edit_message(callback.message, text, reply_markup=keyboard, parse_mode="HTML")
-            await callback.answer()
-            return
-
-        queue_items = orchestrator.get_queue_for_platform(platform)
-        
-        platform_names = {
-            "vk": "ВКонтакте",
-            "telegram": "Telegram",
-            "instagram": "Instagram",
-            "max": "Max",
-            "avito": "Авито",
-        }
-        platform_name = platform_names.get(platform, platform)
-        
-        text = f"📋 Очередь публикаций: {platform_name}\n\n"
-        
-        if not queue_items:
-            text += "Очередь пуста."
-        else:
-            text += f"Всего постов: {len(queue_items)}\n\n"
-            for i, item in enumerate(queue_items[:10], 1):
-                post_name = queue_item_display_name(item)
-                status_icon = "⏸" if item.status == "paused" else "⏳" if item.status == "pending" else "🔄"
-                text += f"{i}. {status_icon} {post_name}\n"
-            
-            if len(queue_items) > 10:
-                text += f"\n... и еще {len(queue_items) - 10} постов"
-        
-        keyboard = get_platform_queue_keyboard(platform, queue_items)
-        await safe_edit_message(callback.message, text, reply_markup=keyboard)
-        await callback.answer()
+        platform = _strip_prefix(callback.data, "queue_platform_")
+        await _render_platform_queue(callback, platform)
+        await _answer_quietly(callback)
     except Exception as e:
         logger.error(f"Error showing platform queue: {str(e)}")
-        await callback.answer("❌ Ошибка при загрузке очереди", show_alert=True)
+        await _answer_quietly(callback, "❌ Ошибка при загрузке очереди", show_alert=True)
 
 
 @router.callback_query(F.data == "queue_avito_upload_feed")
@@ -178,73 +244,46 @@ async def queue_avito_upload_feed(callback: CallbackQuery):
             db.close()
         alert = ("✅ " if ok else "⚠️ ") + msg[:200]
         if ok:
-            await callback.answer("Файл отправлен на Авито")
+            await _answer_quietly(callback, "Файл отправлен на Авито")
         else:
-            await callback.answer(alert[:200], show_alert=True)
+            await _answer_quietly(callback, alert[:200], show_alert=True)
         await reconcile_pending_with_avito()
         summary = get_queue_summary(orchestrator.queue_manager)
         publish_items = orchestrator.get_queue_for_platform("avito")
         archive_items = list_archive_pending()
-        text = build_avito_platform_text(summary, publish_items, archive_items)
+        platform_paused = orchestrator.is_platform_paused("avito")
+        text = build_avito_platform_text(
+            summary,
+            publish_items,
+            archive_items,
+            global_pause=orchestrator.global_pause,
+            platform_paused=platform_paused,
+        )
         text += f"\n\n<b>{html.escape(alert)}</b>"
         keyboard = get_avito_platform_keyboard(
             can_upload=summary.can_upload_now,
             has_work=bool(publish_items or archive_items),
+            platform_paused=platform_paused,
+            global_pause=orchestrator.global_pause,
         )
         await safe_edit_message(
             callback.message, text, reply_markup=keyboard, parse_mode="HTML"
         )
     except Exception as e:
         logger.error("queue_avito_upload_feed: %s", e, exc_info=True)
-        await callback.answer("❌ Ошибка отправки файла", show_alert=True)
+        await _answer_quietly(callback, "❌ Ошибка отправки файла", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("queue_post_"))
 async def show_post_queue_actions(callback: CallbackQuery):
     """Показать действия с постом в очереди."""
     try:
-        queue_item_id = int(callback.data.replace("queue_post_", ""))
-        orchestrator = get_orchestrator(callback.bot)
-
-        queue_item = orchestrator.queue_manager.fetch_queue_item(queue_item_id)
-        if not queue_item:
-            await callback.answer("❌ Запись не найдена", show_alert=True)
-            return
-
-        platform = queue_item.platform
-
-        platform_names = {
-            "vk": "ВКонтакте",
-            "telegram": "Telegram",
-            "instagram": "Instagram",
-            "max": "Max",
-            "avito": "Авито",
-        }
-        platform_name = platform_names.get(platform, platform)
-
-        status_names = {
-            "pending": "⏳ Ожидает",
-            "publishing": "🔄 Публикуется",
-            "paused": "⏸ На паузе",
-            "completed": "✅ Завершено",
-            "failed": "❌ Ошибка",
-        }
-        status_name = status_names.get(queue_item.status, queue_item.status)
-
-        text = f"📋 Пост в очереди\n\n"
-        text += f"📝 {queue_item_display_name(queue_item)}\n"
-        text += f"📱 Платформа: {platform_name}\n"
-        text += f"📊 Статус: {status_name}\n"
-
-        if queue_item.error_message:
-            text += f"\n❌ Ошибка: {queue_item.error_message}\n"
-
-        keyboard = get_post_queue_actions_keyboard(queue_item_id, queue_item.post_id, platform)
-        await safe_edit_message(callback.message, text, reply_markup=keyboard)
-        await callback.answer()
+        queue_item_id = int(_strip_prefix(callback.data, "queue_post_"))
+        await _render_post_actions(callback, queue_item_id)
+        await _answer_quietly(callback)
     except Exception as e:
         logger.error(f"Error showing post queue actions: {str(e)}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await _answer_quietly(callback, "❌ Ошибка", show_alert=True)
 
 
 @router.callback_query(F.data == "queue_pause_global")
@@ -253,12 +292,11 @@ async def pause_global(callback: CallbackQuery):
     try:
         orchestrator = get_orchestrator(callback.bot)
         orchestrator.pause_global()
-        await callback.answer("⏸ Все публикации приостановлены")
-        # Обновляем меню
-        await show_queue_menu(callback)
+        await _answer_quietly(callback, "⏸ Все публикации приостановлены")
+        await _render_queue_menu(callback)
     except Exception as e:
         logger.error(f"Error pausing global: {str(e)}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await _answer_quietly(callback, "❌ Ошибка", show_alert=True)
 
 
 @router.callback_query(F.data == "queue_resume_global")
@@ -267,131 +305,124 @@ async def resume_global(callback: CallbackQuery):
     try:
         orchestrator = get_orchestrator(callback.bot)
         orchestrator.resume_global()
-        await callback.answer("▶️ Все публикации возобновлены")
-        # Обновляем меню
-        await show_queue_menu(callback)
+        paused = [name for name, on in orchestrator.get_platform_pauses().items() if on]
+        extra = ""
+        if paused:
+            labels = ", ".join(PLATFORM_TITLES.get(p, p) for p in paused)
+            extra = f" Платформы на паузе: {labels}."
+        await _answer_quietly(callback, f"▶️ Глобальная пауза снята.{extra}".strip())
+        await _render_queue_menu(callback)
     except Exception as e:
         logger.error(f"Error resuming global: {str(e)}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await _answer_quietly(callback, "❌ Ошибка", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("queue_pause_platform_"))
 async def pause_platform(callback: CallbackQuery):
     """Приостановить публикации для платформы."""
     try:
-        platform = callback.data.replace("queue_pause_platform_", "")
+        platform = _strip_prefix(callback.data, "queue_pause_platform_")
         orchestrator = get_orchestrator(callback.bot)
         orchestrator.pause_platform(platform)
-        
-        platform_names = {
-            "vk": "ВКонтакте",
-            "telegram": "Telegram",
-            "instagram": "Instagram",
-            "max": "Max",
-            "avito": "Авито",
-        }
-        platform_name = platform_names.get(platform, platform)
-        await callback.answer(f"⏸ Публикации в {platform_name} приостановлены")
-        # Обновляем очередь платформы
-        await show_platform_queue(callback)
+        platform_name = PLATFORM_TITLES.get(platform, platform)
+        await _answer_quietly(callback, f"⏸ Публикации в {platform_name} приостановлены")
+        await _render_platform_queue(callback, platform)
     except Exception as e:
         logger.error(f"Error pausing platform: {str(e)}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await _answer_quietly(callback, "❌ Ошибка", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("queue_resume_platform_"))
 async def resume_platform(callback: CallbackQuery):
     """Возобновить публикации для платформы."""
     try:
-        platform = callback.data.replace("queue_resume_platform_", "")
+        platform = _strip_prefix(callback.data, "queue_resume_platform_")
         orchestrator = get_orchestrator(callback.bot)
         if orchestrator.global_pause:
-            await callback.answer(
+            await _answer_quietly(
+                callback,
                 "Включена пауза всех публикаций. Сначала в меню очереди нажмите «Возобновить все» — "
                 "иначе воркеры платформы не начнут работу.",
                 show_alert=True,
             )
-            await show_platform_queue(callback)
+            await _render_platform_queue(callback, platform)
             return
         orchestrator.resume_platform(platform)
-
-        platform_names = {
-            "vk": "ВКонтакте",
-            "telegram": "Telegram",
-            "instagram": "Instagram",
-            "max": "Max",
-            "avito": "Авито",
-        }
-        platform_name = platform_names.get(platform, platform)
-        await callback.answer(f"▶️ Публикации в {platform_name} возобновлены")
-        # Обновляем очередь платформы
-        await show_platform_queue(callback)
+        platform_name = PLATFORM_TITLES.get(platform, platform)
+        await _answer_quietly(callback, f"▶️ Публикации в {platform_name} возобновлены")
+        await _render_platform_queue(callback, platform)
     except Exception as e:
         logger.error(f"Error resuming platform: {str(e)}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await _answer_quietly(callback, "❌ Ошибка", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("queue_pause_post_"))
 async def pause_post(callback: CallbackQuery):
-    """Приостановить публикацию поста."""
+    """Приостановить публикацию этой записи очереди (одна платформа)."""
     try:
-        queue_item_id = int(callback.data.replace("queue_pause_post_", ""))
+        queue_item_id = int(_strip_prefix(callback.data, "queue_pause_post_"))
         orchestrator = get_orchestrator(callback.bot)
-
         queue_item = orchestrator.queue_manager.fetch_queue_item(queue_item_id)
         if not queue_item:
-            await callback.answer("❌ Запись не найдена", show_alert=True)
+            await _answer_quietly(callback, "❌ Запись не найдена", show_alert=True)
             return
-
-        orchestrator.pause_post(queue_item.post_id)
-        await callback.answer("⏸ Публикация поста приостановлена")
-        await show_post_queue_actions(callback)
+        ok = orchestrator.queue_manager.pause_queue_item(queue_item_id)
+        if ok:
+            await _answer_quietly(callback, "⏸ Эта платформа поста на паузе")
+        else:
+            await _answer_quietly(
+                callback,
+                "Нельзя поставить на паузу: пост уже публикуется или запись не в ожидании.",
+                show_alert=True,
+            )
+        await _render_post_actions(callback, queue_item_id)
     except Exception as e:
         logger.error(f"Error pausing post: {str(e)}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await _answer_quietly(callback, "❌ Ошибка", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("queue_resume_post_"))
 async def resume_post(callback: CallbackQuery):
-    """Возобновить публикацию поста."""
+    """Возобновить публикацию этой записи очереди (одна платформа)."""
     try:
-        queue_item_id = int(callback.data.replace("queue_resume_post_", ""))
+        queue_item_id = int(_strip_prefix(callback.data, "queue_resume_post_"))
         orchestrator = get_orchestrator(callback.bot)
-
         queue_item = orchestrator.queue_manager.fetch_queue_item(queue_item_id)
         if not queue_item:
-            await callback.answer("❌ Запись не найдена", show_alert=True)
+            await _answer_quietly(callback, "❌ Запись не найдена", show_alert=True)
             return
-
-        orchestrator.resume_post(queue_item.post_id)
-        await callback.answer("▶️ Публикация поста возобновлена")
-        await show_post_queue_actions(callback)
+        ok = orchestrator.queue_manager.resume_queue_item(queue_item_id)
+        if ok:
+            await _answer_quietly(callback, "▶️ Эта платформа поста возобновлена")
+        else:
+            await _answer_quietly(callback, "Запись не была на паузе", show_alert=True)
+        await _render_post_actions(callback, queue_item_id)
     except Exception as e:
         logger.error(f"Error resuming post: {str(e)}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await _answer_quietly(callback, "❌ Ошибка", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("queue_cancel_post_"))
 async def cancel_post(callback: CallbackQuery):
-    """Отменить публикацию поста (вернуть в черновики)."""
+    """Убрать пост из очереди этой платформы."""
     try:
-        queue_item_id = int(callback.data.replace("queue_cancel_post_", ""))
+        queue_item_id = int(_strip_prefix(callback.data, "queue_cancel_post_"))
         orchestrator = get_orchestrator(callback.bot)
-
         queue_item = orchestrator.queue_manager.fetch_queue_item(queue_item_id)
         if not queue_item:
-            await callback.answer("❌ Запись не найдена", show_alert=True)
+            await _answer_quietly(callback, "❌ Запись не найдена", show_alert=True)
             return
-
-        orchestrator.cancel_post(queue_item.post_id)
-        await callback.answer("✅ Пост возвращён в черновики")
-
         platform = queue_item.platform
-        callback.data = f"queue_platform_{platform}"
-        await show_platform_queue(callback)
+        platform_name = PLATFORM_TITLES.get(platform, platform)
+        ok = orchestrator.queue_manager.remove_from_queue(queue_item_id)
+        if ok:
+            await _answer_quietly(callback, f"✅ Убрано из очереди {platform_name}")
+        else:
+            await _answer_quietly(callback, "❌ Не удалось убрать из очереди", show_alert=True)
+        await _render_platform_queue(callback, platform)
     except Exception as e:
         logger.error(f"Error cancelling post: {str(e)}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await _answer_quietly(callback, "❌ Ошибка", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("queue_publish_now_"))
@@ -400,41 +431,45 @@ async def publish_now(callback: CallbackQuery):
     try:
         platform, post_id = _parse_queue_publish_now_callback(callback.data)
         if not post_id:
-            await callback.answer("❌ Некорректные данные кнопки", show_alert=True)
+            await _answer_quietly(callback, "❌ Некорректные данные кнопки", show_alert=True)
             return
         orchestrator = get_orchestrator(callback.bot)
         platforms = [platform] if platform else None
         if platforms is None:
-            # Старый callback без платформы: не добавлять все соцсети — только ускорить уже висящие задачи
             success = orchestrator.bump_queued_publication_priority(post_id, priority=999)
             ok_text = "⏫ Приоритет очереди обновлён"
         else:
             success = orchestrator.publish_now(post_id, platforms=platforms)
             ok_text = "🚀 Пост добавлен в очередь с высоким приоритетом"
 
+        svc = get_settings_service()
         if success:
-            if get_settings_service().is_global_publication_pause():
-                await callback.answer(
-                    f"{ok_text}. Глобальная пауза включена — публикация начнётся после «Возобновить все».",
+            if svc.is_publishing_paused(platform):
+                await _answer_quietly(
+                    callback,
+                    f"{ok_text}. Сейчас пауза — публикация начнётся после возобновления.",
                     show_alert=True,
                 )
             else:
-                await callback.answer(ok_text)
+                await _answer_quietly(callback, ok_text)
         else:
-            await callback.answer(
+            await _answer_quietly(
+                callback,
                 "❌ Нет новых записей в очереди (или нечего ускорять). Откройте пост заново из меню очереди.",
                 show_alert=True,
             )
+        if platform:
+            await _render_platform_queue(callback, platform)
     except Exception as e:
         logger.error(f"Error publishing now: {str(e)}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await _answer_quietly(callback, "❌ Ошибка", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("create_another_post_"))
 async def create_another_post(callback: CallbackQuery, state: FSMContext):
     """Открыть форму нового поста (текущий уже в очереди)."""
     try:
-        await callback.answer()
+        await _answer_quietly(callback)
         from app.bot.handlers.post_creation import PostCreation
 
         await state.update_data(avito_screen_level=1, avito_body_level=1)
@@ -459,7 +494,7 @@ async def create_another_post(callback: CallbackQuery, state: FSMContext):
         await state.set_state(PostCreation.waiting_for_text)
     except Exception as e:
         logger.error(f"Error opening new post form: {str(e)}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await _answer_quietly(callback, "❌ Ошибка", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("add_to_queue_and_create_"))
@@ -484,7 +519,7 @@ async def _show_post_queued_screen(callback: CallbackQuery, state: FSMContext, p
 
         post = await get_post_api(post_id)
         if not post:
-            await callback.answer("❌ Пост не найден", show_alert=True)
+            await _answer_quietly(callback, "❌ Пост не найден", show_alert=True)
             return
 
         orchestrator = get_orchestrator(callback.bot)
@@ -493,7 +528,7 @@ async def _show_post_queued_screen(callback: CallbackQuery, state: FSMContext, p
         )
 
         if not success:
-            await callback.answer("❌ Ошибка при добавлении поста в очередь", show_alert=True)
+            await _answer_quietly(callback, "❌ Ошибка при добавлении поста в очередь", show_alert=True)
             return
 
         stats = orchestrator.get_queue_stats()
@@ -509,7 +544,7 @@ async def _show_post_queued_screen(callback: CallbackQuery, state: FSMContext, p
         )
         keyboard = build_post_queued_keyboard(post_id)
 
-        await callback.answer("✅ Пост добавлен в очередь")
+        await _answer_quietly(callback, "✅ Пост добавлен в очередь")
         await safe_edit_message(
             callback.message,
             text,
@@ -518,4 +553,4 @@ async def _show_post_queued_screen(callback: CallbackQuery, state: FSMContext, p
         )
     except Exception as e:
         logger.error(f"Error adding to queue: {str(e)}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        await _answer_quietly(callback, "❌ Ошибка", show_alert=True)

@@ -4,12 +4,19 @@ from app.scheduler.queue_ui import queue_item_display_name
 from app.bot.utils.button_styles import ikb
 
 
-def get_queue_menu_keyboard(stats: dict) -> InlineKeyboardMarkup:
-    """Создать клавиатуру главного меню очереди.
-    
-    Args:
-        stats: Словарь со статистикой очереди
-    """
+def get_queue_menu_keyboard(stats: dict, *, global_pause: bool = False) -> InlineKeyboardMarkup:
+    """Создать клавиатуру главного меню очереди."""
+    pause_btn = (
+        InlineKeyboardButton(
+            text="▶️ Возобновить все",
+            callback_data="queue_resume_global",
+        )
+        if global_pause
+        else InlineKeyboardButton(
+            text="⏸ Пауза всех",
+            callback_data="queue_pause_global",
+        )
+    )
     buttons = [
         [
             InlineKeyboardButton(
@@ -35,16 +42,7 @@ def get_queue_menu_keyboard(stats: dict) -> InlineKeyboardMarkup:
                 callback_data="queue_platform_avito"
             ),
         ],
-        [
-            InlineKeyboardButton(
-                text="⏸ Пауза всех",
-                callback_data="queue_pause_global"
-            ),
-            InlineKeyboardButton(
-                text="▶️ Возобновить все",
-                callback_data="queue_resume_global"
-            )
-        ],
+        [pause_btn],
         [
             InlineKeyboardButton(
                 text="🏠 Вернуться в главное меню",
@@ -55,14 +53,29 @@ def get_queue_menu_keyboard(stats: dict) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
+def _platform_pause_button(platform: str, *, platform_paused: bool) -> InlineKeyboardButton:
+    if platform_paused:
+        return InlineKeyboardButton(
+            text="▶️ Возобновить платформу",
+            callback_data=f"queue_resume_platform_{platform}",
+        )
+    return InlineKeyboardButton(
+        text="⏸ Пауза платформы",
+        callback_data=f"queue_pause_platform_{platform}",
+    )
+
+
 def get_avito_platform_keyboard(
     *,
     can_upload: bool,
     has_work: bool,
+    platform_paused: bool = False,
+    global_pause: bool = False,
 ) -> InlineKeyboardMarkup:
-    """Экран очереди Авито: ручная отправка файла."""
+    """Экран очереди Авито: ручная отправка файла и пауза платформы."""
     buttons = []
-    if has_work:
+    paused = global_pause or platform_paused
+    if has_work and can_upload and not paused:
         buttons.append(
             [
                 InlineKeyboardButton(
@@ -71,6 +84,7 @@ def get_avito_platform_keyboard(
                 )
             ]
         )
+    buttons.append([_platform_pause_button("avito", platform_paused=platform_paused)])
     buttons.append(
         [
             InlineKeyboardButton(
@@ -85,17 +99,16 @@ def get_avito_platform_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def get_platform_queue_keyboard(platform: str, queue_items: list) -> InlineKeyboardMarkup:
-    """Создать клавиатуру очереди для платформы.
-    
-    Args:
-        platform: Платформа ("vk", "telegram", "instagram")
-        queue_items: Список записей очереди
-    """
+def get_platform_queue_keyboard(
+    platform: str,
+    queue_items: list,
+    *,
+    platform_paused: bool = False,
+) -> InlineKeyboardMarkup:
+    """Создать клавиатуру очереди для платформы."""
     buttons = []
-    
-    # Кнопки для каждого поста в очереди
-    for item in queue_items[:10]:  # Показываем максимум 10 постов
+
+    for item in queue_items[:10]:
         post_name = queue_item_display_name(item)
         status_icon = "⏸" if item.status == "paused" else "⏳" if item.status == "pending" else "🔄"
         buttons.append([
@@ -104,38 +117,21 @@ def get_platform_queue_keyboard(platform: str, queue_items: list) -> InlineKeybo
                 callback_data=f"queue_post_{item.id}"
             )
         ])
-    
-    # Кнопки управления платформой
-    buttons.append([
-        InlineKeyboardButton(
-            text="⏸ Пауза платформы",
-            callback_data=f"queue_pause_platform_{platform}"
-        ),
-        InlineKeyboardButton(
-            text="▶️ Возобновить платформу",
-            callback_data=f"queue_resume_platform_{platform}"
-        )
-    ])
-    
-    # Кнопка назад
+
+    buttons.append([_platform_pause_button(platform, platform_paused=platform_paused)])
+
     buttons.append([
         InlineKeyboardButton(
             text="⬅️ Назад к очереди",
             callback_data="queue_menu"
         )
     ])
-    
+
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 def get_post_queue_actions_keyboard(queue_item_id: int, post_id: str, platform: str) -> InlineKeyboardMarkup:
-    """Создать клавиатуру действий с постом в очереди.
-    
-    Args:
-        queue_item_id: ID записи очереди
-        post_id: ID поста
-        platform: Платформа
-    """
+    """Создать клавиатуру действий с постом в очереди."""
     buttons = [
         [
             ikb(
@@ -149,7 +145,7 @@ def get_post_queue_actions_keyboard(queue_item_id: int, post_id: str, platform: 
         ],
         [
             ikb(
-                "❌ Отменить (в черновики)",
+                "❌ Убрать из этой очереди",
                 f"queue_cancel_post_{queue_item_id}",
             )
         ],
@@ -158,4 +154,3 @@ def get_post_queue_actions_keyboard(queue_item_id: int, post_id: str, platform: 
         ],
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
-

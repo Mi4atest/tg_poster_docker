@@ -11,7 +11,7 @@ from app.integrations.avito.avito_feed_dispatcher import (
     get_queue_summary,
 )
 from app.scheduler.queue_manager import QueueManager
-from app.scheduler.queue_ui import queue_item_display_name
+from app.scheduler.queue_ui import format_queue_pause_status, queue_item_display_name
 
 
 def format_recent_archive_lines() -> List[str]:
@@ -25,11 +25,24 @@ def format_recent_archive_lines() -> List[str]:
     return lines
 
 
-def build_queue_menu_text(stats: dict, queue_manager: QueueManager) -> str:
+def build_queue_menu_text(
+    stats: dict,
+    queue_manager: QueueManager,
+    *,
+    global_pause: bool = False,
+    platform_pauses: Optional[dict] = None,
+) -> str:
     summary = get_queue_summary(queue_manager)
     total = stats.get("total", 0)
 
     parts = ["📋 <b>Очередь публикаций</b>", ""]
+    parts.append(
+        format_queue_pause_status(
+            global_pause=global_pause,
+            platform_pauses=platform_pauses,
+        )
+    )
+    parts.append("")
     recent = format_recent_archive_lines()
     if recent:
         parts.append("снят(ы) с Авито")
@@ -51,8 +64,19 @@ def build_avito_platform_text(
     summary: AvitoFeedQueueSummary,
     publish_items: list,
     archive_items: List[dict],
+    *,
+    global_pause: bool = False,
+    platform_paused: bool = False,
 ) -> str:
     lines = ["📋 <b>Очередь: Авито</b>", ""]
+    lines.append(
+        format_queue_pause_status(
+            global_pause=global_pause,
+            platform_pauses={"avito": platform_paused},
+            platform="avito",
+        )
+    )
+    lines.append("")
     recent = format_recent_archive_lines()
     if recent:
         lines.append("снят(ы) с Авито")

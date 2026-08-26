@@ -38,6 +38,7 @@ from app.integrations.avito.actions import fetch_item_info
 from app.integrations.avito.archive_batch import _report_errors
 from app.integrations.avito.errors import AvitoAutoCreateUnavailableError
 from app.scheduler.queue_manager import QueueManager
+from app.services.settings_service import get_settings_service
 from app.utils.time_msk import format_hm_msk
 from app.workers.avito.publisher import (
     _apply_avito_success,
@@ -146,6 +147,15 @@ async def execute_feed_upload(
     Одна выгрузка на час: сначала снятия (если есть), затем публикации (если есть).
     Returns: (success, user_message)
     """
+    try:
+        if get_settings_service().is_publishing_paused("avito"):
+            return (
+                False,
+                "Публикации на паузе. Нажмите «Возобновить» в меню «В очереди».",
+            )
+    except Exception:
+        pass
+
     coord = get_coordinator()
     archive_items = list_archive_pending()
     publish_items = queue_manager.get_pending_items("avito")

@@ -69,6 +69,13 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
         },
         # Сохраняется в БД: переживает перезапуск бота (в отличие от in-memory флага оркестратора).
         "global_pause": False,
+        "platform_pause": {
+            "vk": False,
+            "telegram": False,
+            "instagram": False,
+            "max": False,
+            "avito": False,
+        },
     },
     "features": {
         "vk_market_enabled": env_settings.VK_MARKET_ENABLED,
@@ -351,11 +358,33 @@ class SettingsService:
     def set_platform_enabled(self, platform: str, enabled: bool) -> None:
         self.update({"publishing": {"enabled": {platform: bool(enabled)}}})
 
+    _PUBLICATION_PLATFORMS = ("vk", "telegram", "instagram", "max", "avito")
+
     def is_global_publication_pause(self) -> bool:
         return bool(self.get_all().get("publishing", {}).get("global_pause", False))
 
     def set_global_publication_pause(self, paused: bool) -> None:
         self.update({"publishing": {"global_pause": bool(paused)}})
+
+    def get_platform_publication_pauses(self) -> Dict[str, bool]:
+        raw = self.get_all().get("publishing", {}).get("platform_pause") or {}
+        return {p: bool(raw.get(p, False)) for p in self._PUBLICATION_PLATFORMS}
+
+    def is_platform_publication_pause(self, platform: str) -> bool:
+        return bool(self.get_platform_publication_pauses().get(platform, False))
+
+    def set_platform_publication_pause(self, platform: str, paused: bool) -> None:
+        if platform not in self._PUBLICATION_PLATFORMS:
+            return
+        self.update({"publishing": {"platform_pause": {platform: bool(paused)}}})
+
+    def is_publishing_paused(self, platform: Optional[str] = None) -> bool:
+        """Глобальная пауза или пауза конкретной платформы."""
+        if self.is_global_publication_pause():
+            return True
+        if platform:
+            return self.is_platform_publication_pause(platform)
+        return False
 
     def is_signature_enabled(self) -> bool:
         return bool(self.get_all()["signatures"]["enabled"])

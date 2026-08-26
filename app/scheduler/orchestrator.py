@@ -27,7 +27,7 @@ class PublicationOrchestrator:
         self.workers: Dict[str, PlatformWorker] = {}
         self.worker_tasks: Dict[str, asyncio.Task] = {}
         self.maintenance_tasks: Dict[str, asyncio.Task] = {}
-        self.avito_archive_worker = AvitoArchiveWorker(self.queue_manager)
+        self.avito_archive_worker = AvitoArchiveWorker(self.queue_manager, orchestrator=self)
         self.is_running = False
         self.global_pause = False
 
@@ -39,15 +39,24 @@ class PublicationOrchestrator:
 
         self.is_running = True
         try:
-            self.global_pause = get_settings_service().is_global_publication_pause()
+            svc = get_settings_service()
+            self.global_pause = svc.is_global_publication_pause()
+            platform_pauses = svc.get_platform_publication_pauses()
         except Exception:
             self.global_pause = False
-        logger.info("Orchestrator started with global_pause=%s (from persisted settings)", self.global_pause)
+            platform_pauses = {}
+        logger.info(
+            "Orchestrator started with global_pause=%s platform_pauses=%s (from persisted settings)",
+            self.global_pause,
+            {k: v for k, v in platform_pauses.items() if v} or "{}",
+        )
 
         # Создаем workers для каждой платформы
         platforms = ["vk", "telegram", "instagram", "max", "avito"]
         for platform in platforms:
             worker = PlatformWorker(platform, self.queue_manager, self.signature_enabled, orchestrator=self)
+            if platform_pauses.get(platform):
+                worker.pause()
             self.workers[platform] = worker
             logger.info(f"Created worker for platform: {platform}")
 
@@ -204,39 +213,42 @@ class PublicationOrchestrator:
             get_settings_service().set_global_publication_pause(True)
         except Exception as exc:
             logger.warning("Could not persist global pause: %s", exc)
-        for worker in self.workers.values():
-            worker.pause()
         logger.info("Global pause activated")
 
     def resume_global(self):
-        """Возобновить все публикации."""
+        """Возобновить все публикации (индивидуальные паузы платформ не сбрасываются)."""
         self.global_pause = False
         try:
             get_settings_service().set_global_publication_pause(False)
         except Exception as exc:
             logger.warning("Could not persist global resume: %s", exc)
-        for worker in self.workers.values():
-            worker.resume()
         logger.info("Global pause deactivated")
 
+    def is_platform_paused(self, platform: str) -> bool:
+        worker = self.workers.get(platform)
+        return bool(worker and worker.is_paused)
+
+    def get_platform_pauses(self) -> Dict[str, bool]:
+        return {name: self.is_platform_paused(name) for name in self.workers}
+
     def pause_platform(self, platform: str):
-        """Приостановить публикации для конкретной платформы.
-        
-        Args:
-            platform: Платформа ("vk", "telegram", "instagram", "max")
-        """
+        """Приостановить публикации для конкретной платформы."""
         if platform in self.workers:
             self.workers[platform].pause()
+            try:
+                get_settings_service().set_platform_publication_pause(platform, True)
+            except Exception as exc:
+                logger.warning("Could not persist platform pause %s: %s", platform, exc)
             logger.info(f"Paused platform: {platform}")
 
     def resume_platform(self, platform: str):
-        """Возобновить публикации для конкретной платформы.
-        
-        Args:
-            platform: Платформа ("vk", "telegram", "instagram", "max")
-        """
+        """Возобновить публикации для конкретной платформы."""
         if platform in self.workers:
             self.workers[platform].resume()
+            try:
+                get_settings_service().set_platform_publication_pause(platform, False)
+            except Exception as exc:
+                logger.warning("Could not persist platform resume %s: %s", platform, exc)
             logger.info(f"Resumed platform: {platform}")
 
     def pause_post(self, post_id: str):
@@ -285,20 +297,17 @@ class PublicationOrchestrator:
 
     def publish_now(self, post_id: str, platforms: Optional[list] = None) -> bool:
         """Опубликовать пост вне очереди (с высоким приоритетом).
-        
-        Args:
-            post_id: ID поста
-            platforms: Список платформ (по умолчанию все)
-            
-        Returns:
-            True если успешно, False иначе
+
+        Сначала снимает pause по указанным платформам — иначе воркер не возьмёт задачу.
         """
-        # Добавляем с высоким приоритетом
+        plats = platforms or ["vk", "telegram", "instagram", "max", "avito"]
+        for platform in plats:
+            self.queue_manager.resume_paused_for_post_platform(post_id, platform)
         return self.add_post_to_queue(
             post_id=post_id,
             platforms=platforms,
-            priority=999,  # Высокий приоритет
-            scheduled_at=None
+            priority=999,
+            scheduled_at=None,
         )
 
     def get_queue_stats(self) -> dict:

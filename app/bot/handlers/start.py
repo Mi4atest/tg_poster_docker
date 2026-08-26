@@ -31,7 +31,6 @@ async def create_post_callback(callback: CallbackQuery, state: FSMContext):
     """Handle the 'Create Post' button."""
     service = get_settings_service()
     vk_market_enabled = service.is_vk_market_enabled()
-    vk_stories_auto_enabled = service.is_vk_stories_auto_enabled()
     avito_enabled = service.is_platform_enabled("avito")
     await state.update_data(avito_screen_level=1, avito_body_level=1, photos=[], videos=[])
     keyboard = get_create_post_entry_keyboard(
@@ -39,7 +38,7 @@ async def create_post_callback(callback: CallbackQuery, state: FSMContext):
         avito_enabled=avito_enabled,
         avito_screen_level=1,
         avito_body_level=1,
-        vk_stories_auto_enabled=vk_stories_auto_enabled,
+        vk_stories_button_text=service.stories_mode_button_label(),
     )
     status_hint = get_platform_status_hint_text()
 
@@ -62,7 +61,7 @@ def _create_post_entry_keyboard_from_service(service, state_data: dict):
         avito_enabled=service.is_platform_enabled("avito"),
         avito_screen_level=sl,
         avito_body_level=bl,
-        vk_stories_auto_enabled=service.is_vk_stories_auto_enabled(),
+        vk_stories_button_text=service.stories_mode_button_label(),
     ), sl, bl
 
 
@@ -90,10 +89,11 @@ async def toggle_vk_market_from_create_post(callback: CallbackQuery, state: FSMC
 
 @router.callback_query(PostCreation.waiting_for_text, F.data == "create_post_toggle_vk_stories")
 async def toggle_vk_stories_from_create_post(callback: CallbackQuery, state: FSMContext):
-    """Toggle auto VK stories flag from create post screen (independent of market)."""
+    """Цикл автосторис: выкл → компакт → карточка → выкл."""
+    from app.workers.vk.story_composer import stories_mode_toast
+
     service = get_settings_service()
-    next_state = not service.is_vk_stories_auto_enabled()
-    service.set_vk_stories_auto_enabled(next_state)
+    mode = service.cycle_stories_auto_mode()
     data = await state.get_data()
     keyboard, sl, bl = _create_post_entry_keyboard_from_service(service, data)
     status_hint = get_platform_status_hint_text()
@@ -105,9 +105,7 @@ async def toggle_vk_stories_from_create_post(callback: CallbackQuery, state: FSM
         parse_mode="HTML",
     )
     await state.set_state(PostCreation.waiting_for_text)
-    await callback.answer(
-        "Сторис (авто): включены" if next_state else "Сторис (авто): выключены"
-    )
+    await callback.answer(stories_mode_toast(mode))
 
 @router.callback_query(F.data == "pending_posts")
 async def pending_posts_callback(callback: CallbackQuery, state: FSMContext):

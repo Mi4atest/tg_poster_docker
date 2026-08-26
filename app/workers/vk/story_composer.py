@@ -38,6 +38,34 @@ def story_style_label(style: Optional[str]) -> str:
     return "Карточка"
 
 
+STORIES_MODE_OFF = "off"
+
+
+def stories_mode_button_label(*, enabled: bool, style: Optional[str] = None) -> str:
+    """Текст кнопки 3-state: выкл / компакт / карточка."""
+    if not enabled:
+        return "🔴 Сторис: выкл"
+    if normalize_story_style(style) == STORY_STYLE_SOCIAL:
+        return "🟢 Сторис: компакт"
+    return "🟢 Сторис: карточка"
+
+
+def stories_mode_toast(mode: str) -> str:
+    """Короткий ответ callback после цикла режима автосторис."""
+    if mode == STORIES_MODE_OFF or mode == "off":
+        return "Сторис: выкл"
+    if normalize_story_style(mode) == STORY_STYLE_SOCIAL:
+        return "Сторис: компакт"
+    return "Сторис: карточка"
+
+
+def stories_mode_status_line(*, enabled: bool, style: Optional[str] = None) -> str:
+    """Строка статуса для экрана настроек / списка интервалов."""
+    if not enabled:
+        return "🔴 Сторис: выкл"
+    return f"🟢 Сторис: {story_style_label(style).lower()}"
+
+
 def _font_candidates(bold: bool) -> Tuple[str, ...]:
     base = os.path.join(os.path.dirname(__file__), "..", "..", "assets", "fonts")
     if bold:

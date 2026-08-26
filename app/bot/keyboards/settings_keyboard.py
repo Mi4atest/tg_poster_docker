@@ -121,8 +121,7 @@ def get_settings_signatures_keyboard(
     vk_market_enabled: bool,
     catalog_enabled: bool,
     *,
-    vk_stories_auto_enabled: bool = False,
-    vk_stories_style_label: str = "Карточка",
+    vk_stories_button_text: str = "🔴 Сторис: выкл",
 ) -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton(
@@ -134,12 +133,8 @@ def get_settings_signatures_keyboard(
             callback_data="settings_toggle_vk_market"
         )],
         [InlineKeyboardButton(
-            text=("🟢" if vk_stories_auto_enabled else "🔴") + " Сторис (авто)",
-            callback_data="settings_toggle_vk_stories_auto"
-        )],
-        [InlineKeyboardButton(
-            text=f"🎨 Стиль: {vk_stories_style_label}",
-            callback_data="settings_cycle_vk_stories_style"
+            text=vk_stories_button_text[:64],
+            callback_data="settings_cycle_vk_stories_mode"
         )],
         [InlineKeyboardButton(
             text=("🟢" if catalog_enabled else "🔴") + " Блок «Каталог б/у» в постах",

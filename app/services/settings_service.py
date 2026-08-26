@@ -503,17 +503,62 @@ class SettingsService:
         return normalize_story_style(features.get("vk_stories_style"))
 
     def set_vk_stories_style(self, style: str) -> str:
-        from app.workers.vk.story_composer import (
-            STORY_STYLE_BUBBLE,
-            STORY_STYLE_SOCIAL,
-            normalize_story_style,
-        )
+        from app.workers.vk.story_composer import normalize_story_style
 
         value = normalize_story_style(style)
         self.update({"features": {"vk_stories_style": value}})
         return value
 
+    def get_stories_auto_mode(self) -> str:
+        """Режим автосторис: off | social | bubble."""
+        from app.workers.vk.story_composer import STORIES_MODE_OFF
+
+        if not self.is_vk_stories_auto_enabled():
+            return STORIES_MODE_OFF
+        return self.get_vk_stories_style()
+
+    def cycle_stories_auto_mode(self) -> str:
+        """Цикл: выкл → компакт (social) → карточка (bubble) → выкл."""
+        from app.workers.vk.story_composer import (
+            STORIES_MODE_OFF,
+            STORY_STYLE_BUBBLE,
+            STORY_STYLE_SOCIAL,
+        )
+
+        current = self.get_stories_auto_mode()
+        if current == STORIES_MODE_OFF:
+            self.update(
+                {
+                    "features": {
+                        "vk_stories_auto_enabled": True,
+                        "vk_stories_style": STORY_STYLE_SOCIAL,
+                    }
+                }
+            )
+            return STORY_STYLE_SOCIAL
+        if current == STORY_STYLE_SOCIAL:
+            self.update(
+                {
+                    "features": {
+                        "vk_stories_auto_enabled": True,
+                        "vk_stories_style": STORY_STYLE_BUBBLE,
+                    }
+                }
+            )
+            return STORY_STYLE_BUBBLE
+        self.set_vk_stories_auto_enabled(False)
+        return STORIES_MODE_OFF
+
+    def stories_mode_button_label(self) -> str:
+        from app.workers.vk.story_composer import stories_mode_button_label
+
+        return stories_mode_button_label(
+            enabled=self.is_vk_stories_auto_enabled(),
+            style=self.get_vk_stories_style(),
+        )
+
     def cycle_vk_stories_style(self) -> str:
+        """Только стиль при включённом авто (legacy). Предпочтительно cycle_stories_auto_mode."""
         from app.workers.vk.story_composer import STORY_STYLE_BUBBLE, STORY_STYLE_SOCIAL
 
         current = self.get_vk_stories_style()
@@ -728,12 +773,14 @@ class SettingsService:
                 lines.append(f"🔴 {labels[platform]} — отключено")
         vk_market_enabled = bool(data.get("features", {}).get("vk_market_enabled", True))
         lines.append("🟢 Товары ВК" if vk_market_enabled else "🔴 Товары ВК")
-        vk_stories_auto = bool(data.get("features", {}).get("vk_stories_auto_enabled", False))
-        from app.workers.vk.story_composer import story_style_label
+        from app.workers.vk.story_composer import stories_mode_status_line
 
-        style = data.get("features", {}).get("vk_stories_style", "bubble")
-        auto_mark = "🟢" if vk_stories_auto else "🔴"
-        lines.append(f"{auto_mark} Сторис (авто) · {story_style_label(style)}")
+        lines.append(
+            stories_mode_status_line(
+                enabled=bool(data.get("features", {}).get("vk_stories_auto_enabled", False)),
+                style=data.get("features", {}).get("vk_stories_style", "bubble"),
+            )
+        )
         return lines
 
 

@@ -94,8 +94,12 @@ def set_product_status(
     product_id: int,
     status: str,
     sync_platforms: bool = True,
+    archive_kind: Optional[str] = None,
 ) -> Optional[dict]:
     """Смена статуса товара (active/unavailable/deleted); ВК — по возможности.
+
+    archive_kind: sale | transfer — только при снятии в unavailable (б/у).
+    При восстановлении в active поле сбрасывается.
 
     Возвращает {"product": {...}, "status_sync": {...}} или None при ошибке.
     """
@@ -134,17 +138,26 @@ def set_product_status(
                 except Exception:
                     pass
 
+        sets = ["status = :status", "archived_at = :archived_at", "updated_at = :updated_at"]
+        params: dict[str, Any] = {
+            "status": status,
+            "archived_at": archived_at,
+            "updated_at": now,
+            "id": product_id,
+        }
+        if status == "active":
+            sets.append("archive_kind = NULL")
+        elif status == "unavailable" and archive_kind is not None:
+            kind = str(archive_kind).strip()
+            if kind in ("sale", "transfer"):
+                sets.append("archive_kind = :archive_kind")
+                params["archive_kind"] = kind
+
         db.execute(
             text(
-                "UPDATE products SET status = :status, archived_at = :archived_at, "
-                "updated_at = :updated_at WHERE id = :id"
+                f"UPDATE products SET {', '.join(sets)} WHERE id = :id"
             ),
-            {
-                "status": status,
-                "archived_at": archived_at,
-                "updated_at": now,
-                "id": product_id,
-            },
+            params,
         )
 
         vk_sync = _sync_block()

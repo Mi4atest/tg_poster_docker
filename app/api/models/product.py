@@ -30,6 +30,8 @@ class Product(Base):
     price = Column(String, nullable=True)  # Цена (строка, т.к. может содержать валюту)
     payment_method = Column(String, nullable=True)  # Способ оплаты при архивации (cash, card, credit)
     final_price = Column(String, nullable=True)  # Финальная цена с учетом способа оплаты
+    # sale | transfer; NULL у старых записей = продажа (для сводки месяца)
+    archive_kind = Column(String, nullable=True)
     
     # Category
     category_id = Column(Integer, nullable=True)  # ID категории ВК

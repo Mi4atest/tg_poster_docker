@@ -44,6 +44,14 @@ from app.utils.price_change import (
     price_string_to_int_rub,
 )
 from app.bot.utils.button_styles import ikb
+from app.utils.archive_kind import (
+    ARCHIVE_KIND_SALE,
+    ARCHIVE_KIND_TRANSFER,
+    archive_kind_toggle_answer,
+    format_unavailable_confirm_text,
+    is_transfer_archive,
+    normalize_archive_kind,
+)
 logger = logging.getLogger(__name__)
 
 router = Router()
@@ -100,6 +108,55 @@ class ProductAvitoLinkEdit(StatesGroup):
 
 class ProductUnavailableOptions(StatesGroup):
     waiting_for_payment_method = State()
+
+
+def _archive_product_title(product: dict) -> str:
+    name = product.get("name") or "Без названия"
+    if is_transfer_archive(product):
+        return f"📦 {name}"
+    return name
+
+
+async def _show_unavailable_confirm(
+    callback: CallbackQuery,
+    state: FSMContext,
+    product_id: int,
+    *,
+    report_enabled: bool,
+    mark_telegram_enabled: bool,
+    archive_kind: str,
+    answer_text: Optional[str] = None,
+) -> bool:
+    """Перерисовать экран снятия б/у: шапка + клавиатура по режиму."""
+    kind = normalize_archive_kind(archive_kind)
+    if kind == ARCHIVE_KIND_TRANSFER:
+        report_enabled = False
+    await state.update_data(
+        product_id=product_id,
+        report_enabled=report_enabled,
+        mark_telegram_enabled=mark_telegram_enabled,
+        archive_kind=kind,
+    )
+    product = await get_product_api(product_id)
+    if not product:
+        await callback.answer("Товар не найден", show_alert=True)
+        return False
+    await safe_edit_message(
+        callback.message,
+        format_unavailable_confirm_text(product.get("name", "Без названия"), kind),
+        reply_markup=get_product_status_confirmation_keyboard(
+            product_id,
+            "unavailable",
+            report_enabled=report_enabled,
+            mark_telegram_enabled=mark_telegram_enabled,
+            archive_kind=kind,
+        ),
+    )
+    if answer_text:
+        await callback.answer(answer_text)
+    else:
+        await callback.answer()
+    return True
 
 
 # Вспомогательная функция для безопасного редактирования сообщений
@@ -366,6 +423,8 @@ def format_product_status_html(product: dict) -> str:
     start = resolve_product_published_at(product)
 
     if status == "unavailable":
+        if is_transfer_archive(product):
+            line += "\n📦 Архив · не продажа"
         dt = _parse_product_datetime(product.get("archived_at")) or _parse_product_datetime(
             product.get("updated_at")
         )
@@ -457,13 +516,21 @@ def max_link_href_for_telegram_html(
     return s
 
 
-async def update_product_status_api(product_id: int, status: str, *, sync_platforms: bool = True):
+async def update_product_status_api(
+    product_id: int,
+    status: str,
+    *,
+    sync_platforms: bool = True,
+    archive_kind: Optional[str] = None,
+):
     """Обновить статус товара (в отдельном потоке). Ответ: {product, status_sync} или None."""
     from app.db.database import run_db
     from app.services.product_ops_service import set_product_status
 
     try:
-        return await run_db(set_product_status, product_id, status, sync_platforms)
+        return await run_db(
+            set_product_status, product_id, status, sync_platforms, archive_kind
+        )
     except Exception as e:
         logger.error("Error updating product status: %s", e)
         return None
@@ -985,7 +1052,7 @@ async def products_list_page(callback: CallbackQuery):
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("product_") & ~F.data.startswith("product_unavailable_") & ~F.data.startswith("product_delete_") & ~F.data.startswith("product_restore_") & ~F.data.startswith("product_confirm_") & ~F.data.startswith("product_price_") & ~F.data.startswith("product_avito_") & ~F.data.startswith("product_toggle_report_") & ~F.data.startswith("product_toggle_mark_tg_") & ~F.data.startswith("product_payment_"))
+@router.callback_query(F.data.startswith("product_") & ~F.data.startswith("product_unavailable_") & ~F.data.startswith("product_delete_") & ~F.data.startswith("product_restore_") & ~F.data.startswith("product_confirm_") & ~F.data.startswith("product_price_") & ~F.data.startswith("product_avito_") & ~F.data.startswith("product_toggle_report_") & ~F.data.startswith("product_toggle_mark_tg_") & ~F.data.startswith("product_toggle_archive_kind_") & ~F.data.startswith("product_payment_"))
 async def product_detail(callback: CallbackQuery, state: FSMContext):
     """Показать детальную информацию о товаре."""
     try:
@@ -1029,26 +1096,15 @@ async def product_unavailable(callback: CallbackQuery, state: FSMContext):
     except ValueError:
         await callback.answer("Ошибка")
         return
-    
-    product = await get_product_api(product_id)
-    if not product:
-        await callback.answer("Товар не найден", show_alert=True)
-        return
-    
-    # Инициализируем состояние с переключателями (по умолчанию «Пометить ТГ/IG/Max» включено)
-    await state.update_data(
-        product_id=product_id,
+
+    await _show_unavailable_confirm(
+        callback,
+        state,
+        product_id,
         report_enabled=False,
         mark_telegram_enabled=True,
+        archive_kind=ARCHIVE_KIND_SALE,
     )
-    
-    text = f"🚫 Пометить товар как недоступный?\n\n📦 {product.get('name', 'Без названия')}\n\nТовар будет скрыт из каталога, но не удален."
-    await safe_edit_message(
-        callback.message,
-        text,
-        reply_markup=get_product_status_confirmation_keyboard(product_id, "unavailable", report_enabled=False, mark_telegram_enabled=True)
-    )
-    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("product_toggle_report_"))
@@ -1056,47 +1112,29 @@ async def product_toggle_report(callback: CallbackQuery, state: FSMContext):
     """Переключить отправку отчета."""
     try:
         product_id = int(callback.data.replace("product_toggle_report_", ""))
-        logger.info(f"Toggle report for product {product_id}")
-    except ValueError as e:
-        logger.error(f"Error parsing product_id from callback_data: {callback.data}, error: {str(e)}")
+    except ValueError:
         await callback.answer("Ошибка получения товара", show_alert=True)
         return
-    
-    # Получаем или инициализируем состояние
+
     data = await state.get_data()
-    logger.info(f"Current state data: {data}")
-    
-    # Если состояние не инициализировано, инициализируем его
     if not data.get("product_id"):
-        logger.info(f"Initializing state for product {product_id}")
         await state.update_data(
             product_id=product_id,
             report_enabled=False,
             mark_telegram_enabled=True,
+            archive_kind=ARCHIVE_KIND_SALE,
         )
         data = await state.get_data()
-    
-    current_report = data.get("report_enabled", False)
-    new_report = not current_report
-    logger.info(f"Toggling report from {current_report} to {new_report}")
-    
-    await state.update_data(report_enabled=new_report)
-    
-    mark_tg = data.get("mark_telegram_enabled", True)
-    
-    product = await get_product_api(product_id)
-    if not product:
-        logger.error(f"Product {product_id} not found via API")
-        await callback.answer("Товар не найден", show_alert=True)
-        return
-    
-    text = f"🚫 Пометить товар как недоступный?\n\n📦 {product.get('name', 'Без названия')}\n\nТовар будет скрыт из каталога, но не удален."
-    await safe_edit_message(
-        callback.message,
-        text,
-        reply_markup=get_product_status_confirmation_keyboard(product_id, "unavailable", report_enabled=new_report, mark_telegram_enabled=mark_tg)
+
+    new_report = not data.get("report_enabled", False)
+    await _show_unavailable_confirm(
+        callback,
+        state,
+        product_id,
+        report_enabled=new_report,
+        mark_telegram_enabled=data.get("mark_telegram_enabled", True),
+        archive_kind=data.get("archive_kind") or ARCHIVE_KIND_SALE,
     )
-    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("product_toggle_mark_tg_"))
@@ -1104,47 +1142,65 @@ async def product_toggle_mark_tg(callback: CallbackQuery, state: FSMContext):
     """Переключить пометку поста в Telegram."""
     try:
         product_id = int(callback.data.replace("product_toggle_mark_tg_", ""))
-        logger.info(f"Toggle mark TG for product {product_id}")
-    except ValueError as e:
-        logger.error(f"Error parsing product_id from callback_data: {callback.data}, error: {str(e)}")
+    except ValueError:
         await callback.answer("Ошибка получения товара", show_alert=True)
         return
-    
-    # Получаем или инициализируем состояние
+
     data = await state.get_data()
-    logger.info(f"Current state data: {data}")
-    
-    # Если состояние не инициализировано, инициализируем его
     if not data.get("product_id"):
-        logger.info(f"Initializing state for product {product_id}")
         await state.update_data(
             product_id=product_id,
             report_enabled=False,
             mark_telegram_enabled=True,
+            archive_kind=ARCHIVE_KIND_SALE,
         )
         data = await state.get_data()
-    
-    current_mark_tg = data.get("mark_telegram_enabled", True)
-    new_mark_tg = not current_mark_tg
-    logger.info(f"Toggling mark TG from {current_mark_tg} to {new_mark_tg}")
-    
-    await state.update_data(mark_telegram_enabled=new_mark_tg)
-    
-    report = data.get("report_enabled", False)
-    
-    product = await get_product_api(product_id)
-    if not product:
-        logger.error(f"Product {product_id} not found via API")
-        await callback.answer("Товар не найден", show_alert=True)
-        return
-    
-    text = f"🚫 Пометить товар как недоступный?\n\n📦 {product.get('name', 'Без названия')}\n\nТовар будет скрыт из каталога, но не удален."
-    await safe_edit_message(
-        callback.message,
-        text,
-        reply_markup=get_product_status_confirmation_keyboard(product_id, "unavailable", report_enabled=report, mark_telegram_enabled=new_mark_tg)
+
+    new_mark_tg = not data.get("mark_telegram_enabled", True)
+    await _show_unavailable_confirm(
+        callback,
+        state,
+        product_id,
+        report_enabled=data.get("report_enabled", False),
+        mark_telegram_enabled=new_mark_tg,
+        archive_kind=data.get("archive_kind") or ARCHIVE_KIND_SALE,
     )
-    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("product_toggle_archive_kind_"))
+async def product_toggle_archive_kind(callback: CallbackQuery, state: FSMContext):
+    """Переключить режим снятия: продажа ↔ перемещение."""
+    try:
+        product_id = int(callback.data.replace("product_toggle_archive_kind_", ""))
+    except ValueError:
+        await callback.answer("Ошибка получения товара", show_alert=True)
+        return
+
+    data = await state.get_data()
+    if not data.get("product_id"):
+        await state.update_data(
+            product_id=product_id,
+            report_enabled=False,
+            mark_telegram_enabled=True,
+            archive_kind=ARCHIVE_KIND_SALE,
+        )
+        data = await state.get_data()
+
+    current = normalize_archive_kind(data.get("archive_kind"))
+    new_kind = (
+        ARCHIVE_KIND_TRANSFER
+        if current == ARCHIVE_KIND_SALE
+        else ARCHIVE_KIND_SALE
+    )
+    await _show_unavailable_confirm(
+        callback,
+        state,
+        product_id,
+        report_enabled=data.get("report_enabled", False),
+        mark_telegram_enabled=data.get("mark_telegram_enabled", True),
+        archive_kind=new_kind,
+        answer_text=archive_kind_toggle_answer(new_kind),
+    )
 
 
 @router.callback_query(F.data.startswith("product_restore_"))
@@ -1503,6 +1559,11 @@ async def product_confirm_action(callback: CallbackQuery, state: FSMContext):
         # Извлекаем флаги переключателей (если есть)
         report_enabled = len(parts) > 2 and parts[2] == "1"
         mark_telegram_enabled = len(parts) > 3 and parts[3] == "1"
+        archive_kind = (
+            ARCHIVE_KIND_TRANSFER
+            if len(parts) > 4 and parts[4] == "1"
+            else ARCHIVE_KIND_SALE
+        )
     except (ValueError, IndexError):
         await callback.answer("Ошибка")
         return
@@ -1514,6 +1575,10 @@ async def product_confirm_action(callback: CallbackQuery, state: FSMContext):
 
     sdata = await state.get_data()
     back_data = _products_back_from_state(sdata)
+    if action == "unavailable" and sdata.get("archive_kind"):
+        archive_kind = normalize_archive_kind(sdata.get("archive_kind"))
+    if archive_kind == ARCHIVE_KIND_TRANSFER:
+        report_enabled = False
 
     if action == "unavailable":
         # Если включен отчет, показываем выбор способа оплаты
@@ -1521,7 +1586,8 @@ async def product_confirm_action(callback: CallbackQuery, state: FSMContext):
             await state.update_data(
                 product_id=product_id,
                 report_enabled=True,
-                mark_telegram_enabled=mark_telegram_enabled
+                mark_telegram_enabled=mark_telegram_enabled,
+                archive_kind=ARCHIVE_KIND_SALE,
             )
             await state.set_state(ProductUnavailableOptions.waiting_for_payment_method)
             
@@ -1537,7 +1603,14 @@ async def product_confirm_action(callback: CallbackQuery, state: FSMContext):
             return
         
         # Если отчет не включен, сразу помечаем как недоступный
-        await process_product_unavailable(product_id, None, mark_telegram_enabled, callback, state)
+        await process_product_unavailable(
+            product_id,
+            None,
+            mark_telegram_enabled,
+            callback,
+            state,
+            archive_kind=archive_kind,
+        )
         return
     
     elif action == "restore":
@@ -1999,7 +2072,7 @@ async def show_archived_products(message, year=None, month=None, day=None, state
         if products_today:
             response_text += f"📅 Сегодня ({today.strftime('%d.%m.%Y')}):\n\n"
             for i, product in enumerate(products_today, 1):
-                product_name = product.get("name", "Без названия")
+                product_name = _archive_product_title(product)
                 response_text += f"{i}. {product_name}\n"
                 buttons.append([InlineKeyboardButton(
                     text=f"{i}. {product_name[:30]}{'...' if len(product_name) > 30 else ''}",
@@ -2105,7 +2178,7 @@ async def show_archived_products(message, year=None, month=None, day=None, state
 
         day_products = products_by_date.get(year, {}).get(month, {}).get(day, [])
         for i, product in enumerate(day_products, 1):
-            product_name = product.get("name", "Без названия")
+            product_name = _archive_product_title(product)
             response_text += f"{i}. {product_name}\n"
             buttons.append([InlineKeyboardButton(
                 text=f"{i}. {product_name[:30]}{'...' if len(product_name) > 30 else ''}",
@@ -2268,7 +2341,14 @@ async def products_archive_day(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-async def process_product_unavailable(product_id: int, payment_method: Optional[str], mark_telegram_enabled: bool, callback: CallbackQuery, state: FSMContext):
+async def process_product_unavailable(
+    product_id: int,
+    payment_method: Optional[str],
+    mark_telegram_enabled: bool,
+    callback: CallbackQuery,
+    state: FSMContext,
+    archive_kind: str = ARCHIVE_KIND_SALE,
+):
     """Пометить товар недоступным: БД сразу, площадки — в очередь синхронизации."""
     from app.services.price_sync_service import (
         format_unavailable_saved_immediate_message,
@@ -2287,6 +2367,10 @@ async def process_product_unavailable(product_id: int, payment_method: Optional[
         await callback.answer("Товар не найден", show_alert=True)
         await state.clear()
         return
+
+    kind = normalize_archive_kind(archive_kind)
+    if kind == ARCHIVE_KIND_TRANSFER:
+        payment_method = None
 
     if payment_method:
         import asyncio
@@ -2325,7 +2409,12 @@ async def process_product_unavailable(product_id: int, payment_method: Optional[
 
         await asyncio.to_thread(_save_payment_method)
 
-    result = await update_product_status_api(product_id, "unavailable", sync_platforms=False)
+    result = await update_product_status_api(
+        product_id,
+        "unavailable",
+        sync_platforms=False,
+        archive_kind=kind,
+    )
     if not result:
         await callback.answer("❌ Ошибка при обновлении статуса", show_alert=True)
         await state.clear()
@@ -2388,9 +2477,16 @@ async def product_payment_method(callback: CallbackQuery, state: FSMContext):
     
     data = await state.get_data()
     mark_telegram_enabled = data.get("mark_telegram_enabled", True)
-    
-    # Обрабатываем пометку как недоступный с выбранным способом оплаты
-    await process_product_unavailable(product_id, payment_method, mark_telegram_enabled, callback, state)
+    archive_kind = normalize_archive_kind(data.get("archive_kind"))
+
+    await process_product_unavailable(
+        product_id,
+        payment_method,
+        mark_telegram_enabled,
+        callback,
+        state,
+        archive_kind=archive_kind,
+    )
 
 
 async def send_vk_report(product: dict, payment_method: str):

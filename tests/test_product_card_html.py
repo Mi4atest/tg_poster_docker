@@ -48,6 +48,7 @@ def test_unavailable_product_card():
     assert "📅 с 01.07.2026, 12:35" in text
     assert "🚫 Статус: Недоступен" in text
     assert "с 12.07.2026, 18:45 · 12 дн. в продаже" in text
+    assert "не продажа" not in text
 
 
 def test_unavailable_without_archived_at_uses_updated_at():

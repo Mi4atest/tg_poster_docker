@@ -262,6 +262,25 @@ def ensure_post_vk_and_queue_columns_if_missing() -> bool:
         return False
 
 
+def ensure_product_archive_kind_column() -> bool:
+    """sale | transfer при снятии б/у с витрины; NULL у старых = продажа."""
+    try:
+        inspector = inspect(engine)
+        if "products" not in inspector.get_table_names():
+            return False
+        prod_cols = {col["name"] for col in inspector.get_columns("products")}
+        if "archive_kind" in prod_cols:
+            return False
+        with engine.connect() as conn:
+            conn.execute(text("ALTER TABLE products ADD COLUMN archive_kind VARCHAR"))
+            conn.commit()
+        logger.info("Колонка products.archive_kind добавлена")
+        return True
+    except Exception as e:
+        logger.error("Ошибка ensure_product_archive_kind_column: %s", e)
+        return False
+
+
 def ensure_price_tag_columns() -> bool:
     """Колонки описания для печати ценников."""
     try:
@@ -486,6 +505,7 @@ def ensure_database_schema():
     ensure_avito_item_id_bigint()
 
     ensure_new_menu_constructor_columns()
+    ensure_product_archive_kind_column()
     ensure_price_tag_columns()
     ensure_posts_created_at_index()
     ensure_product_price_history_schema()

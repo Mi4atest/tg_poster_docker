@@ -12,7 +12,7 @@ USED_EXCLUDED_COLLECTIONS = ("iPhone новые", "Airpods", "Apple Watch", "iPa
 # Широкие строки (>~26 колонок за раз) рвут app→PG в Docker — грузим частями.
 _PRODUCT_DETAIL_COLUMNS_1 = """
     id, post_id, vk_product_id, vk_product_link, telegram_link,
-    name, price, payment_method, final_price, category_id, category_name,
+    name, price, payment_method, final_price, archive_kind, category_id, category_name,
     collection_id, collection_name, status
 """.strip()
 
@@ -32,7 +32,7 @@ _PRODUCT_SYNC_COLUMNS = """
 _PRODUCT_LIST_COLUMNS = """
     id, name, price, status, collection_name, category_name,
     vk_product_link, telegram_link, created_at, archived_at, price_changed_at,
-    availability_status, payment_method, final_price, post_id, vk_product_id
+    availability_status, payment_method, final_price, archive_kind, post_id, vk_product_id
 """.strip()
 
 

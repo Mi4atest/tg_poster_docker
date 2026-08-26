@@ -77,6 +77,7 @@ class Product(ProductBase):
     avito_price_sync_note: Optional[str] = None
     payment_method: Optional[str] = None
     final_price: Optional[str] = None
+    archive_kind: Optional[str] = None  # sale | transfer; NULL = продажа
     availability_status: Optional[str] = None
     channel_message_id: Optional[int] = None
     availability_message_ids: Optional[str] = None  # JSON-массив ID сообщений в канале

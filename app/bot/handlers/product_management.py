@@ -47,7 +47,6 @@ from app.bot.utils.button_styles import ikb
 from app.utils.archive_kind import (
     ARCHIVE_KIND_SALE,
     ARCHIVE_KIND_TRANSFER,
-    archive_kind_toggle_answer,
     format_unavailable_confirm_text,
     is_transfer_archive,
     normalize_archive_kind,
@@ -124,18 +123,14 @@ async def _show_unavailable_confirm(
     *,
     report_enabled: bool,
     mark_telegram_enabled: bool,
-    archive_kind: str,
     answer_text: Optional[str] = None,
 ) -> bool:
-    """Перерисовать экран снятия б/у: шапка + клавиатура по режиму."""
-    kind = normalize_archive_kind(archive_kind)
-    if kind == ARCHIVE_KIND_TRANSFER:
-        report_enabled = False
+    """Перерисовать экран снятия б/у: шапка + клавиатура."""
     await state.update_data(
         product_id=product_id,
         report_enabled=report_enabled,
         mark_telegram_enabled=mark_telegram_enabled,
-        archive_kind=kind,
+        archive_kind=ARCHIVE_KIND_SALE,
     )
     product = await get_product_api(product_id)
     if not product:
@@ -143,13 +138,12 @@ async def _show_unavailable_confirm(
         return False
     await safe_edit_message(
         callback.message,
-        format_unavailable_confirm_text(product.get("name", "Без названия"), kind),
+        format_unavailable_confirm_text(product.get("name", "Без названия")),
         reply_markup=get_product_status_confirmation_keyboard(
             product_id,
             "unavailable",
             report_enabled=report_enabled,
             mark_telegram_enabled=mark_telegram_enabled,
-            archive_kind=kind,
         ),
         parse_mode="HTML",
     )
@@ -1104,7 +1098,6 @@ async def product_unavailable(callback: CallbackQuery, state: FSMContext):
         product_id,
         report_enabled=False,
         mark_telegram_enabled=True,
-        archive_kind=ARCHIVE_KIND_SALE,
     )
 
 
@@ -1134,7 +1127,6 @@ async def product_toggle_report(callback: CallbackQuery, state: FSMContext):
         product_id,
         report_enabled=new_report,
         mark_telegram_enabled=data.get("mark_telegram_enabled", True),
-        archive_kind=data.get("archive_kind") or ARCHIVE_KIND_SALE,
     )
 
 
@@ -1164,13 +1156,12 @@ async def product_toggle_mark_tg(callback: CallbackQuery, state: FSMContext):
         product_id,
         report_enabled=data.get("report_enabled", False),
         mark_telegram_enabled=new_mark_tg,
-        archive_kind=data.get("archive_kind") or ARCHIVE_KIND_SALE,
     )
 
 
 @router.callback_query(F.data.startswith("product_toggle_archive_kind_"))
-async def product_toggle_archive_kind(callback: CallbackQuery, state: FSMContext):
-    """Переключить режим снятия: продажа ↔ перемещение."""
+async def product_toggle_archive_kind_stale(callback: CallbackQuery, state: FSMContext):
+    """Старые сообщения с тумблером: показать актуальный экран с двумя кнопками."""
     try:
         product_id = int(callback.data.replace("product_toggle_archive_kind_", ""))
     except ValueError:
@@ -1178,29 +1169,13 @@ async def product_toggle_archive_kind(callback: CallbackQuery, state: FSMContext
         return
 
     data = await state.get_data()
-    if not data.get("product_id"):
-        await state.update_data(
-            product_id=product_id,
-            report_enabled=False,
-            mark_telegram_enabled=True,
-            archive_kind=ARCHIVE_KIND_SALE,
-        )
-        data = await state.get_data()
-
-    current = normalize_archive_kind(data.get("archive_kind"))
-    new_kind = (
-        ARCHIVE_KIND_TRANSFER
-        if current == ARCHIVE_KIND_SALE
-        else ARCHIVE_KIND_SALE
-    )
     await _show_unavailable_confirm(
         callback,
         state,
         product_id,
-        report_enabled=data.get("report_enabled", False),
+        report_enabled=bool(data.get("report_enabled", False)),
         mark_telegram_enabled=data.get("mark_telegram_enabled", True),
-        archive_kind=new_kind,
-        answer_text=archive_kind_toggle_answer(new_kind),
+        answer_text="Выберите продажу или перемещение",
     )
 
 
@@ -1576,9 +1551,9 @@ async def product_confirm_action(callback: CallbackQuery, state: FSMContext):
 
     sdata = await state.get_data()
     back_data = _products_back_from_state(sdata)
-    if action == "unavailable" and sdata.get("archive_kind"):
-        archive_kind = normalize_archive_kind(sdata.get("archive_kind"))
+    transfer_skip_report = False
     if archive_kind == ARCHIVE_KIND_TRANSFER:
+        transfer_skip_report = report_enabled
         report_enabled = False
 
     if action == "unavailable":
@@ -1611,6 +1586,7 @@ async def product_confirm_action(callback: CallbackQuery, state: FSMContext):
             callback,
             state,
             archive_kind=archive_kind,
+            answer_text="В отчёт не уйдёт" if transfer_skip_report else None,
         )
         return
     
@@ -2349,6 +2325,7 @@ async def process_product_unavailable(
     callback: CallbackQuery,
     state: FSMContext,
     archive_kind: str = ARCHIVE_KIND_SALE,
+    answer_text: Optional[str] = None,
 ):
     """Пометить товар недоступным: БД сразу, площадки — в очередь синхронизации."""
     from app.services.price_sync_service import (
@@ -2461,7 +2438,7 @@ async def process_product_unavailable(
             parse_mode="HTML",
         )
 
-    await callback.answer("✅ Помечен недоступным")
+    await callback.answer(answer_text or "✅ Помечен недоступным")
     await _clear_state_keep_products_back(state)
 
 
@@ -2478,7 +2455,6 @@ async def product_payment_method(callback: CallbackQuery, state: FSMContext):
     
     data = await state.get_data()
     mark_telegram_enabled = data.get("mark_telegram_enabled", True)
-    archive_kind = normalize_archive_kind(data.get("archive_kind"))
 
     await process_product_unavailable(
         product_id,
@@ -2486,7 +2462,7 @@ async def product_payment_method(callback: CallbackQuery, state: FSMContext):
         mark_telegram_enabled,
         callback,
         state,
-        archive_kind=archive_kind,
+        archive_kind=ARCHIVE_KIND_SALE,
     )
 
 

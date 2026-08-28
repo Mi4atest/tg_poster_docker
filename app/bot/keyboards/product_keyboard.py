@@ -2,11 +2,6 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from typing import List, Optional, Dict
 from app.utils.color_emoji import replace_color_with_emoji
 from app.bot.utils.button_styles import ikb
-from app.utils.archive_kind import (
-    ARCHIVE_KIND_SALE,
-    ARCHIVE_KIND_TRANSFER,
-    normalize_archive_kind,
-)
 
 
 def get_products_menu_keyboard() -> InlineKeyboardMarkup:
@@ -242,22 +237,18 @@ def get_product_status_confirmation_keyboard(
     action: str,  # "unavailable", "delete", "restore"
     report_enabled: bool = False,
     mark_telegram_enabled: bool = True,
-    archive_kind: str = ARCHIVE_KIND_SALE,
 ) -> InlineKeyboardMarkup:
     """Создает клавиатуру подтверждения изменения статуса товара."""
     buttons = []
-    kind = normalize_archive_kind(archive_kind)
-    is_transfer = kind == ARCHIVE_KIND_TRANSFER
 
     if action == "unavailable":
-        if not is_transfer:
-            report_text = "🟢 Отчет Иван/Саша" if report_enabled else "🔴 Отчет Иван/Саша"
-            buttons.append([
-                InlineKeyboardButton(
-                    text=report_text,
-                    callback_data=f"product_toggle_report_{product_id}"
-                )
-            ])
+        report_text = "🟢 Отчет Иван/Саша" if report_enabled else "🔴 Отчет Иван/Саша"
+        buttons.append([
+            InlineKeyboardButton(
+                text=report_text,
+                callback_data=f"product_toggle_report_{product_id}"
+            )
+        ])
 
         mark_tg_text = "🟢 Пометить ТГ/IG/Max" if mark_telegram_enabled else "🔴 Пометить ТГ/IG/Max"
         buttons.append([
@@ -267,31 +258,22 @@ def get_product_status_confirmation_keyboard(
             )
         ])
 
-        kind_text = "📦 Перемещение" if is_transfer else "💰 Продажа"
+        flags = f"{int(report_enabled)}_{int(mark_telegram_enabled)}"
+        sale_cb = f"product_confirm_{action}_{product_id}_{flags}_0"
+        transfer_cb = f"product_confirm_{action}_{product_id}_{flags}_1"
         buttons.append([
-            InlineKeyboardButton(
-                text=kind_text,
-                callback_data=f"product_toggle_archive_kind_{product_id}"
-            )
+            ikb("💰 Продажа", sale_cb, style="success"),
+            ikb("📦 Перемещение", transfer_cb, style="danger"),
         ])
+        buttons.append([ikb("❌ Отмена", f"product_{product_id}")])
+        return InlineKeyboardMarkup(inline_keyboard=buttons)
 
     confirm_style = "danger" if action == "delete" else "success"
-    if action == "unavailable":
-        confirm_label = "✅ В архив как перемещение" if is_transfer else "✅ В архив как продажу"
-        report_flag = 0 if is_transfer else int(report_enabled)
-        kind_flag = 1 if is_transfer else 0
-        confirm_cb = (
-            f"product_confirm_{action}_{product_id}_{report_flag}_"
-            f"{int(mark_telegram_enabled)}_{kind_flag}"
-        )
-    else:
-        confirm_label = "✅ Подтвердить"
-        confirm_cb = (
-            f"product_confirm_{action}_{product_id}_"
-            f"{int(report_enabled)}_{int(mark_telegram_enabled)}"
-        )
-
-    buttons.append([ikb(confirm_label, confirm_cb, style=confirm_style)])
+    confirm_cb = (
+        f"product_confirm_{action}_{product_id}_"
+        f"{int(report_enabled)}_{int(mark_telegram_enabled)}"
+    )
+    buttons.append([ikb("✅ Подтвердить", confirm_cb, style=confirm_style)])
     buttons.append([ikb("❌ Отмена", f"product_{product_id}")])
 
     return InlineKeyboardMarkup(inline_keyboard=buttons)

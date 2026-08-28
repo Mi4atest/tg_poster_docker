@@ -7,12 +7,11 @@ from app.bot.handlers.product_management import (
 )
 from app.bot.keyboards.product_keyboard import get_product_status_confirmation_keyboard
 from app.utils.archive_kind import (
-    ARCHIVE_KIND_SALE,
-    ARCHIVE_KIND_TRANSFER,
-    archive_kind_toggle_answer,
     format_unavailable_confirm_text,
     is_transfer_archive,
     normalize_archive_kind,
+    ARCHIVE_KIND_SALE,
+    ARCHIVE_KIND_TRANSFER,
 )
 
 
@@ -33,73 +32,56 @@ def test_normalize_archive_kind():
     assert is_transfer_archive({"archive_kind": "transfer"})
 
 
-def test_unavailable_confirm_text_sale_and_transfer():
-    sale = format_unavailable_confirm_text("iPhone 13 Pro 128Gb", ARCHIVE_KIND_SALE)
-    assert "🚨" in sale
-    assert "ПОСМОТРИТЕ ВНИЗ" in sale
-    assert "💰 <b>Продажа</b>" in sale
-    assert "сводку месяца" in sale
-    assert "переключите" in sale
-
-    transfer = format_unavailable_confirm_text("iPhone 13 Pro 128Gb", ARCHIVE_KIND_TRANSFER)
-    assert "🚨" in transfer
-    assert "📦 <b>Перемещение</b>" in transfer
-    assert "не попадёт" in transfer
-    assert "Отчет" not in transfer
+def test_unavailable_confirm_text():
+    text = format_unavailable_confirm_text("iPhone 13 Pro 128Gb")
+    assert "🚨" in text
+    assert "ПОСМОТРИТЕ ВНИЗ" in text
+    assert "Зелёная" in text
+    assert "Красная" in text
+    assert "iPhone 13 Pro 128Gb" in text
+    assert "переключите" not in text
 
 
 def test_unavailable_confirm_escapes_html_in_name():
-    text = format_unavailable_confirm_text("A <B> & C", ARCHIVE_KIND_SALE)
+    text = format_unavailable_confirm_text("A <B> & C")
     assert "A &lt;B&gt; &amp; C" in text
     assert "A <B>" not in text
 
 
-def test_toggle_answer():
-    assert archive_kind_toggle_answer(ARCHIVE_KIND_SALE) == "Режим: продажа"
-    assert archive_kind_toggle_answer(ARCHIVE_KIND_TRANSFER) == "Режим: перемещение"
-
-
-def test_sale_keyboard_default():
+def test_unavailable_keyboard_sale_and_transfer_row():
     kb = get_product_status_confirmation_keyboard(42, "unavailable")
     labels = _labels(kb)
     assert "💰 Продажа" in labels
+    assert "📦 Перемещение" in labels
     assert "🔴 Отчет Иван/Саша" in labels
     assert "🟢 Пометить ТГ/IG/Max" in labels
-    assert "✅ В архив как продажу" in labels
-    assert "product_toggle_archive_kind_42" in _callbacks(kb)
+    assert all("В архив как" not in t for t in labels)
+    assert all("product_toggle_archive_kind" not in cb for cb in _callbacks(kb))
     assert "product_confirm_unavailable_42_0_1_0" in _callbacks(kb)
+    assert "product_confirm_unavailable_42_0_1_1" in _callbacks(kb)
+
     rows = kb.inline_keyboard
-    confirm_row = next(r for r in rows if r and "В архив как продажу" in r[0].text)
+    action_row = next(r for r in rows if any("Продажа" in b.text for b in r))
     cancel_row = next(r for r in rows if r and r[0].text == "❌ Отмена")
-    assert confirm_row is not cancel_row
-    assert len(confirm_row) == 1
+    assert len(action_row) == 2
+    assert action_row[0].text == "💰 Продажа"
+    assert action_row[1].text == "📦 Перемещение"
+    assert getattr(action_row[0], "style", None) == "success"
+    assert getattr(action_row[1], "style", None) == "danger"
+    assert action_row is not cancel_row
     assert len(cancel_row) == 1
 
 
-def test_transfer_keyboard_hides_report():
-    kb = get_product_status_confirmation_keyboard(
-        42, "unavailable", archive_kind=ARCHIVE_KIND_TRANSFER
-    )
-    labels = _labels(kb)
-    assert "📦 Перемещение" in labels
-    assert "✅ В архив как перемещение" in labels
-    assert all("Отчет Иван/Саша" not in t for t in labels)
-    assert "product_confirm_unavailable_42_0_1_1" in _callbacks(kb)
-    rows = kb.inline_keyboard
-    confirm_row = next(r for r in rows if r and "В архив как перемещение" in r[0].text)
-    cancel_row = next(r for r in rows if r and r[0].text == "❌ Отмена")
-    assert confirm_row is not cancel_row
-    assert len(confirm_row) == 1
-
-
-def test_transfer_forces_report_flag_off_in_confirm():
+def test_unavailable_keyboard_report_visible_and_encoded():
     kb = get_product_status_confirmation_keyboard(
         7,
         "unavailable",
         report_enabled=True,
-        archive_kind=ARCHIVE_KIND_TRANSFER,
     )
-    assert "product_confirm_unavailable_7_0_1_1" in _callbacks(kb)
+    labels = _labels(kb)
+    assert "🟢 Отчет Иван/Саша" in labels
+    assert "product_confirm_unavailable_7_1_1_0" in _callbacks(kb)
+    assert "product_confirm_unavailable_7_1_1_1" in _callbacks(kb)
 
 
 def test_archive_product_title_and_card():

@@ -73,8 +73,13 @@ def test_blocked_request_returns_stale_cache_and_enters_cooldown(monkeypatch):
         raise AvitoMarketBlockedError("captcha")
 
     async def fake_run_db(fn, *args, **kwargs):
-        if fn is service_module.get_market_snapshot:
+        name = getattr(fn, "__name__", "")
+        if name == "get_market_snapshot":
             return stale
+        if name in {"get_active_market_block_until", "get_last_live_request_at"}:
+            return None
+        if name == "count_live_requests_since":
+            return 0
         return None
 
     monkeypatch.setattr(service_module, "run_db", fake_run_db)
@@ -107,13 +112,19 @@ def test_same_concurrent_query_is_fetched_once(monkeypatch):
 
     async def fake_run_db(fn, *args, **kwargs):
         nonlocal stored
-        if fn is service_module.get_market_snapshot:
+        name = getattr(fn, "__name__", "")
+        if name == "get_market_snapshot":
             return stored
-        if fn is service_module.save_market_snapshot:
+        if name in {"get_active_market_block_until", "get_last_live_request_at"}:
+            return None
+        if name == "count_live_requests_since":
+            return 0
+        if name == "save_market_snapshot":
             analysis = args[2]
             now = _utcnow()
             stored = {
                 **_snapshot(query, fresh=True),
+                "id": 7,
                 "total_count": analysis.total_count,
                 "matched_count": analysis.matched_count,
                 "used_count": analysis.used_count,
@@ -170,9 +181,75 @@ def test_persisted_retry_after_prevents_request_after_restart(monkeypatch):
         return []
 
     async def fake_run_db(fn, *args, **kwargs):
+        name = getattr(fn, "__name__", "")
+        if name == "get_market_snapshot":
+            return failed
+        if name in {"get_active_market_block_until", "get_last_live_request_at"}:
+            return None
+        if name == "count_live_requests_since":
+            return 0
         return failed
 
     monkeypatch.setattr(service_module, "run_db", fake_run_db)
     with pytest.raises(MarketTemporarilyUnavailable):
         asyncio.run(IphoneMarketPriceService(fetcher=fetcher).estimate(query))
+    assert calls == 0
+
+
+def test_persisted_daily_limit_blocks_live_fetch(monkeypatch):
+    query = parse_iphone_market_query("13 mini 128")
+    stale = _snapshot(query, fresh=False)
+    calls = 0
+
+    async def fetcher(_query):
+        nonlocal calls
+        calls += 1
+        return []
+
+    async def fake_run_db(fn, *args, **kwargs):
+        name = getattr(fn, "__name__", "")
+        if name == "get_market_snapshot":
+            return stale
+        if name == "count_live_requests_since":
+            return 40
+        if name in {"get_active_market_block_until", "get_last_live_request_at"}:
+            return None
+        return None
+
+    monkeypatch.setattr(service_module, "run_db", fake_run_db)
+    result = asyncio.run(IphoneMarketPriceService(fetcher=fetcher).estimate(query))
+    assert result.is_stale
+    assert calls == 0
+
+
+def test_global_block_on_success_snapshot_after_restart(monkeypatch):
+    query = parse_iphone_market_query("13 mini 128")
+    stale = {
+        **_snapshot(query, fresh=False),
+        "status": "success",
+        "retry_after": None,
+        "last_error": None,
+    }
+    calls = 0
+
+    async def fetcher(_query):
+        nonlocal calls
+        calls += 1
+        return []
+
+    async def fake_run_db(fn, *args, **kwargs):
+        name = getattr(fn, "__name__", "")
+        if name == "get_market_snapshot":
+            return stale
+        if name == "get_active_market_block_until":
+            return _utcnow() + timedelta(minutes=30)
+        if name == "count_live_requests_since":
+            return 0
+        if name == "get_last_live_request_at":
+            return None
+        return None
+
+    monkeypatch.setattr(service_module, "run_db", fake_run_db)
+    result = asyncio.run(IphoneMarketPriceService(fetcher=fetcher).estimate(query))
+    assert result.is_stale
     assert calls == 0

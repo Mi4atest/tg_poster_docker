@@ -26,6 +26,7 @@ from app.utils.iphone_market_query import IphoneMarketQuery
 logger = logging.getLogger(__name__)
 
 AVITO_MARKET_ITEMS_URL = "https://www.avito.ru/web/1/js/items"
+AVITO_MARKET_MOBILE_API_URL = "https://m.avito.ru/api/11/items"
 AVITO_MARKET_WEB_SEARCH_URL = "https://www.avito.ru/all/telefony"
 MAX_RESPONSE_BYTES = 4_000_000
 # Кэш преобразованных URL (SPFA /avito-url лимит ~2/мин с IP).
@@ -39,6 +40,11 @@ class AvitoMarketError(RuntimeError):
 
 class AvitoMarketBlockedError(AvitoMarketError):
     """Avito потребовал CAPTCHA или ограничил запросы."""
+
+    def __init__(self, message: str, *, soft: bool = False) -> None:
+        super().__init__(message)
+        # soft=True: egress уже сменили (sticky session) — короче пауза.
+        self.soft = soft
 
 
 class AvitoMarketParseError(AvitoMarketError):
@@ -55,6 +61,8 @@ class MarketListing:
     condition: Optional[str] = None
     description: str = ""
     city: str = ""
+    included: Optional[bool] = None
+    rejection_reason: Optional[str] = None
 
 
 class _JsonScriptParser(HTMLParser):
@@ -98,7 +106,7 @@ def build_market_web_url(query: IphoneMarketQuery) -> str:
 
 
 def build_market_search_url(query: IphoneMarketQuery) -> str:
-    """Локальный fallback URL в формате, близком к SPFA /avito-url."""
+    """Локальный web-fallback (desktop cookies / без SPFA)."""
     params = urlencode(
         {
             "categoryId": str(AVITO_MARKET_CATEGORY_ID),
@@ -109,6 +117,18 @@ def build_market_search_url(query: IphoneMarketQuery) -> str:
         }
     )
     return f"{AVITO_MARKET_ITEMS_URL}?{params}"
+
+
+def build_market_mobile_api_url(query: IphoneMarketQuery) -> str:
+    """Локальный fallback под mobile cookies (как SPFA /avito-url → m.avito)."""
+    params = urlencode(
+        {
+            "categoryId": str(AVITO_MARKET_CATEGORY_ID),
+            "locationId": str(AVITO_MARKET_LOCATION_ID),
+            "query": query.search_text,
+        }
+    )
+    return f"{AVITO_MARKET_MOBILE_API_URL}?{params}"
 
 
 def _coerce_price(value: Any) -> Optional[int]:
@@ -342,21 +362,34 @@ def _parse_response_body(text: str) -> list[MarketListing]:
     return parse_market_search_payload(payload)
 
 
-async def _resolve_search_url(query: IphoneMarketQuery, spfa: Optional[SpfaClient]) -> str:
+async def _resolve_search_url(
+    query: IphoneMarketQuery,
+    spfa: Optional[SpfaClient],
+    *,
+    prefer_mobile: bool = False,
+) -> str:
     cache_key = query.cache_key
     cached = _avito_url_cache.get(cache_key)
     if cached and time.monotonic() - cached[0] < _AVITO_URL_CACHE_TTL_SEC:
         return cached[1]
 
     if spfa is None:
-        return build_market_search_url(query)
+        return (
+            build_market_mobile_api_url(query)
+            if prefer_mobile
+            else build_market_search_url(query)
+        )
     try:
         api_url = await spfa.convert_web_url(build_market_web_url(query))
         _avito_url_cache[cache_key] = (time.monotonic(), api_url)
         return api_url
     except SpfaError as exc:
         logger.warning("SPFA avito-url failed, fallback to local URL: %s", exc)
-        return build_market_search_url(query)
+        return (
+            build_market_mobile_api_url(query)
+            if prefer_mobile
+            else build_market_search_url(query)
+        )
 
 
 async def _handle_block(
@@ -364,23 +397,110 @@ async def _handle_block(
     spfa: Optional[SpfaClient],
     cookies_obj: Optional[SpfaCookies],
     detail: str,
-) -> None:
-    """439/CAPTCHA — проверка безопасности, не обязательно «вечный бан».
+) -> bool:
+    """439/CAPTCHA/429 — разблокировка по доке SPFA.
 
-    Cookies через SPFA unblock + сброс локального кэша.
-    Новый cookie в этом же запросе не покупаем (деликатный режим).
+    Residential sticky: новый session в логине прокси (= новый IP).
+    Mobile modem: changeip-ссылка.
+    Затем бесплатный /unblock/ без покупки cookie.
+
+    Returns:
+        True если egress IP удалось сменить.
     """
     if spfa is None or cookies_obj is None:
-        return
-    try:
-        await spfa.unblock(cookies_obj.cookie_id)
-    finally:
-        spfa.invalidate_cookie_cache()
-    logger.warning(
-        "Avito block (%s); cookie cache invalidated id=%s",
-        detail,
-        cookies_obj.cookie_id,
+        return False
+
+    from app.integrations.avito.debug_agent_log import agent_dbg
+    from app.integrations.avito.proxy_change_ip import rotate_egress
+
+    # #region agent log
+    agent_dbg(
+        "B",
+        "market_search.py:_handle_block",
+        "block handler enter",
+        {
+            "detail": detail,
+            "cookie_id": cookies_obj.cookie_id,
+            "mobile": cookies_obj.mobile,
+        },
     )
+    # #endregion
+
+    settings = get_settings_service()
+    change_url = settings.get_avito_market_proxy_change_url()
+    market_proxy = settings.get_avito_market_proxy()
+    egress_ok, method = await rotate_egress(
+        proxy=market_proxy,
+        change_url=change_url,
+        persist_proxy=lambda value: settings.set_secret("avito_market_proxy", value),
+    )
+    if egress_ok:
+        # Чтобы unblock/следующие запросы шли уже с новым session.
+        fresh_proxy = settings.get_avito_market_proxy() or market_proxy
+        spfa.proxy = fresh_proxy
+        logger.info(
+            "Avito block (%s); egress rotated via %s before unblock",
+            detail,
+            method,
+        )
+    else:
+        logger.warning(
+            "Avito block (%s); egress rotate не удался — unblock всё равно",
+            detail,
+        )
+    # #region agent log
+    agent_dbg(
+        "A",
+        "market_search.py:_handle_block:ip",
+        "after rotate_egress",
+        {"ok": egress_ok, "method": method},
+    )
+    # #endregion
+
+    refreshed = await spfa.unblock(cookies_obj.cookie_id, previous=cookies_obj)
+    if refreshed is None:
+        if spfa.last_unblock_was_permanent():
+            spfa.invalidate_cookie_cache()
+            logger.warning(
+                "Avito block (%s); unblock permanent fail, cache cleared id=%s (%s)",
+                detail,
+                cookies_obj.cookie_id,
+                spfa._last_unblock_error[:120],
+            )
+        else:
+            logger.warning(
+                "Avito block (%s); unblock transient fail, cache kept id=%s (%s)",
+                detail,
+                cookies_obj.cookie_id,
+                (spfa._last_unblock_error or "")[:120],
+            )
+        # #region agent log
+        agent_dbg(
+            "C",
+            "market_search.py:_handle_block:unblock_fail",
+            "unblock failed",
+            {
+                "cookie_id": cookies_obj.cookie_id,
+                "permanent": spfa.last_unblock_was_permanent(),
+                "error": (spfa._last_unblock_error or "")[:160],
+            },
+        )
+        # #endregion
+        return egress_ok
+    logger.warning(
+        "Avito block (%s); cookies refreshed via unblock id=%s (без новой покупки)",
+        detail,
+        refreshed.cookie_id,
+    )
+    # #region agent log
+    agent_dbg(
+        "C",
+        "market_search.py:_handle_block:unblock_ok",
+        "unblock saved",
+        {"cookie_id": refreshed.cookie_id, "keys": len(refreshed.cookies)},
+    )
+    # #endregion
+    return egress_ok
 
 
 async def _fetch_via_spfa_browser(
@@ -391,42 +511,124 @@ async def _fetch_via_spfa_browser(
     proxy: Optional[str],
     timeout_seconds: int,
 ) -> list[MarketListing]:
-    headers = {
-        "Accept": "application/json,text/plain,*/*",
-        "Accept-Language": "ru-RU,ru;q=0.9",
-        "Referer": "https://www.avito.ru/",
-        "User-Agent": cookies_obj.user_agent,
-    }
-    headers.update(cookies_obj.headers)
-    headers["User-Agent"] = cookies_obj.user_agent
+    from urllib.parse import urlparse as _urlparse
 
-    try:
-        status, text, final_url = await browser_get(
+    from app.integrations.avito.debug_agent_log import agent_dbg
+
+    async def _once(cookies: SpfaCookies, proxy_value: Optional[str]) -> tuple[int, str, str]:
+        headers = {
+            "Accept": "application/json,text/plain,*/*",
+            "Accept-Language": "ru-RU,ru;q=0.9",
+            "Referer": "https://www.avito.ru/",
+            "User-Agent": cookies.user_agent,
+        }
+        headers.update(cookies.headers)
+        headers["User-Agent"] = cookies.user_agent
+        return await browser_get(
             search_url,
             headers=headers,
-            cookies=cookies_obj.cookies,
-            proxy=proxy,
-            impersonate=cookies_obj.impersonate,
+            cookies=cookies.cookies,
+            proxy=proxy_value,
+            impersonate=cookies.impersonate,
             timeout_seconds=timeout_seconds,
             max_bytes=MAX_RESPONSE_BYTES,
         )
+
+    try:
+        status, text, final_url = await _once(cookies_obj, proxy)
     except BrowserFetchError as exc:
         raise AvitoMarketError(str(exc)) from exc
 
+    # #region agent log
+    agent_dbg(
+        "E",
+        "market_search.py:_fetch_via_spfa_browser",
+        "Avito response",
+        {
+            "status": status,
+            "host": _urlparse(final_url or search_url).hostname,
+            "path_prefix": (_urlparse(final_url or search_url).path or "")[:40],
+            "cookie_id": cookies_obj.cookie_id,
+            "impersonate": cookies_obj.impersonate,
+            "body_prefix": (text or "")[:80],
+            "attempt": 1,
+        },
+    )
+    # #endregion
+    logger.info(
+        "Avito market fetch status=%s host=%s cookie_id=%s attempt=1",
+        status,
+        _urlparse(final_url or search_url).hostname,
+        cookies_obj.cookie_id,
+    )
+
     if status in {403, 429, 439}:
-        await _handle_block(spfa=spfa, cookies_obj=cookies_obj, detail=f"HTTP {status}")
-        raise AvitoMarketBlockedError(f"Avito вернул HTTP {status}")
+        egress_ok = await _handle_block(
+            spfa=spfa, cookies_obj=cookies_obj, detail=f"HTTP {status}"
+        )
+        if egress_ok:
+            # Один повтор на новом sticky-session + обновлённых cookies.
+            import asyncio
+
+            await asyncio.sleep(8)
+            refreshed = spfa._load_cache() or cookies_obj
+            settings = get_settings_service()
+            retry_proxy = proxy_url(settings.get_avito_market_proxy()) or proxy
+            try:
+                status2, text2, final_url2 = await _once(refreshed, retry_proxy)
+            except BrowserFetchError as exc:
+                raise AvitoMarketError(str(exc)) from exc
+            # #region agent log
+            agent_dbg(
+                "E",
+                "market_search.py:_fetch_via_spfa_browser:retry",
+                "Avito retry after egress rotate",
+                {
+                    "status": status2,
+                    "host": _urlparse(final_url2 or search_url).hostname,
+                    "cookie_id": refreshed.cookie_id,
+                    "attempt": 2,
+                    "first_status": status,
+                },
+            )
+            # #endregion
+            logger.info(
+                "Avito market fetch status=%s host=%s cookie_id=%s attempt=2 (after rotate)",
+                status2,
+                _urlparse(final_url2 or search_url).hostname,
+                refreshed.cookie_id,
+            )
+            if status2 == 200 and "captcha" not in (final_url2 or "").lower():
+                try:
+                    return _parse_response_body(text2)
+                except AvitoMarketBlockedError:
+                    pass
+            status, text, final_url = status2, text2, final_url2
+            if status in {403, 429, 439}:
+                raise AvitoMarketBlockedError(
+                    f"Avito вернул HTTP {status}", soft=True
+                )
+        # Без ротации / повтор не помог.
+        soft = bool(egress_ok)
+        raise AvitoMarketBlockedError(f"Avito вернул HTTP {status}", soft=soft)
     if status != 200:
         raise AvitoMarketError(f"Avito вернул HTTP {status}")
     if "captcha" in final_url.lower():
-        await _handle_block(spfa=spfa, cookies_obj=cookies_obj, detail="captcha redirect")
-        raise AvitoMarketBlockedError("Avito перенаправил запрос на CAPTCHA")
+        egress_ok = await _handle_block(
+            spfa=spfa, cookies_obj=cookies_obj, detail="captcha redirect"
+        )
+        raise AvitoMarketBlockedError(
+            "Avito перенаправил запрос на CAPTCHA", soft=egress_ok
+        )
     try:
         return _parse_response_body(text)
     except AvitoMarketBlockedError:
-        await _handle_block(spfa=spfa, cookies_obj=cookies_obj, detail="security page")
-        raise
-
+        egress_ok = await _handle_block(
+            spfa=spfa, cookies_obj=cookies_obj, detail="security page"
+        )
+        raise AvitoMarketBlockedError(
+            "Avito запросил проверку безопасности", soft=egress_ok
+        )
 
 async def fetch_market_listings(
     query: IphoneMarketQuery,
@@ -440,12 +642,12 @@ async def fetch_market_listings(
     market_proxy = settings.get_avito_market_proxy()
     use_spfa = settings.is_avito_market_spfa_enabled() and bool(spfa_key)
     spfa = SpfaClient(spfa_key, proxy=market_proxy) if use_spfa else None
-    search_url = await _resolve_search_url(query, spfa)
+    prefer_mobile = bool(use_spfa and market_proxy)
+    search_url = await _resolve_search_url(query, spfa, prefer_mobile=prefer_mobile)
     proxy = proxy_url(market_proxy) or None
 
     # SPFA-путь: TLS-impersonate через curl_cffi (aiohttp даёт 439 даже с cookies).
     if spfa is not None:
-        prefer_mobile = bool(market_proxy)
         try:
             cookies_obj = await spfa.get_cookies(prefer_mobile=prefer_mobile)
         except SpfaError as exc:

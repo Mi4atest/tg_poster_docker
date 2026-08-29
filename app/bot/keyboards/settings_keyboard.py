@@ -408,12 +408,21 @@ def get_integration_platform_keyboard(platform: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def get_settings_avito_market_keyboard(*, enabled: bool = True, use_spfa: bool = True) -> InlineKeyboardMarkup:
+def get_settings_avito_market_keyboard(
+    *,
+    enabled: bool = True,
+    use_spfa: bool = True,
+    watchlist_enabled: bool = True,
+) -> InlineKeyboardMarkup:
     enabled_label = "Оценка рынка: вкл" if enabled else "Оценка рынка: выкл"
     spfa_label = "SPFA cookies: вкл" if use_spfa else "SPFA cookies: выкл"
+    watchlist_label = (
+        "Автообновление списка: вкл" if watchlist_enabled else "Автообновление списка: выкл"
+    )
     buttons = [
         [InlineKeyboardButton(text=enabled_label, callback_data="settings_avito_market_toggle_enabled")],
         [InlineKeyboardButton(text=spfa_label, callback_data="settings_avito_market_toggle_spfa")],
+        [InlineKeyboardButton(text=watchlist_label, callback_data="settings_avito_market_toggle_watchlist")],
         [InlineKeyboardButton(text="SPFA API ключ", callback_data="settings_edit_integration_spfa_api_key")],
         [
             InlineKeyboardButton(

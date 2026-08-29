@@ -20,10 +20,13 @@ from app.config.settings import (
     AVITO_MARKET_TIMEOUT_SEC,
 )
 from app.db.avito_market_queries import (
+    count_live_requests_since,
     get_active_market_block_until,
+    get_last_live_request_at,
     get_market_snapshot,
     get_market_snapshot_by_id,
     list_recent_market_snapshots,
+    record_live_request,
     record_market_error,
     save_market_snapshot,
 )
@@ -67,6 +70,8 @@ class MarketPriceEstimate:
     is_soft: bool = False
     limit_hint: Optional[str] = None
     listings: tuple[MarketListing, ...] = ()
+    live_fetched: bool = False
+    snapshot_id: Optional[int] = None
 
 
 ListingFetcher = Callable[[IphoneMarketQuery], Awaitable[list[MarketListing]]]
@@ -111,6 +116,12 @@ def _listings_from_audit(raw: object) -> tuple[MarketListing, ...]:
                 seller_type=str(seller) if seller else None,
                 condition=str(row.get("condition") or "") or None,
                 city=str(row.get("city") or ""),
+                included=(
+                    bool(row.get("included"))
+                    if row.get("included") is not None
+                    else True
+                ),
+                rejection_reason=str(row.get("rejection_reason") or "") or None,
             )
         )
     items.sort(key=lambda item: item.price_rub)
@@ -170,6 +181,7 @@ class IphoneMarketPriceService:
         stale: bool = False,
         reason: Optional[str] = None,
         limit_hint: Optional[str] = None,
+        live_fetched: bool = False,
     ) -> MarketPriceEstimate:
         summary = None
         if snapshot.get("median_rub") is not None:
@@ -179,6 +191,11 @@ class IphoneMarketPriceService:
                 q25_rub=int(snapshot["q25_rub"]),
                 q75_rub=int(snapshot["q75_rub"]),
             )
+        snapshot_id = snapshot.get("id")
+        try:
+            snapshot_id_int = int(snapshot_id) if snapshot_id is not None else None
+        except (TypeError, ValueError):
+            snapshot_id_int = None
         return MarketPriceEstimate(
             query=query,
             region=str(snapshot.get("region") or AVITO_MARKET_REGION),
@@ -195,6 +212,8 @@ class IphoneMarketPriceService:
             is_soft=IphoneMarketPriceService._is_soft_snapshot(snapshot),
             limit_hint=limit_hint,
             listings=_listings_from_audit(snapshot.get("listing_audit")),
+            live_fetched=live_fetched,
+            snapshot_id=snapshot_id_int,
         )
 
     @staticmethod
@@ -216,6 +235,10 @@ class IphoneMarketPriceService:
         key: str,
         now: datetime,
         snapshot: Optional[dict],
+        *,
+        global_until: Optional[datetime] = None,
+        daily_count: int = 0,
+        last_request_at: Optional[datetime] = None,
     ) -> Optional[str]:
         if snapshot and snapshot.get("retry_after") and snapshot["retry_after"] > now:
             retry_after = snapshot["retry_after"]
@@ -228,13 +251,21 @@ class IphoneMarketPriceService:
                 )
             return user_facing_market_error(last or "обновление временно приостановлено")
 
-        # Глобальная пауза после 439 на любой модели (переживает рестарт контейнера).
-        try:
-            global_until = get_active_market_block_until()
-        except Exception:
-            global_until = None
         if global_until and global_until > now:
             mins = max(1, int((global_until - now).total_seconds() / 60) + 1)
+            # #region agent log
+            try:
+                from app.integrations.avito.debug_agent_log import agent_dbg
+
+                agent_dbg(
+                    "D",
+                    "iphone_market_price_service.py:global_block",
+                    "live blocked by global retry_after",
+                    {"mins": mins, "until": global_until.isoformat()},
+                )
+            except Exception:
+                pass
+            # #endregion
             return (
                 f"Avito временно ограничил автоматические запросы. "
                 f"Повторите через ~{mins} мин."
@@ -250,17 +281,17 @@ class IphoneMarketPriceService:
         if failed_until and failed_until > now:
             mins = max(1, int((failed_until - now).total_seconds() / 60) + 1)
             return f"Сейчас не удалось обновить оценку. Повторите через ~{mins} мин."
-        self._prune_daily_limit(now)
-        if len(self._request_times) >= AVITO_MARKET_DAILY_REQUEST_LIMIT:
+        if daily_count >= AVITO_MARKET_DAILY_REQUEST_LIMIT:
             return user_facing_market_error("достигнут безопасный суточный лимит запросов")
+        effective_last = last_request_at or self._last_request_at
         if (
-            self._last_request_at
-            and now - self._last_request_at
+            effective_last
+            and now - effective_last
             < timedelta(seconds=AVITO_MARKET_MIN_REQUEST_INTERVAL_SEC)
         ):
             wait = int(
                 AVITO_MARKET_MIN_REQUEST_INTERVAL_SEC
-                - (now - self._last_request_at).total_seconds()
+                - (now - effective_last).total_seconds()
             )
             wait = max(1, wait)
             return (
@@ -286,7 +317,12 @@ class IphoneMarketPriceService:
             )
         raise MarketTemporarilyUnavailable(friendly)
 
-    async def estimate(self, query: IphoneMarketQuery) -> MarketPriceEstimate:
+    async def estimate(
+        self,
+        query: IphoneMarketQuery,
+        *,
+        source: str = "manual",
+    ) -> MarketPriceEstimate:
         key = self._cache_key(query)
         now = _utcnow()
         snapshot = await run_db(get_market_snapshot, key)
@@ -302,12 +338,25 @@ class IphoneMarketPriceService:
 
             async with self._fetch_semaphore:
                 now = _utcnow()
-                reason = self._restriction_reason(key, now, snapshot)
+                global_until = await run_db(get_active_market_block_until)
+                daily_count = await run_db(
+                    count_live_requests_since, now - timedelta(hours=24)
+                )
+                last_request_at = await run_db(get_last_live_request_at)
+                reason = self._restriction_reason(
+                    key,
+                    now,
+                    snapshot,
+                    global_until=global_until,
+                    daily_count=int(daily_count or 0),
+                    last_request_at=last_request_at,
+                )
                 if reason:
                     return self._fallback_or_raise(query, snapshot, reason)
 
                 self._last_request_at = now
                 self._request_times.append(now)
+                await run_db(record_live_request, key, source=source)
                 try:
                     listings = await self._fetcher(query)
                     analysis = analyze_market_listings(
@@ -325,14 +374,21 @@ class IphoneMarketPriceService:
                         region=AVITO_MARKET_REGION,
                         ttl_seconds=AVITO_MARKET_CACHE_TTL_SEC,
                     )
-                    return self._from_snapshot(query, saved)
+                    return self._from_snapshot(query, saved, live_fetched=True)
                 except AvitoMarketBlockedError as exc:
-                    self._blocked_until = _utcnow() + timedelta(
-                        seconds=AVITO_MARKET_BLOCK_COOLDOWN_SEC
+                    soft = bool(getattr(exc, "soft", False))
+                    cooldown = (
+                        20 * 60 if soft else AVITO_MARKET_BLOCK_COOLDOWN_SEC
                     )
+                    self._blocked_until = _utcnow() + timedelta(seconds=cooldown)
                     reason = "Avito запросил проверку или ограничил запросы"
-                    retry_after_seconds = AVITO_MARKET_BLOCK_COOLDOWN_SEC
-                    logger.warning("Avito market request blocked: %s", exc)
+                    retry_after_seconds = cooldown
+                    logger.warning(
+                        "Avito market request blocked (soft=%s cooldown=%ss): %s",
+                        soft,
+                        cooldown,
+                        exc,
+                    )
                 except AvitoMarketError as exc:
                     self._failed_until[key] = _utcnow() + timedelta(minutes=15)
                     reason = "не удалось обновить данные Avito"
@@ -375,7 +431,7 @@ class IphoneMarketPriceService:
             reason="показан сохранённый отчёт из истории" if stale else None,
         )
 
-    async def list_recent_reports(self, *, limit: int = 12) -> list[dict]:
+    async def list_recent_reports(self, *, limit: Optional[int] = None) -> list[dict]:
         return await run_db(list_recent_market_snapshots, limit=limit)
 
 

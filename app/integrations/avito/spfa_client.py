@@ -80,7 +80,23 @@ class SpfaClient:
         self.proxy = (proxy or "").strip()
         self.cache_path = Path(cache_path or DEFAULT_COOKIE_CACHE_PATH)
         self.cookie_ttl_sec = cookie_ttl_sec
+        self._last_unblock_error: str = ""
 
+    def last_unblock_was_permanent(self) -> bool:
+        """410/404/истёк срок — кэш можно сбрасывать; transient — нет."""
+        msg = (self._last_unblock_error or "").lower()
+        return any(
+            marker in msg
+            for marker in (
+                "не найден",
+                "12 час",
+                "больше 12",
+                "gone",
+                "410",
+                "404",
+                "not found",
+            )
+        )
     async def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         url = f"{SPFA_API_BASE}{path}"
         timeout = aiohttp.ClientTimeout(total=45)
@@ -222,20 +238,91 @@ class SpfaClient:
         return await self.purchase_cookies(mobile=prefer_mobile and bool(self.proxy))
 
     def invalidate_cookie_cache(self) -> None:
-        """Сбросить локальный кэш cookies (после 439/CAPTCHA)."""
+        """Сбросить локальный кэш cookies."""
         try:
             if self.cache_path.exists():
                 self.cache_path.unlink()
         except OSError as exc:
             logger.warning("Не удалось удалить кэш SPFA cookies: %s", exc)
 
-    async def unblock(self, cookie_id: str) -> None:
+    async def unblock(
+        self,
+        cookie_id: str,
+        *,
+        previous: Optional[SpfaCookies] = None,
+    ) -> Optional[SpfaCookies]:
+        """Бесплатно обновить cookies. При api_key возвращает актуальные значения.
+
+        Сохраняет UA/fingerprint из previous (или из локального кэша).
+        Новый cookie не покупается.
+        """
         if not cookie_id:
-            return
-        payload: dict[str, Any] = {"id": cookie_id, "api_key": self.api_key}
+            return None
+        self._last_unblock_error = ""
+        base = previous or self._load_cache()
+        payload: dict[str, Any] = {"id": int(cookie_id) if str(cookie_id).isdigit() else cookie_id}
+        if self.api_key:
+            payload["api_key"] = self.api_key
         if self.proxy:
             payload["proxy"] = self.proxy
         try:
-            await self._post("/unblock/", payload)
+            data = await self._post("/unblock/", payload)
         except SpfaError as exc:
+            self._last_unblock_error = str(exc)
             logger.warning("SPFA unblock failed id=%s: %s", cookie_id, exc)
+            return None
+
+        results = data.get("results") if isinstance(data, dict) else None
+        if not isinstance(results, dict):
+            self._last_unblock_error = "no results in response"
+            logger.info("SPFA unblock ok id=%s (cookies в ответе нет)", cookie_id)
+            return None
+        raw_cookies = results.get("cookies")
+        if not isinstance(raw_cookies, dict) or not raw_cookies:
+            self._last_unblock_error = "empty cookies in results"
+            logger.info("SPFA unblock ok id=%s без cookies в results", cookie_id)
+            return None
+
+        user_agent = ""
+        fingerprint: dict[str, Any] = {}
+        mobile = False
+        purchased_at = time.time()
+        if base is not None:
+            user_agent = base.user_agent
+            fingerprint = dict(base.fingerprint or {})
+            mobile = base.mobile
+            purchased_at = base.purchased_at or purchased_at
+        headers = (
+            fingerprint.get("headers")
+            if isinstance(fingerprint.get("headers"), dict)
+            else {}
+        )
+        if not user_agent:
+            user_agent = str(headers.get("user-agent") or "").strip()
+        if not user_agent:
+            # fallback для unblock без локального кэша (сухой прогон / после сброса)
+            user_agent = (
+                "Mozilla/5.0 (Linux; Android 15; SM-S938B) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/131.0.7178.123 Mobile Safari/537.36"
+            )
+            fingerprint = {
+                "impersonate": "chrome131_android",
+                "headers": {"user-agent": user_agent},
+            }
+            mobile = True
+
+        refreshed = SpfaCookies(
+            cookie_id=str(results.get("id") or cookie_id),
+            cookies={str(k): str(v) for k, v in raw_cookies.items()},
+            user_agent=user_agent,
+            fingerprint=fingerprint,
+            mobile=mobile,
+            purchased_at=purchased_at,
+        )
+        self._save_cache(refreshed)
+        logger.info(
+            "SPFA cookies refreshed via unblock id=%s keys=%s",
+            refreshed.cookie_id,
+            len(refreshed.cookies),
+        )
+        return refreshed

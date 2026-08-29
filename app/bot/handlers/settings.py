@@ -182,11 +182,16 @@ def _get_instagram_integration_field_prompt(field: str) -> str:
         "avito_market_proxy": (
             "Введите residential-прокси в формате:\n"
             "`login:password@host:port`\n\n"
-            "Пример: `user:pass@ru.resigw.com:2333`\n"
-            "HTTP и SOCKS5 с одним host:port — для запросов используется HTTP."
+            "Для sticky-сессии mobileproxy в login должен быть "
+            "`...-session-<id>-sessTime-N` — при блоке Avito бот сам "
+            "сменит session (новый IP).\n"
+            "Пример: `user-session-abc-sessTime-15:pass@ru.resigw.com:2333`"
         ),
         "avito_market_proxy_change_url": (
-            "Вставьте ссылку смены IP от провайдера прокси.\n"
+            "Ссылка Change IP нужна только для классических мобильных "
+            "(модемных) прокси.\n"
+            "Для residential sticky (session в логине) поле можно оставить "
+            "пустым — IP меняется через новый session.\n"
             "Пустое сообщение очистит поле."
         ),
     }
@@ -523,15 +528,18 @@ def _mask_proxy_host(proxy: str) -> str:
 
 def _build_avito_market_settings_text() -> str:
     service = get_settings_service()
+    from app.integrations.avito.proxy_change_ip import mask_change_ip_url
+
     change_url = service.get_avito_market_proxy_change_url()
     return (
         "📊 Оценка рынка Avito\n\n"
         "Прокси и SPFA хранятся в настройках проекта (на лету, без .env).\n\n"
         f"Оценка рынка: {'вкл' if service.is_avito_market_enabled() else 'выкл'}\n"
+        f"Автообновление списка: {'вкл' if service.is_avito_market_watchlist_enabled() else 'выкл'}\n"
         f"SPFA cookies: {'вкл' if service.is_avito_market_spfa_enabled() else 'выкл'}\n"
         f"SPFA API ключ: {'задан' if service.get_spfa_api_key() else 'не задан'}\n"
         f"Прокси: {_mask_proxy_host(service.get_avito_market_proxy())}\n"
-        f"Ссылка смены IP: {change_url or 'не задана'}\n\n"
+        f"Ссылка смены IP: {mask_change_ip_url(change_url) or 'не задана'}\n\n"
         "Формат прокси: login:password@host:port\n"
         "Пример: user:pass@ru.resigw.com:2333"
     )
@@ -542,6 +550,9 @@ def _avito_market_keyboard():
     return get_settings_avito_market_keyboard(
         enabled=service.is_avito_market_enabled(),
         use_spfa=service.is_avito_market_spfa_enabled(),
+        watchlist_enabled=bool(
+            service.get_all().get("integrations", {}).get("avito_market_watchlist_enabled", True)
+        ),
     )
 
 
@@ -582,6 +593,20 @@ async def avito_market_toggle_spfa(callback: CallbackQuery):
     service = get_settings_service()
     cur = service.is_avito_market_spfa_enabled()
     service.update({"integrations": {"avito_market_use_spfa": not cur}})
+    await callback.message.edit_text(
+        _build_avito_market_settings_text(),
+        reply_markup=_avito_market_keyboard(),
+        disable_web_page_preview=True,
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "settings_avito_market_toggle_watchlist")
+async def avito_market_toggle_watchlist(callback: CallbackQuery):
+    service = get_settings_service()
+    integ = service.get_all().get("integrations", {})
+    cur = bool(integ.get("avito_market_watchlist_enabled", True))
+    service.update({"integrations": {"avito_market_watchlist_enabled": not cur}})
     await callback.message.edit_text(
         _build_avito_market_settings_text(),
         reply_markup=_avito_market_keyboard(),

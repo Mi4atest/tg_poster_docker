@@ -1,6 +1,13 @@
 from datetime import datetime
 
-from app.bot.handlers.iphone_market_price import format_market_estimate
+from app.bot.handlers.iphone_market_price import (
+    _cancel_keyboard,
+    _history_keyboard,
+    _history_text,
+    _result_keyboard,
+    format_market_estimate,
+    sort_market_report_rows,
+)
 from app.integrations.avito.market_search import MarketListing
 from app.services.iphone_market_price_service import MarketPriceEstimate
 from app.utils.iphone_market_query import parse_iphone_market_query
@@ -98,3 +105,139 @@ def test_stale_result_has_explicit_warning():
     text = format_market_estimate(estimate)
     assert "Показан сохранённый результат" in text
     assert "временно ограничил" in text
+
+
+def test_market_reports_sorted_old_to_new_then_memory():
+    rows = [
+        {"id": 3, "model": "iPhone 15 Pro", "memory_gb": 256, "median_rub": 90_000},
+        {"id": 1, "model": "iPhone 11", "memory_gb": 256, "median_rub": 18_000},
+        {"id": 2, "model": "iPhone 11", "memory_gb": 64, "median_rub": 12_000},
+        {"id": 4, "model": "iPhone 13 mini", "memory_gb": 128, "median_rub": 27_000},
+    ]
+    ordered = sort_market_report_rows(rows)
+    assert [row["id"] for row in ordered] == [2, 1, 4, 3]
+
+
+def test_history_keyboard_paginates_and_stays_inside_block():
+    rows = [
+        {
+            "id": i,
+            "model": "iPhone 11" if i < 10 else "iPhone 16",
+            "memory_gb": 128,
+            "median_rub": 10_000 + i,
+        }
+        for i in range(1, 14)
+    ]
+    markup = _history_keyboard(rows, page=0)
+    pairs = [(btn.text, btn.callback_data) for row in markup.inline_keyboard for btn in row]
+    texts = [text for text, _ in pairs]
+    callbacks = [cb for _, cb in pairs]
+    assert "▶️" in texts
+    assert "◀️" not in texts
+    assert ("⬅️ Назад", "avito_market_start") in pairs
+    assert "avito_market_cancel" not in callbacks
+    assert any(cb == "avito_market_hist:1" for cb in callbacks)
+    assert any(cb.startswith("avito_market_open:") and cb.endswith(":0") for cb in callbacks)
+
+    page2 = _history_keyboard(rows, page=1)
+    page2_pairs = [(btn.text, btn.callback_data) for row in page2.inline_keyboard for btn in row]
+    page2_texts = [text for text, _ in page2_pairs]
+    assert "◀️" in page2_texts
+    assert ("⬅️ Назад", "avito_market_start") in page2_pairs
+    assert any("16 128ГБ" in text for text in page2_texts)
+    assert any(cb.startswith("avito_market_open:") and cb.endswith(":1") for _, cb in page2_pairs)
+
+
+def test_result_keyboard_one_step_back():
+    from_search = [
+        (btn.text, btn.callback_data)
+        for row in _result_keyboard().inline_keyboard
+        for btn in row
+    ]
+    assert ("⬅️ Назад", "avito_market_start") in from_search
+    assert ("🗂 Последние отчёты", "avito_market_history") in from_search
+    assert all(cb != "avito_market_cancel" for _, cb in from_search)
+
+    offered = [
+        (btn.text, btn.callback_data)
+        for row in _result_keyboard(offer_watchlist=True).inline_keyboard
+        for btn in row
+    ]
+    assert ("➕ В автообновление", "avito_market_wl:fromr") in offered
+
+    from_history = [
+        (btn.text, btn.callback_data)
+        for row in _result_keyboard(history_page=2).inline_keyboard
+        for btn in row
+    ]
+    assert from_history == [("⬅️ Назад", "avito_market_hist:2")]
+
+
+def test_intro_keyboard_has_watchlist_and_products_exit():
+    pairs = [
+        (btn.text, btn.callback_data)
+        for row in _cancel_keyboard().inline_keyboard
+        for btn in row
+    ]
+    assert ("📋 Список автообновления", "avito_market_wl") in pairs
+    assert ("⬅️ В товары", "avito_market_cancel") in pairs
+
+
+def test_history_header_lists_all_reports_with_time():
+    rows = sort_market_report_rows(
+        [
+            {
+                "id": 2,
+                "model": "iPhone 11",
+                "memory_gb": 256,
+                "median_rub": None,
+                "fetched_at": datetime(2026, 8, 29, 0, 24),
+            },
+            {
+                "id": 1,
+                "model": "iPhone 11",
+                "memory_gb": 64,
+                "median_rub": 9_990,
+                "fetched_at": datetime(2026, 8, 29, 8, 40),
+            },
+            {
+                "id": 3,
+                "model": "iPhone 12 Pro Max",
+                "memory_gb": 256,
+                "median_rub": 23_000,
+                "fetched_at": datetime(2026, 8, 29, 10, 0),
+            },
+        ]
+    )
+    text = _history_text(rows)
+    assert "<pre>" in text
+    assert "blockquote expandable" not in text
+    assert "11" in text and "64ГБ" in text and "9 990 ₽" in text
+    assert "29.08.26 11:40" in text
+    assert "11" in text and "256ГБ" in text and "—" in text
+    assert "29.08.26 03:24" in text
+    assert "12 Pro Max" in text and "23 000 ₽" in text
+    assert "29.08.26 13:00" in text
+    assert "Свежие" not in text
+    assert "Показано" not in text
+
+
+def test_history_header_highlights_latest_and_collapses_catalog():
+    rows = sort_market_report_rows(
+        [
+            {
+                "id": i,
+                "model": f"iPhone {10 + i}",
+                "memory_gb": 128,
+                "median_rub": 10_000 * i,
+                "fetched_at": datetime(2026, 8, 29, i, 0),
+            }
+            for i in range(1, 5)
+        ]
+    )
+    text = _history_text(rows)
+    assert "🕒 Свежие:" in text
+    assert "<blockquote expandable><pre>" in text
+    assert "14 128ГБ: 40 000 ₽ · 29.08.26 07:00" in text
+    assert "13 128ГБ: 30 000 ₽ · 29.08.26 06:00" in text
+    assert "12 128ГБ: 20 000 ₽ · 29.08.26 05:00" in text

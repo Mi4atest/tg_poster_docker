@@ -7,6 +7,7 @@ from app.config import settings as env_settings
 from app.scheduler.queue_manager import QueueManager
 from app.scheduler.platform_worker import PlatformWorker
 from app.scheduler.avito_archive_worker import AvitoArchiveWorker
+from app.scheduler.market_watchlist_worker import MarketWatchlistWorker
 from app.services.settings_service import get_settings_service
 from app.workers.instagram.token_manager import InstagramGraphTokenManager
 
@@ -28,6 +29,7 @@ class PublicationOrchestrator:
         self.worker_tasks: Dict[str, asyncio.Task] = {}
         self.maintenance_tasks: Dict[str, asyncio.Task] = {}
         self.avito_archive_worker = AvitoArchiveWorker(self.queue_manager, orchestrator=self)
+        self.market_watchlist_worker = MarketWatchlistWorker()
         self.is_running = False
         self.global_pause = False
 
@@ -89,6 +91,11 @@ class PublicationOrchestrator:
             self.maintenance_tasks["avito_archive"] = task
             logger.info("Started Avito archive queue worker")
 
+        if "avito_market_watchlist" not in self.maintenance_tasks:
+            task = asyncio.create_task(self.market_watchlist_worker.run())
+            self.maintenance_tasks["avito_market_watchlist"] = task
+            logger.info("Started Avito market watchlist worker")
+
     async def _run_instagram_token_refresh(self):
         manager = InstagramGraphTokenManager()
         interval = int(getattr(env_settings, "INSTAGRAM_GRAPH_TOKEN_DAILY_CHECK_INTERVAL_SECONDS", 86400) or 86400)
@@ -107,6 +114,7 @@ class PublicationOrchestrator:
         logger.info("Stopping publication orchestrator...")
         self.is_running = False
         self.avito_archive_worker.stop()
+        self.market_watchlist_worker.stop()
 
         # Останавливаем всех workers
         for platform, worker in self.workers.items():

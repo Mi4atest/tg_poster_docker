@@ -149,9 +149,10 @@ AVITO_MARKET_REGION = (os.getenv("AVITO_MARKET_REGION") or "Россия").strip
 AVITO_MARKET_LOCATION_ID = int(os.getenv("AVITO_MARKET_LOCATION_ID", "660311"))
 AVITO_MARKET_CATEGORY_ID = int(os.getenv("AVITO_MARKET_CATEGORY_ID", "84"))
 AVITO_MARKET_CACHE_TTL_SEC = int(os.getenv("AVITO_MARKET_CACHE_TTL_SEC", "43200"))
-# Между живыми запросами к Avito: 2 мин. Серия 1–2 мин на одном cookie давала HTTP 439.
+# Между живыми запросами к Avito: 6 мин.
+# По runtime: ~4 мин → 439, серии с интервалом 6:16–6:20 → HTTP 200.
 AVITO_MARKET_MIN_REQUEST_INTERVAL_SEC = int(
-    os.getenv("AVITO_MARKET_MIN_REQUEST_INTERVAL_SEC", "120")
+    os.getenv("AVITO_MARKET_MIN_REQUEST_INTERVAL_SEC", "360")
 )
 AVITO_MARKET_DAILY_REQUEST_LIMIT = int(os.getenv("AVITO_MARKET_DAILY_REQUEST_LIMIT", "40"))
 # После HTTP 439 — общая пауза на все модели (не жечь новый cookie сразу).
@@ -162,6 +163,20 @@ AVITO_MARKET_MIN_SAMPLE_SIZE = int(os.getenv("AVITO_MARKET_MIN_SAMPLE_SIZE", "10
 AVITO_MARKET_SOFT_SAMPLE_SIZE = int(os.getenv("AVITO_MARKET_SOFT_SAMPLE_SIZE", "3"))
 AVITO_MARKET_MIN_SELLER_GROUP_SIZE = int(
     os.getenv("AVITO_MARKET_MIN_SELLER_GROUP_SIZE", "5")
+)
+# Watchlist: тик worker, пауза между живыми запросами, интервалы tier.
+AVITO_MARKET_WL_TICK_SEC = int(os.getenv("AVITO_MARKET_WL_TICK_SEC", "60"))
+AVITO_MARKET_WL_LIVE_INTERVAL_SEC = int(
+    os.getenv("AVITO_MARKET_WL_LIVE_INTERVAL_SEC", "1800")
+)
+AVITO_MARKET_WL_TIER_DAILY_SEC = int(
+    os.getenv("AVITO_MARKET_WL_TIER_DAILY_SEC", "86400")
+)
+AVITO_MARKET_WL_TIER_SLOW_SEC = int(
+    os.getenv("AVITO_MARKET_WL_TIER_SLOW_SEC", "259200")
+)
+AVITO_MARKET_WL_BLOCK_PAUSE_SEC = int(
+    os.getenv("AVITO_MARKET_WL_BLOCK_PAUSE_SEC", "7200")
 )
 # SPFA / прокси для оценки рынка: основной источник — Настройки бота (БД).
 # Переменные ниже — только одноразовый bootstrap в encrypted_secrets при старте.

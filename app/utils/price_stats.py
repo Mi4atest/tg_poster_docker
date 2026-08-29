@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 import re
 import statistics
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Iterable, Optional, Sequence
 
 from app.integrations.avito.market_search import MarketListing
@@ -57,6 +57,7 @@ class MarketAnalysis:
     private_summary: Optional[PriceSummary]
     business_summary: Optional[PriceSummary]
     accepted_listings: tuple[MarketListing, ...]
+    audited_listings: tuple[MarketListing, ...] = ()
     is_soft: bool = False
 
 
@@ -85,20 +86,31 @@ def _looks_used(listing: MarketListing) -> bool:
     return True
 
 
-def is_relevant_listing(listing: MarketListing, query: IphoneMarketQuery) -> bool:
+def listing_rejection_reason(
+    listing: MarketListing,
+    query: IphoneMarketQuery,
+) -> Optional[str]:
     if not (MIN_LISTING_PRICE_RUB <= listing.price_rub <= MAX_LISTING_PRICE_RUB):
-        return False
+        return "price"
     title = listing.title.lower()
     if any(re.search(pattern, title, re.IGNORECASE) for pattern in _EXCLUDED_TITLE_PATTERNS):
-        return False
+        return "excluded_title"
     details = f"{listing.title} {listing.description}".lower()
     if any(re.search(pattern, details, re.IGNORECASE) for pattern in _MATERIAL_DEFECT_PATTERNS):
-        return False
-    if parse_iphone_model(listing.title) != query.model:
-        return False
-    if _listing_memory_gb(listing.title) != query.memory_gb:
-        return False
-    return _looks_used(listing)
+        return "material_defect"
+    parsed_model = parse_iphone_model(listing.title)
+    if parsed_model != query.model:
+        return "model"
+    parsed_memory = _listing_memory_gb(listing.title)
+    if parsed_memory != query.memory_gb:
+        return "memory"
+    if not _looks_used(listing):
+        return "new"
+    return None
+
+
+def is_relevant_listing(listing: MarketListing, query: IphoneMarketQuery) -> bool:
+    return listing_rejection_reason(listing, query) is None
 
 
 def _quantile(sorted_values: Sequence[int], fraction: float) -> float:
@@ -149,8 +161,57 @@ def analyze_market_listings(
     min_seller_group_size: int = 5,
 ) -> MarketAnalysis:
     unique = {item.item_id: item for item in listings}
-    relevant = [item for item in unique.values() if is_relevant_listing(item, query)]
+    reasons = {
+        item.item_id: listing_rejection_reason(item, query)
+        for item in unique.values()
+    }
+    relevant = [item for item in unique.values() if reasons[item.item_id] is None]
     accepted, outlier_count = _without_iqr_outliers(relevant)
+    accepted_ids = {item.item_id for item in accepted}
+    for item in relevant:
+        if item.item_id not in accepted_ids:
+            reasons[item.item_id] = "outlier"
+    audited = tuple(
+        replace(
+            item,
+            included=item.item_id in accepted_ids,
+            rejection_reason=reasons[item.item_id],
+        )
+        for item in unique.values()
+    )
+
+    # #region agent log
+    try:
+        from collections import Counter
+
+        from app.integrations.avito.debug_agent_log import agent_dbg
+
+        counts = Counter(reason or "matched" for reason in reasons.values())
+        samples = [
+            {
+                "title": item.title[:100],
+                "condition": (item.condition or "")[:40],
+                "seller": item.seller_type,
+                "reason": reasons[item.item_id],
+                "parsed_model": parse_iphone_model(item.title),
+                "parsed_memory": _listing_memory_gb(item.title),
+            }
+            for item in list(unique.values())[:12]
+        ]
+        agent_dbg(
+            "F",
+            "price_stats.py:analyze_market_listings",
+            "market filter reasons",
+            {
+                "query_model": query.model,
+                "query_memory": query.memory_gb,
+                "counts": dict(counts),
+                "samples": samples,
+            },
+        )
+    except Exception:
+        pass
+    # #endregion
 
     soft_floor = max(1, min(min_soft_sample_size, min_sample_size))
     overall = _summary(accepted) if len(accepted) >= soft_floor else None
@@ -169,5 +230,6 @@ def analyze_market_listings(
         private_summary=private_summary,
         business_summary=business_summary,
         accepted_listings=tuple(accepted),
+        audited_listings=audited,
         is_soft=is_soft,
     )

@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Optional
 
 from app.api.models.avito_market_snapshot import AvitoMarketSnapshot
+from app.api.models.avito_market_request_log import AvitoMarketRequestLog
 from app.db.database import SessionLocal
 from app.utils.iphone_market_query import IphoneMarketQuery
 from app.utils.price_stats import MarketAnalysis
@@ -67,35 +68,35 @@ def get_market_snapshot_by_id(snapshot_id: int) -> Optional[dict[str, Any]]:
         db.close()
 
 
-def list_recent_market_snapshots(*, limit: int = 12) -> list[dict[str, Any]]:
-    """Последние успешные отчёты из кэша (без нового запроса к Avito)."""
+def list_recent_market_snapshots(*, limit: Optional[int] = None) -> list[dict[str, Any]]:
+    """Сохранённые успешные отчёты (без нового запроса к Avito)."""
     db = SessionLocal()
     try:
-        rows = (
+        query = (
             db.query(AvitoMarketSnapshot)
             .filter(
                 AvitoMarketSnapshot.status == "success",
                 AvitoMarketSnapshot.fetched_at.isnot(None),
-                AvitoMarketSnapshot.median_rub.isnot(None),
             )
-            .order_by(AvitoMarketSnapshot.fetched_at.desc())
-            .limit(max(1, min(int(limit), 20)))
-            .all()
         )
+        if limit is not None:
+            query = query.order_by(AvitoMarketSnapshot.fetched_at.desc()).limit(
+                max(1, min(int(limit), 200))
+            )
+        rows = query.all()
         return [_snapshot_dict(row) for row in rows]
     finally:
         db.close()
 
 
 def get_active_market_block_until() -> Optional[datetime]:
-    """Глобальная пауза после 439: max(retry_after) по error-снимкам с ограничением Avito."""
+    """Глобальная пауза после 439: max(retry_after) по снимкам с ограничением Avito."""
     db = SessionLocal()
     try:
         now = _utcnow()
         rows = (
             db.query(AvitoMarketSnapshot.retry_after, AvitoMarketSnapshot.last_error)
             .filter(
-                AvitoMarketSnapshot.status == "error",
                 AvitoMarketSnapshot.retry_after.isnot(None),
                 AvitoMarketSnapshot.retry_after > now,
             )
@@ -155,8 +156,10 @@ def save_market_snapshot(
                 "condition": item.condition,
                 "city": item.city or "",
                 "url": (item.url or "")[:500],
+                "included": item.included,
+                "rejection_reason": item.rejection_reason,
             }
-            for item in analysis.accepted_listings[:100]
+            for item in analysis.audited_listings[:100]
         ]
         row.fetched_at = now
         row.expires_at = now + timedelta(seconds=ttl_seconds)
@@ -207,5 +210,75 @@ def record_market_error(
     except Exception:
         db.rollback()
         raise
+    finally:
+        db.close()
+
+
+def record_live_request(cache_key: str, *, source: str = "manual") -> None:
+    db = SessionLocal()
+    try:
+        db.add(
+            AvitoMarketRequestLog(
+                requested_at=_utcnow(),
+                cache_key=(cache_key or "")[:160],
+                source=(source or "manual")[:24],
+            )
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+def count_live_requests_since(since: datetime) -> int:
+    db = SessionLocal()
+    try:
+        return (
+            db.query(AvitoMarketRequestLog)
+            .filter(AvitoMarketRequestLog.requested_at >= since)
+            .count()
+        )
+    finally:
+        db.close()
+
+
+def get_last_live_request_at() -> Optional[datetime]:
+    db = SessionLocal()
+    try:
+        value = (
+            db.query(AvitoMarketRequestLog.requested_at)
+            .order_by(AvitoMarketRequestLog.requested_at.desc())
+            .limit(1)
+            .scalar()
+        )
+        return value
+    finally:
+        db.close()
+
+
+def list_success_snapshot_configs() -> list[dict[str, Any]]:
+    """Последний успешный снимок на каждую пару модель/память."""
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(AvitoMarketSnapshot)
+            .filter(
+                AvitoMarketSnapshot.status == "success",
+                AvitoMarketSnapshot.fetched_at.isnot(None),
+            )
+            .order_by(AvitoMarketSnapshot.fetched_at.desc())
+            .all()
+        )
+        seen: set[tuple[str, int]] = set()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            key = (str(row.model), int(row.memory_gb))
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(_snapshot_dict(row))
+        return result
     finally:
         db.close()

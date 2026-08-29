@@ -27,7 +27,9 @@ from app.services.iphone_market_price_service import (
     user_facing_market_error,
 )
 from app.services.settings_service import get_settings_service
+from app.integrations.avito.debug_agent_log import agent_dbg
 from app.utils.iphone_market_query import MarketQueryError, parse_iphone_market_query
+from app.utils.iphone_parser import get_model_display_name, sort_models_for_display
 from app.utils.price_stats import PriceSummary
 
 
@@ -36,6 +38,11 @@ router = Router()
 
 _MSK = ZoneInfo("Europe/Moscow")
 _MAX_LIST_LINES = 40
+_HISTORY_PER_PAGE = 10
+_HISTORY_RECENT = 3
+_COL_MODEL = 12
+_COL_MEM = 5
+_COL_PRICE = 10
 _AVITO_ORIGIN = "https://www.avito.ru"
 
 
@@ -43,23 +50,67 @@ class IphoneMarketPriceState(StatesGroup):
     waiting_for_query = State()
 
 
-def _result_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
+def _result_keyboard(
+    *,
+    history_page: int | None = None,
+    offer_watchlist: bool = False,
+) -> InlineKeyboardMarkup:
+    """Назад на один шаг внутри блока, не сразу в меню Товары."""
+    if history_page is None:
+        rows = []
+        if offer_watchlist:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text="➕ В автообновление",
+                        callback_data="avito_market_wl:fromr",
+                    )
+                ]
+            )
+        rows.extend(
+            [
+                [
+                    InlineKeyboardButton(
+                        text="🗂 Последние отчёты",
+                        callback_data="avito_market_history",
+                    )
+                ],
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="avito_market_start")],
+            ]
+        )
+        back = "avito_market_start"
+    else:
+        rows = [
             [
                 InlineKeyboardButton(
-                    text="🗂 Последние отчёты",
-                    callback_data="avito_market_history",
+                    text="⬅️ Назад",
+                    callback_data=f"avito_market_hist:{history_page}",
                 )
-            ],
-            [InlineKeyboardButton(text="⬅️ В товары", callback_data="avito_market_cancel")],
+            ]
         ]
+        back = f"avito_market_hist:{history_page}"
+    # region agent log
+    agent_dbg(
+        "D",
+        "iphone_market_price.py:_result_keyboard",
+        "result keyboard back target",
+        {"history_page": history_page, "back": back},
+        run_id="nav",
     )
+    # endregion
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _cancel_keyboard() -> InlineKeyboardMarkup:
+    """Только intro блока: выход в меню Товары."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📋 Список автообновления",
+                    callback_data="avito_market_wl",
+                )
+            ],
             [
                 InlineKeyboardButton(
                     text="🗂 Последние отчёты",
@@ -71,14 +122,79 @@ def _cancel_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def _history_keyboard(rows: list[dict]) -> InlineKeyboardMarkup:
+def _block_back_keyboard() -> InlineKeyboardMarkup:
+    """Ошибка/пустая история: на intro поиска, не в Товары."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🗂 Последние отчёты",
+                    callback_data="avito_market_history",
+                )
+            ],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="avito_market_start")],
+        ]
+    )
+
+
+def sort_market_report_rows(rows: list[dict]) -> list[dict]:
+    """Как список б/у: старые модели → новые, внутри модели — меньшая память."""
+    models = [str(row.get("model") or "") for row in rows]
+    order = {name: index for index, name in enumerate(sort_models_for_display(list(set(models))))}
+    return sorted(
+        rows,
+        key=lambda row: (
+            order.get(str(row.get("model") or ""), 999),
+            int(row.get("memory_gb") or 0),
+            str(row.get("model") or ""),
+        ),
+    )
+
+
+def _memory_label(memory: object) -> str:
+    try:
+        value = int(memory)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return ""
+    if value == 1024:
+        return "1ТБ"
+    return f"{value}ГБ"
+
+
+def _fmt_msk_short(value: datetime | None) -> str:
+    if value is None:
+        return ""
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(_MSK).strftime("%d.%m.%y %H:%M")
+
+
+def _report_summary_line(row: dict) -> str:
+    short = get_model_display_name(str(row.get("model") or "iPhone"))
+    mem = _memory_label(row.get("memory_gb"))
+    name = f"{short} {mem}".strip()
+    median = row.get("median_rub")
+    price = _rub(int(median)) if median is not None else "—"
+    when = _fmt_msk_short(row.get("fetched_at"))
+    chunks = [html.escape(name), html.escape(price)]
+    if when:
+        chunks.append(html.escape(when))
+    return ": ".join([chunks[0], " · ".join(chunks[1:])])
+
+
+def _history_keyboard(rows: list[dict], *, page: int = 0) -> InlineKeyboardMarkup:
+    total = len(rows)
+    last_page = max(0, (total - 1) // _HISTORY_PER_PAGE) if total else 0
+    page = min(max(0, page), last_page)
+    start = page * _HISTORY_PER_PAGE
+    chunk = rows[start : start + _HISTORY_PER_PAGE]
     buttons: list[list[InlineKeyboardButton]] = []
-    for row in rows:
+    for row in chunk:
         snap_id = int(row["id"])
         model = str(row.get("model") or "iPhone")
         memory = row.get("memory_gb")
-        mem = "1ТБ" if memory == 1024 else f"{memory}ГБ"
-        short = model.replace("iPhone ", "")
+        mem = _memory_label(memory)
+        short = get_model_display_name(model)
         median = row.get("median_rub")
         price = _rub(int(median)) if median is not None else "—"
         label = f"{short} {mem}: {price}"
@@ -88,17 +204,106 @@ def _history_keyboard(rows: list[dict]) -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(
                     text=label,
-                    callback_data=f"avito_market_open:{snap_id}",
+                    callback_data=f"avito_market_open:{snap_id}:{page}",
                 )
             ]
         )
+    nav: list[InlineKeyboardButton] = []
+    if page > 0:
+        nav.append(
+            InlineKeyboardButton(
+                text="◀️",
+                callback_data=f"avito_market_hist:{page - 1}",
+            )
+        )
+    if start + _HISTORY_PER_PAGE < total:
+        nav.append(
+            InlineKeyboardButton(
+                text="▶️",
+                callback_data=f"avito_market_hist:{page + 1}",
+            )
+        )
+    if nav:
+        buttons.append(nav)
     buttons.append(
         [InlineKeyboardButton(text="🔎 Новый поиск", callback_data="avito_market_start")]
     )
     buttons.append(
-        [InlineKeyboardButton(text="⬅️ В товары", callback_data="avito_market_cancel")]
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="avito_market_start")]
     )
+    # region agent log
+    agent_dbg(
+        "A",
+        "iphone_market_price.py:_history_keyboard",
+        "history keyboard nav",
+        {
+            "page": page,
+            "has_products_exit": any(
+                btn.callback_data == "avito_market_cancel"
+                for row in buttons
+                for btn in row
+            ),
+            "screen_back": "avito_market_start",
+        },
+        run_id="nav",
+    )
+    # endregion
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def _rows_by_fetched_at_desc(rows: list[dict]) -> list[dict]:
+    def _ts(row: dict) -> datetime:
+        value = row.get("fetched_at")
+        if not isinstance(value, datetime):
+            return datetime.min.replace(tzinfo=UTC)
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=UTC)
+        return value
+
+    return sorted(rows, key=_ts, reverse=True)
+
+
+def _aligned_report_line(row: dict) -> str:
+    short = get_model_display_name(str(row.get("model") or "iPhone"))
+    mem = _memory_label(row.get("memory_gb"))
+    median = row.get("median_rub")
+    price = _rub(int(median)) if median is not None else "—"
+    when = _fmt_msk_short(row.get("fetched_at"))
+    return (
+        f"{short[:_COL_MODEL].ljust(_COL_MODEL)} "
+        f"{mem.rjust(_COL_MEM)} "
+        f"{price.rjust(_COL_PRICE)}  "
+        f"{when}"
+    )
+
+
+def _history_text(rows: list[dict]) -> str:
+    lines = [
+        "🗂 <b>Последние отчёты</b>",
+        "",
+        "Из памяти, без нового запроса к Avito.",
+    ]
+    table = html.escape("\n".join(_aligned_report_line(row) for row in rows))
+    if len(rows) > _HISTORY_RECENT:
+        lines.extend(["", "🕒 Свежие:"])
+        for row in _rows_by_fetched_at_desc(rows)[:_HISTORY_RECENT]:
+            lines.append(f"<b>{_report_summary_line(row)}</b>")
+        lines.extend(
+            [
+                "",
+                "📋 Все модели, старые → новые. Нажмите, чтобы раскрыть:",
+                f"<blockquote expandable><pre>{table}</pre></blockquote>",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "",
+                "От старых моделей к новым.",
+                f"<pre>{table}</pre>",
+            ]
+        )
+    return "\n".join(lines)
 
 
 def _rub(value: int) -> str:
@@ -146,20 +351,40 @@ def _avito_url(raw: str) -> str:
     return _AVITO_ORIGIN + value
 
 
+def _rejection_label(reason: str | None) -> str:
+    return {
+        "price": "цена вне диапазона",
+        "excluded_title": "аксессуар/услуга",
+        "material_defect": "существенный дефект",
+        "model": "другая модель",
+        "memory": "другая/не указана память",
+        "new": "новый",
+        "outlier": "ценовой выброс",
+    }.get(reason or "", "не подошло")
+
+
 def _listing_line(item: MarketListing, model_label: str) -> str:
     price_bit = _rub(item.price_rub)
     link = _avito_url(item.url)
     if link:
         safe_href = html.escape(link, quote=True)
         price_bit = f'<a href="{safe_href}">{html.escape(price_bit)}</a>'
-    chunks = [f"{html.escape(model_label)}: {price_bit}"]
+    title = (item.title or model_label).strip()
+    if len(title) > 58:
+        title = title[:57].rstrip() + "…"
+    chunks = [f"{html.escape(title)}: {price_bit}"]
     city = (item.city or "").strip()
     if city:
         chunks.append(html.escape(city))
     seller = _seller_label(item.seller_type)
     if seller:
         chunks.append(seller)
-    return " · ".join(chunks)
+    line = " · ".join(chunks)
+    if item.included is True:
+        return f"<b>{line}</b>"
+    if item.included is False:
+        return f"{line} · <i>{html.escape(_rejection_label(item.rejection_reason))}</i>"
+    return line
 
 
 def _listings_block(estimate: MarketPriceEstimate) -> str:
@@ -171,10 +396,26 @@ def _listings_block(estimate: MarketPriceEstimate) -> str:
     more = ""
     if len(estimate.listings) > _MAX_LIST_LINES:
         more = f"\n… и ещё {len(estimate.listings) - _MAX_LIST_LINES}"
-    return (
-        "\n📋 Учтённые объявления (дешевле → дороже), нажмите чтобы раскрыть:\n"
-        f"<blockquote expandable>{body}{more}</blockquote>"
+    has_audit = any(item.included is not None for item in estimate.listings)
+    title = (
+        "📋 Выдача Avito (жирным — учтённые)"
+        if has_audit
+        else "📋 Учтённые объявления"
     )
+    return f"\n{title}, нажмите чтобы раскрыть:\n<blockquote expandable>{body}{more}</blockquote>"
+
+
+def _seller_counts_line(estimate: MarketPriceEstimate) -> str:
+    known = [item for item in estimate.listings if item.seller_type]
+    if not known:
+        return ""
+    private = sum(item.seller_type == "private" for item in known)
+    business = sum(item.seller_type == "business" for item in known)
+    unknown = max(0, len(estimate.listings) - len(known))
+    parts = [f"частники {private}", f"магазины {business}"]
+    if unknown:
+        parts.append(f"не указан {unknown}")
+    return "Продавцы в выдаче: " + ", ".join(parts)
 
 
 def format_market_estimate(estimate: MarketPriceEstimate) -> str:
@@ -223,6 +464,9 @@ def format_market_estimate(estimate: MarketPriceEstimate) -> str:
             lines.append(f"Отсеяно фильтром: {rejected}.")
         lines.append("Попробуйте позже или другую модель/память.")
 
+    seller_counts = _seller_counts_line(estimate)
+    if seller_counts:
+        lines.extend(["", seller_counts])
     lines.extend(["", f"Данные: {_fmt_msk(estimate.fetched_at)} (МСК)"])
     if estimate.is_stale:
         reason = html.escape(
@@ -261,6 +505,15 @@ async def avito_market_start(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Оценка рынка сейчас выключена", show_alert=True)
         return
     await state.set_state(IphoneMarketPriceState.waiting_for_query)
+    # region agent log
+    agent_dbg(
+        "A",
+        "iphone_market_price.py:avito_market_start",
+        "show intro, back to products",
+        {"back": "avito_market_cancel"},
+        run_id="nav",
+    )
+    # endregion
     await callback.message.edit_text(
         _intro_text(),
         parse_mode=ParseMode.HTML,
@@ -279,35 +532,78 @@ async def avito_market_cancel(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@router.callback_query(F.data == "avito_market_history")
-async def avito_market_history(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    rows = await get_iphone_market_price_service().list_recent_reports(limit=12)
+async def _show_history(callback: CallbackQuery, *, page: int = 0) -> None:
+    rows = sort_market_report_rows(
+        await get_iphone_market_price_service().list_recent_reports()
+    )
     if not rows:
         await callback.message.edit_text(
             "🗂 Пока нет сохранённых отчётов.\nСделайте первый поиск модели.",
-            reply_markup=_cancel_keyboard(),
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="⬅️ Назад", callback_data="avito_market_start")],
+                ]
+            ),
         )
         await callback.answer()
         return
+    last_page = max(0, (len(rows) - 1) // _HISTORY_PER_PAGE)
+    page = min(max(0, page), last_page)
     await callback.message.edit_text(
-        "🗂 <b>Последние отчёты</b>\n\n"
-        "Открываются из памяти, без нового запроса к Avito.",
+        _history_text(rows),
         parse_mode=ParseMode.HTML,
-        reply_markup=_history_keyboard(rows),
+        reply_markup=_history_keyboard(rows, page=page),
     )
     await callback.answer()
 
 
+@router.callback_query(F.data == "avito_market_history")
+async def avito_market_history(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(IphoneMarketPriceState.waiting_for_query)
+    # region agent log
+    agent_dbg(
+        "C",
+        "iphone_market_price.py:avito_market_history",
+        "open history keep query state",
+        {"page": 0, "state": "waiting_for_query"},
+        run_id="nav",
+    )
+    # endregion
+    await _show_history(callback, page=0)
+
+
+@router.callback_query(F.data.startswith("avito_market_hist:"))
+async def avito_market_history_page(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(IphoneMarketPriceState.waiting_for_query)
+    raw = (callback.data or "").split(":", 1)[-1]
+    try:
+        page = int(raw)
+    except ValueError:
+        page = 0
+    await _show_history(callback, page=page)
+
+
 @router.callback_query(F.data.startswith("avito_market_open:"))
 async def avito_market_open(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    raw_id = (callback.data or "").split(":", 1)[-1]
+    await state.set_state(IphoneMarketPriceState.waiting_for_query)
+    parts = (callback.data or "").split(":")
+    history_page: int | None = None
     try:
-        snapshot_id = int(raw_id)
-    except ValueError:
+        snapshot_id = int(parts[1])
+        if len(parts) > 2:
+            history_page = int(parts[2])
+    except (IndexError, ValueError):
         await callback.answer("Некорректный отчёт", show_alert=True)
         return
+    # region agent log
+    agent_dbg(
+        "D",
+        "iphone_market_price.py:avito_market_open",
+        "open report from history",
+        {"snapshot_id": snapshot_id, "history_page": history_page},
+        run_id="nav",
+    )
+    # endregion
     try:
         estimate = await get_iphone_market_price_service().get_cached_report(snapshot_id)
     except MarketTemporarilyUnavailable as exc:
@@ -320,21 +616,23 @@ async def avito_market_open(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
         format_market_estimate(estimate),
         parse_mode=ParseMode.HTML,
-        reply_markup=_result_keyboard(),
+        reply_markup=_result_keyboard(
+            history_page=history_page if history_page is not None else 0
+        ),
         disable_web_page_preview=True,
     )
     await callback.answer()
 
 
 @router.message(IphoneMarketPriceState.waiting_for_query, F.text)
-async def avito_market_query(message: Message):
+async def avito_market_query(message: Message, state: FSMContext):
     try:
         query = parse_iphone_market_query(message.text or "")
     except MarketQueryError as exc:
         await message.answer(
             f"{html.escape(str(exc))}\n\nПример: <code>13 мини 128</code>",
             parse_mode=ParseMode.HTML,
-            reply_markup=_cancel_keyboard(),
+            reply_markup=_block_back_keyboard(),
         )
         return
 
@@ -344,20 +642,25 @@ async def avito_market_query(message: Message):
     except MarketTemporarilyUnavailable as exc:
         await message.answer(
             user_facing_market_error(str(exc)),
-            reply_markup=_cancel_keyboard(),
+            reply_markup=_block_back_keyboard(),
         )
         return
     except Exception:
         logger.exception("Avito market handler failed")
         await message.answer(
             "Сейчас не удалось посчитать оценку. Попробуйте позже.",
-            reply_markup=_cancel_keyboard(),
+            reply_markup=_block_back_keyboard(),
         )
         return
 
+    await state.update_data(
+        avito_last_model=query.model,
+        avito_last_memory=query.memory_gb,
+        avito_last_snapshot_id=estimate.snapshot_id,
+    )
     await message.answer(
         format_market_estimate(estimate),
         parse_mode=ParseMode.HTML,
-        reply_markup=_result_keyboard(),
+        reply_markup=_result_keyboard(offer_watchlist=True),
         disable_web_page_preview=True,
     )

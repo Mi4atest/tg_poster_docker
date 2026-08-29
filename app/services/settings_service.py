@@ -1,5 +1,6 @@
 import logging
 from copy import deepcopy
+from datetime import datetime
 from typing import Any, Dict, Optional
 
 from app.api.models.post import AppSettings
@@ -172,6 +173,8 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
         "avito_market_enabled": True,
         "avito_market_use_spfa": True,
         "avito_market_proxy_change_url": "",
+        "avito_market_watchlist_enabled": True,
+        "avito_market_watchlist_pause_until": "",
     },
 }
 
@@ -725,6 +728,30 @@ class SettingsService:
         return str(
             self.get_all().get("integrations", {}).get("avito_market_proxy_change_url") or ""
         ).strip()
+
+    def is_avito_market_watchlist_enabled(self) -> bool:
+        integ = self.get_all().get("integrations", {})
+        if not bool(integ.get("avito_market_enabled", True)):
+            return False
+        return bool(integ.get("avito_market_watchlist_enabled", True))
+
+    def get_avito_market_watchlist_pause_until(self) -> Optional[datetime]:
+        raw = str(
+            self.get_all().get("integrations", {}).get("avito_market_watchlist_pause_until") or ""
+        ).strip()
+        if not raw:
+            return None
+        try:
+            value = datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+        if value.tzinfo is not None:
+            value = value.replace(tzinfo=None)
+        return value
+
+    def set_avito_market_watchlist_pause_until(self, until: Optional[datetime]) -> None:
+        value = until.isoformat(timespec="seconds") if until else ""
+        self.update({"integrations": {"avito_market_watchlist_pause_until": value}})
 
     def can_enqueue_avito_without_linked_item(
         self,

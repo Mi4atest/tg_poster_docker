@@ -168,6 +168,10 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
         "avito_category_id": None,
         "avito_location_id": None,
         "avito_auto_create_from_post": True,
+        # Оценка рынка б/у iPhone по выдаче Avito (SPFA cookies + прокси).
+        "avito_market_enabled": True,
+        "avito_market_use_spfa": True,
+        "avito_market_proxy_change_url": "",
     },
 }
 
@@ -181,6 +185,8 @@ ENV_SECRET_DEFAULTS: Dict[str, str] = {
     "instagram_graph_access_token": getattr(env_settings, "INSTAGRAM_GRAPH_ACCESS_TOKEN", "") or "",
     "instagram_graph_app_secret": getattr(env_settings, "INSTAGRAM_GRAPH_APP_SECRET", "") or "",
     "backup_bot_token": getattr(env_settings, "BACKUP_BOT_TOKEN", "") or "",
+    "spfa_api_key": getattr(env_settings, "SPFA_API_KEY", "") or "",
+    "avito_market_proxy": getattr(env_settings, "AVITO_MARKET_PROXY", "") or "",
 }
 
 
@@ -702,6 +708,23 @@ class SettingsService:
 
     def is_avito_auto_create_from_post_enabled(self) -> bool:
         return bool(self.get_all().get("integrations", {}).get("avito_auto_create_from_post", True))
+
+    def is_avito_market_enabled(self) -> bool:
+        return bool(self.get_all().get("integrations", {}).get("avito_market_enabled", True))
+
+    def is_avito_market_spfa_enabled(self) -> bool:
+        return bool(self.get_all().get("integrations", {}).get("avito_market_use_spfa", True))
+
+    def get_spfa_api_key(self) -> str:
+        return str(self.get_secret("spfa_api_key") or "").strip()
+
+    def get_avito_market_proxy(self) -> str:
+        return str(self.get_secret("avito_market_proxy") or "").strip()
+
+    def get_avito_market_proxy_change_url(self) -> str:
+        return str(
+            self.get_all().get("integrations", {}).get("avito_market_proxy_change_url") or ""
+        ).strip()
 
     def can_enqueue_avito_without_linked_item(
         self,

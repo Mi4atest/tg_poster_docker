@@ -10,6 +10,7 @@ def get_products_menu_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="📦 Список б/у товаров", callback_data="products_list")],
         [InlineKeyboardButton(text="🆕 Список новых", callback_data="new_products_menu")],
         [InlineKeyboardButton(text="🔍 Поиск товара", callback_data="products_search")],
+        [InlineKeyboardButton(text="📊 Оценка рынка Avito", callback_data="avito_market_start")],
         [InlineKeyboardButton(text="📁 Архив товаров", callback_data="products_archive")],
         [InlineKeyboardButton(text="🔄 Обновление постов", callback_data="sync_telegram_links")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main")]

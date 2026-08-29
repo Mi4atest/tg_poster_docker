@@ -15,6 +15,7 @@ from app.bot.keyboards.settings_keyboard import (
     get_settings_price_tags_keyboard,
     get_settings_channels_keyboard,
     get_settings_integrations_keyboard,
+    get_settings_avito_market_keyboard,
     get_settings_intervals_keyboard,
     get_settings_reports_keyboard,
     get_settings_root_keyboard,
@@ -50,6 +51,8 @@ SECRET_INTEGRATION_FIELDS = {
     "instagram_graph_access_token",
     "instagram_graph_app_secret",
     "avito_client_secret",
+    "spfa_api_key",
+    "avito_market_proxy",
 }
 
 # Поля «ID канала» сохраняем в секцию channels (её читает резолвер SettingsService),
@@ -171,6 +174,20 @@ def _get_instagram_integration_field_prompt(field: str) -> str:
             "2) Получите Page ID и запросите:\n"
             "`GET /{page-id}?fields=instagram_business_account`\n"
             "3) Используйте `instagram_business_account.id`."
+        ),
+        "spfa_api_key": (
+            "Введите API-ключ SPFA (spfa.pro).\n\n"
+            "После смены ключа кэш cookies сбрасывается автоматически."
+        ),
+        "avito_market_proxy": (
+            "Введите residential-прокси в формате:\n"
+            "`login:password@host:port`\n\n"
+            "Пример: `user:pass@ru.resigw.com:2333`\n"
+            "HTTP и SOCKS5 с одним host:port — для запросов используется HTTP."
+        ),
+        "avito_market_proxy_change_url": (
+            "Вставьте ссылку смены IP от провайдера прокси.\n"
+            "Пустое сообщение очистит поле."
         ),
     }
     return prompts.get(field, "")
@@ -494,6 +511,85 @@ async def set_platform_interval(callback: CallbackQuery):
     await _render_platform_interval_screen(callback, platform)
 
 
+def _mask_proxy_host(proxy: str) -> str:
+    value = (proxy or "").strip()
+    if not value:
+        return "не задан"
+    if "@" in value:
+        host = value.rsplit("@", 1)[-1]
+        return f"задан ({host})"
+    return "задан"
+
+
+def _build_avito_market_settings_text() -> str:
+    service = get_settings_service()
+    change_url = service.get_avito_market_proxy_change_url()
+    return (
+        "📊 Оценка рынка Avito\n\n"
+        "Прокси и SPFA хранятся в настройках проекта (на лету, без .env).\n\n"
+        f"Оценка рынка: {'вкл' if service.is_avito_market_enabled() else 'выкл'}\n"
+        f"SPFA cookies: {'вкл' if service.is_avito_market_spfa_enabled() else 'выкл'}\n"
+        f"SPFA API ключ: {'задан' if service.get_spfa_api_key() else 'не задан'}\n"
+        f"Прокси: {_mask_proxy_host(service.get_avito_market_proxy())}\n"
+        f"Ссылка смены IP: {change_url or 'не задана'}\n\n"
+        "Формат прокси: login:password@host:port\n"
+        "Пример: user:pass@ru.resigw.com:2333"
+    )
+
+
+def _avito_market_keyboard():
+    service = get_settings_service()
+    return get_settings_avito_market_keyboard(
+        enabled=service.is_avito_market_enabled(),
+        use_spfa=service.is_avito_market_spfa_enabled(),
+    )
+
+
+def _invalidate_avito_market_cookie_cache() -> None:
+    try:
+        from app.integrations.avito.spfa_client import SpfaClient
+
+        SpfaClient("").invalidate_cookie_cache()
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data == "settings_avito_market")
+async def open_avito_market_settings(callback: CallbackQuery):
+    await callback.message.edit_text(
+        _build_avito_market_settings_text(),
+        reply_markup=_avito_market_keyboard(),
+        disable_web_page_preview=True,
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "settings_avito_market_toggle_enabled")
+async def avito_market_toggle_enabled(callback: CallbackQuery):
+    service = get_settings_service()
+    cur = service.is_avito_market_enabled()
+    service.update({"integrations": {"avito_market_enabled": not cur}})
+    await callback.message.edit_text(
+        _build_avito_market_settings_text(),
+        reply_markup=_avito_market_keyboard(),
+        disable_web_page_preview=True,
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "settings_avito_market_toggle_spfa")
+async def avito_market_toggle_spfa(callback: CallbackQuery):
+    service = get_settings_service()
+    cur = service.is_avito_market_spfa_enabled()
+    service.update({"integrations": {"avito_market_use_spfa": not cur}})
+    await callback.message.edit_text(
+        _build_avito_market_settings_text(),
+        reply_markup=_avito_market_keyboard(),
+        disable_web_page_preview=True,
+    )
+    await callback.answer()
+
+
 @router.callback_query(F.data == "settings_integrations")
 async def open_integrations(callback: CallbackQuery):
     await callback.message.edit_text(
@@ -600,6 +696,8 @@ async def request_integration_value(callback: CallbackQuery, state: FSMContext):
         return_callback = "settings_integration_platform_max"
     elif field.startswith("instagram_"):
         return_callback = "settings_integration_platform_instagram"
+    elif field in ("spfa_api_key", "avito_market_proxy", "avito_market_proxy_change_url"):
+        return_callback = "settings_avito_market"
     elif field.startswith("avito_"):
         return_callback = "settings_integration_platform_avito"
 
@@ -750,6 +848,9 @@ async def save_integration_value(message: Message, state: FSMContext):
     restore_mid = data.get("integration_restore_message_id")
 
     if field in SECRET_INTEGRATION_FIELDS:
+        if not raw:
+            await message.answer("Пустое значение не сохраняю. Введите секрет или нажмите «Отмена».")
+            return
         service = get_settings_service()
         service.set_secret(field, raw)
         # Одно поле «Токен VK» должно покрывать и стену, и market.edit.
@@ -772,6 +873,8 @@ async def save_integration_value(message: Message, state: FSMContext):
                 invalidate_token_cache()
             except Exception:
                 pass
+        if field in ("spfa_api_key", "avito_market_proxy"):
+            _invalidate_avito_market_cookie_cache()
     elif field in CHANNEL_INTEGRATION_FIELDS:
         get_settings_service().update({"channels": {field: raw}})
     elif field in ("avito_category_id", "avito_location_id"):
@@ -803,9 +906,22 @@ async def save_integration_value(message: Message, state: FSMContext):
             )
         except TelegramBadRequest:
             pass
+    elif restore_chat and restore_mid and return_cb == "settings_avito_market":
+        try:
+            await message.bot.edit_message_text(
+                chat_id=int(restore_chat),
+                message_id=int(restore_mid),
+                text=_build_avito_market_settings_text(),
+                reply_markup=_avito_market_keyboard(),
+                disable_web_page_preview=True,
+            )
+        except TelegramBadRequest:
+            pass
 
     if field == "avito_client_secret":
         await message.answer("✅ Client Secret сохранён. Экран «Авито» выше обновлён (секрет в чат не повторяем).")
+    elif field in ("spfa_api_key", "avito_market_proxy"):
+        await message.answer("✅ Секрет сохранён. Экран «Оценка рынка» обновлён.")
     else:
         await message.answer("✅ Поле интеграции обновлено. Экран выше обновлён, если сообщение ещё доступно.")
 
@@ -820,6 +936,8 @@ async def cancel_input(callback: CallbackQuery, state: FSMContext):
         await open_signatures(callback)
     elif return_callback == "settings_integrations":
         await open_integrations(callback)
+    elif return_callback == "settings_avito_market":
+        await open_avito_market_settings(callback)
     elif return_callback == "settings_channels":
         await open_channels(callback)
     elif return_callback == "settings_reports":

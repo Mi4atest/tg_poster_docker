@@ -7,6 +7,7 @@ python-dotenv==1.2.2
 vk-api==11.10.1
 python-multipart==0.0.32
 aiohttp==3.14.3
+curl_cffi==0.16.2
 alembic==1.19.1
 loguru==0.7.3
 Pillow==12.3.0

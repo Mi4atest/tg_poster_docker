@@ -141,6 +141,38 @@ AVITO_MANUAL_FEED_UPLOAD = os.getenv("AVITO_MANUAL_FEED_UPLOAD", "true").lower()
 AVITO_PROMO_ENABLED = os.getenv("AVITO_PROMO_ENABLED", "true").lower() in ("1", "true", "yes")
 AVITO_PROMO_MANUAL_OPTIONS = (os.getenv("AVITO_PROMO_MANUAL_OPTIONS") or "|1.2|").strip()
 
+# Оценка рынка по одной публичной странице Avito. Ограничения намеренно консервативны:
+# защита Avito не обходится, а повторные одинаковые запросы обслуживаются из БД.
+AVITO_MARKET_ENABLED = os.getenv("AVITO_MARKET_ENABLED", "true").lower() in ("1", "true", "yes")
+AVITO_MARKET_REGION = (os.getenv("AVITO_MARKET_REGION") or "Россия").strip()
+# Публичные идентификаторы: вся Россия + «Смартфоны» (для рыночной вилки шире города).
+AVITO_MARKET_LOCATION_ID = int(os.getenv("AVITO_MARKET_LOCATION_ID", "660311"))
+AVITO_MARKET_CATEGORY_ID = int(os.getenv("AVITO_MARKET_CATEGORY_ID", "84"))
+AVITO_MARKET_CACHE_TTL_SEC = int(os.getenv("AVITO_MARKET_CACHE_TTL_SEC", "43200"))
+# Между живыми запросами к Avito: 2 мин. Серия 1–2 мин на одном cookie давала HTTP 439.
+AVITO_MARKET_MIN_REQUEST_INTERVAL_SEC = int(
+    os.getenv("AVITO_MARKET_MIN_REQUEST_INTERVAL_SEC", "120")
+)
+AVITO_MARKET_DAILY_REQUEST_LIMIT = int(os.getenv("AVITO_MARKET_DAILY_REQUEST_LIMIT", "40"))
+# После HTTP 439 — общая пауза на все модели (не жечь новый cookie сразу).
+AVITO_MARKET_BLOCK_COOLDOWN_SEC = int(os.getenv("AVITO_MARKET_BLOCK_COOLDOWN_SEC", "3600"))
+AVITO_MARKET_TIMEOUT_SEC = int(os.getenv("AVITO_MARKET_TIMEOUT_SEC", "20"))
+# «Надёжная» выборка; ниже — мягкий ориентир (см. SOFT).
+AVITO_MARKET_MIN_SAMPLE_SIZE = int(os.getenv("AVITO_MARKET_MIN_SAMPLE_SIZE", "10"))
+AVITO_MARKET_SOFT_SAMPLE_SIZE = int(os.getenv("AVITO_MARKET_SOFT_SAMPLE_SIZE", "3"))
+AVITO_MARKET_MIN_SELLER_GROUP_SIZE = int(
+    os.getenv("AVITO_MARKET_MIN_SELLER_GROUP_SIZE", "5")
+)
+# SPFA / прокси для оценки рынка: основной источник — Настройки бота (БД).
+# Переменные ниже — только одноразовый bootstrap в encrypted_secrets при старте.
+SPFA_API_KEY = (os.getenv("SPFA_API_KEY") or "").strip()
+AVITO_MARKET_PROXY = (os.getenv("AVITO_MARKET_PROXY") or "").strip()
+AVITO_MARKET_USE_SPFA = os.getenv("AVITO_MARKET_USE_SPFA", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+
 # Настройки подписей для социальных сетей
 SIGNATURE_ENABLED = os.getenv("SIGNATURE_ENABLED", "true").lower() == "true"
 SIGNATURE_VK = os.getenv("SIGNATURE_VK", "")

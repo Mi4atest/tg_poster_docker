@@ -7,6 +7,7 @@ def get_settings_root_keyboard(*, is_admin: bool = True) -> InlineKeyboardMarkup
         [InlineKeyboardButton(text="📣 Каналы публикации", callback_data="settings_channels")],
         [InlineKeyboardButton(text="⏱ Публикация и интервалы", callback_data="settings_intervals")],
         [InlineKeyboardButton(text="🔐 Интеграции и токены", callback_data="settings_integrations")],
+        [InlineKeyboardButton(text="📊 Оценка рынка Avito", callback_data="settings_avito_market")],
         [InlineKeyboardButton(text="🗂 Отчёты и списки", callback_data="settings_reports")],
         [InlineKeyboardButton(text="🏷️ Ценники", callback_data="settings_price_tags")],
         [InlineKeyboardButton(text="💾 Резервное копирование", callback_data="settings_backup")],
@@ -404,6 +405,30 @@ def get_integration_platform_keyboard(platform: str) -> InlineKeyboardMarkup:
         ]
 
     buttons.append([InlineKeyboardButton(text="⬅️ Назад к соцсетям", callback_data="settings_integrations")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_settings_avito_market_keyboard(*, enabled: bool = True, use_spfa: bool = True) -> InlineKeyboardMarkup:
+    enabled_label = "Оценка рынка: вкл" if enabled else "Оценка рынка: выкл"
+    spfa_label = "SPFA cookies: вкл" if use_spfa else "SPFA cookies: выкл"
+    buttons = [
+        [InlineKeyboardButton(text=enabled_label, callback_data="settings_avito_market_toggle_enabled")],
+        [InlineKeyboardButton(text=spfa_label, callback_data="settings_avito_market_toggle_spfa")],
+        [InlineKeyboardButton(text="SPFA API ключ", callback_data="settings_edit_integration_spfa_api_key")],
+        [
+            InlineKeyboardButton(
+                text="Прокси (login:pass@host:port)",
+                callback_data="settings_edit_integration_avito_market_proxy",
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="Ссылка смены IP прокси",
+                callback_data="settings_edit_integration_avito_market_proxy_change_url",
+            )
+        ],
+        [InlineKeyboardButton(text="⬅️ Назад к настройкам", callback_data="settings_root")],
+    ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 

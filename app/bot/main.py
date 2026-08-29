@@ -11,6 +11,7 @@ from app.bot.handlers import (
     post_management,
     scheduler,
     product_management,
+    iphone_market_price,
     evening_report,
     new_products_management,
     bulk_price_update,
@@ -52,6 +53,7 @@ dp.include_router(start.router)
 dp.include_router(shop_notes.router)
 dp.include_router(post_creation.router)
 dp.include_router(product_management.router)  # Перемещено выше для приоритета
+dp.include_router(iphone_market_price.router)
 dp.include_router(evening_report.router)
 dp.include_router(new_products_management.router)
 dp.include_router(bulk_price_update.router)

@@ -292,3 +292,22 @@ def test_history_header_highlights_latest_and_collapses_catalog():
     assert "14 128ГБ: 40 000 ₽ · 29.08.26 07:00" in text
     assert "13 128ГБ: 30 000 ₽ · 29.08.26 06:00" in text
     assert "12 128ГБ: 20 000 ₽ · 29.08.26 05:00" in text
+
+
+def _product_menu_labels(*, avito_market_enabled: bool) -> list[str]:
+    from app.bot.keyboards.product_keyboard import get_products_menu_keyboard
+
+    markup = get_products_menu_keyboard(avito_market_enabled=avito_market_enabled)
+    return [btn.text for row in markup.inline_keyboard for btn in row]
+
+
+def test_products_menu_hides_avito_market_when_disabled():
+    labels = _product_menu_labels(avito_market_enabled=False)
+    assert "📊 Оценка рынка Avito" not in labels
+    assert "📦 Список б/у товаров" in labels
+    assert "📁 Архив товаров" in labels
+
+
+def test_products_menu_shows_avito_market_when_enabled():
+    labels = _product_menu_labels(avito_market_enabled=True)
+    assert "📊 Оценка рынка Avito" in labels

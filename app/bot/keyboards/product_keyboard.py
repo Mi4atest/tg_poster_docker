@@ -4,17 +4,31 @@ from app.utils.color_emoji import replace_color_with_emoji
 from app.bot.utils.button_styles import ikb
 
 
-def get_products_menu_keyboard() -> InlineKeyboardMarkup:
+def get_products_menu_keyboard(
+    *,
+    avito_market_enabled: Optional[bool] = None,
+) -> InlineKeyboardMarkup:
     """Создает клавиатуру главного меню товаров."""
+    if avito_market_enabled is None:
+        from app.services.settings_service import get_settings_service
+
+        avito_market_enabled = get_settings_service().is_avito_market_enabled()
     buttons = [
         [InlineKeyboardButton(text="📦 Список б/у товаров", callback_data="products_list")],
         [InlineKeyboardButton(text="🆕 Список новых", callback_data="new_products_menu")],
         [InlineKeyboardButton(text="🔍 Поиск товара", callback_data="products_search")],
-        [InlineKeyboardButton(text="📊 Оценка рынка Avito", callback_data="avito_market_start")],
-        [InlineKeyboardButton(text="📁 Архив товаров", callback_data="products_archive")],
-        [InlineKeyboardButton(text="🔄 Обновление постов", callback_data="sync_telegram_links")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main")]
     ]
+    if avito_market_enabled:
+        buttons.append(
+            [InlineKeyboardButton(text="📊 Оценка рынка Avito", callback_data="avito_market_start")]
+        )
+    buttons.extend(
+        [
+            [InlineKeyboardButton(text="📁 Архив товаров", callback_data="products_archive")],
+            [InlineKeyboardButton(text="🔄 Обновление постов", callback_data="sync_telegram_links")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main")],
+        ]
+    )
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 

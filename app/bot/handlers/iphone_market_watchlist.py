@@ -238,7 +238,11 @@ async def watchlist_run(callback: CallbackQuery):
     except Exception:
         await callback.message.answer("Сейчас не удалось обновить оценку.")
         return
-    from app.bot.handlers.iphone_market_price import _result_keyboard, format_market_estimate
+    from app.bot.handlers.iphone_market_price import (
+        _result_keyboard,
+        format_market_estimate,
+        load_shop_price_range,
+    )
 
     if estimate is None:
         await callback.answer("Позиция не найдена", show_alert=True)
@@ -249,7 +253,11 @@ async def watchlist_run(callback: CallbackQuery):
     elif outcome == "stale":
         hint = "\n\nAvito ограничил запросы, показан прошлый отчёт. Фон на паузе."
     await callback.message.edit_text(
-        format_market_estimate(estimate) + hint,
+        format_market_estimate(
+            estimate,
+            shop_range=await load_shop_price_range(estimate.query),
+        )
+        + hint,
         parse_mode=ParseMode.HTML,
         reply_markup=_result_keyboard(history_page=0),
         disable_web_page_preview=True,

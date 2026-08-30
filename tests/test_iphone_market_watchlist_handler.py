@@ -6,12 +6,48 @@ from app.bot.keyboards.iphone_market_watchlist_keyboard import (
     watchlist_main_keyboard,
     watchlist_suggest_keyboard,
 )
-from app.db.avito_market_watchlist_queries import catalog_memory_to_gb, is_vintage_market_model
+from app.db.avito_market_watchlist_queries import (
+    catalog_memory_to_gb,
+    is_vintage_market_model,
+    shop_price_range_from_rows,
+    used_catalog_config,
+)
 from app.services.iphone_market_watchlist_service import (
     compute_next_refresh_at,
     sort_watchlist_rows,
     tier_interval_sec,
 )
+
+
+def test_used_catalog_config_matches_model_and_memory():
+    assert used_catalog_config("iPhone 14 Pro Max 128Gb Black 1333") == (
+        "iPhone 14 Pro Max",
+        128,
+    )
+    assert used_catalog_config("iPhone 14 Pro 128Gb") == ("iPhone 14 Pro", 128)
+    assert used_catalog_config("iPhone 14 Pro Max 256Gb") == ("iPhone 14 Pro Max", 256)
+    assert used_catalog_config("iPhone 14 Pro Max 128Gb", "iPhone новые") is None
+    assert used_catalog_config("iPhone XR 64Gb") == ("iPhone XR", 64)
+
+
+def test_shop_price_range_from_rows_filters_and_minmax():
+    rows = [
+        ("iPhone 14 Pro Max 128Gb Black", None, "38500₽"),
+        ("iPhone 14 Pro Max 128Gb Gold", None, "41 500 ₽"),
+        ("iPhone 14 Pro Max 128Gb Blue", None, "39900₽"),
+        ("iPhone 14 Pro Max 128Gb Silver", None, "40000₽"),
+        ("iPhone 14 Pro Max 128Gb Purple", None, "39000₽"),
+        ("iPhone 14 Pro 128Gb", None, "30000₽"),
+        ("iPhone 14 Pro Max 256Gb", None, "45000₽"),
+        ("iPhone 14 Pro Max 128Gb", "iPhone новые", "50000₽"),
+        ("iPhone 14 Pro Max 128Gb", None, "цена"),
+    ]
+    shop = shop_price_range_from_rows(rows, "iPhone 14 Pro Max", 128)
+    assert shop is not None
+    assert shop.count == 5
+    assert shop.min_rub == 38_500
+    assert shop.max_rub == 41_500
+    assert shop_price_range_from_rows(rows, "iPhone 16", 128) is None
 
 
 def test_vintage_and_memory_helpers():

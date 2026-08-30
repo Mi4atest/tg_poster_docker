@@ -35,7 +35,7 @@ from app.bot.utils.stale_price_formatter import (
 from app.utils.stale_price_utils import STALE_SORT_PRICE, STALE_SORT_SALE
 from app.bot.utils.price_history_formatter import format_price_history_expandable_html
 from app.config.settings import MAX_SHARE_FALLBACK_PREFIX, STALE_BADGE_MIN_DAYS
-from app.utils.time_msk import format_status_date_msk
+from app.utils.time_msk import format_status_date_msk, to_msk
 from app.utils.price_change import (
     PriceChangeInfo,
     analyze_price_change,
@@ -446,14 +446,62 @@ async def get_product_price_history_api(product_id: int) -> list:
         return []
 
 
+def _avito_hint_rub(value: int) -> str:
+    return f"{value:,}".replace(",", " ") + " ₽"
+
+
+def format_avito_market_hint_html(snapshot: Optional[dict]) -> str:
+    """Одна строка типичного диапазона Avito из кэша; пусто, если снимка нет."""
+    if not snapshot:
+        return ""
+    try:
+        q25 = int(snapshot["q25_rub"])
+        q75 = int(snapshot["q75_rub"])
+    except (KeyError, TypeError, ValueError):
+        return ""
+    fetched = snapshot.get("fetched_at")
+    date_bit = ""
+    if isinstance(fetched, datetime):
+        date_bit = f" · {to_msk(fetched).strftime('%d.%m')}"
+    if q25 == q75:
+        prices = _avito_hint_rub(q25)
+    else:
+        prices = f"{_avito_hint_rub(q25)}–{_avito_hint_rub(q75)}"
+    return f"📊 Avito: {prices}{date_bit}\n"
+
+
+async def load_avito_market_hint_for_product(product: dict) -> str:
+    """Справка из сохранённого отчёта Avito; живой запрос не делается."""
+    from app.db.avito_market_queries import get_latest_success_snapshot_for_config
+    from app.db.avito_market_watchlist_queries import used_catalog_config
+    from app.db.database import run_db
+
+    try:
+        matched = used_catalog_config(
+            product.get("name") or "",
+            product.get("collection_name"),
+        )
+        if not matched:
+            return ""
+        model, memory_gb = matched
+        snapshot = await run_db(get_latest_success_snapshot_for_config, model, memory_gb)
+        return format_avito_market_hint_html(snapshot)
+    except Exception:
+        logger.exception("Failed to load Avito market hint for product card")
+        return ""
+
+
 def format_product_card_html(
     product: dict,
     price_history: Optional[list] = None,
+    avito_hint: Optional[str] = None,
 ) -> str:
     """Полная карточка б/у-товара для Telegram."""
     text = f"📦 <b>{product.get('name', 'Без названия')}</b>\n\n"
     if product.get("price"):
         text += f"💵 Цена: {product['price']}\n"
+    if avito_hint:
+        text += avito_hint if avito_hint.endswith("\n") else avito_hint + "\n"
     if price_history is not None:
         history_block = format_price_history_expandable_html(price_history)
         if history_block:
@@ -480,7 +528,12 @@ async def build_product_card_html(
             price_history = await get_product_price_history_api(product_id)
         else:
             price_history = []
-    return format_product_card_html(product, price_history=price_history)
+    avito_hint = await load_avito_market_hint_for_product(product)
+    return format_product_card_html(
+        product,
+        price_history=price_history,
+        avito_hint=avito_hint,
+    )
 
 
 _MAX_TELEGRAM_CHANNEL_LINK_RE = re.compile(

@@ -68,6 +68,31 @@ def get_market_snapshot_by_id(snapshot_id: int) -> Optional[dict[str, Any]]:
         db.close()
 
 
+def get_latest_success_snapshot_for_config(
+    model: str,
+    memory_gb: int,
+) -> Optional[dict[str, Any]]:
+    """Последний успешный снимок по модели и памяти, без запроса к Avito."""
+    db = SessionLocal()
+    try:
+        row = (
+            db.query(AvitoMarketSnapshot)
+            .filter(
+                AvitoMarketSnapshot.model == str(model),
+                AvitoMarketSnapshot.memory_gb == int(memory_gb),
+                AvitoMarketSnapshot.status == "success",
+                AvitoMarketSnapshot.q25_rub.isnot(None),
+                AvitoMarketSnapshot.q75_rub.isnot(None),
+                AvitoMarketSnapshot.fetched_at.isnot(None),
+            )
+            .order_by(AvitoMarketSnapshot.fetched_at.desc())
+            .first()
+        )
+        return _snapshot_dict(row) if row else None
+    finally:
+        db.close()
+
+
 def list_recent_market_snapshots(*, limit: Optional[int] = None) -> list[dict[str, Any]]:
     """Сохранённые успешные отчёты (без нового запроса к Avito)."""
     db = SessionLocal()

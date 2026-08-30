@@ -19,6 +19,8 @@ from app.config.settings import (
     AVITO_MARKET_MIN_REQUEST_INTERVAL_SEC,
     AVITO_MARKET_REGION,
 )
+from app.db.avito_market_watchlist_queries import ShopPriceRange, get_used_shop_price_range
+from app.db.database import run_db
 from app.integrations.avito.market_search import MarketListing
 from app.services.iphone_market_price_service import (
     MarketPriceEstimate,
@@ -28,7 +30,11 @@ from app.services.iphone_market_price_service import (
 )
 from app.services.settings_service import get_settings_service
 from app.integrations.avito.debug_agent_log import agent_dbg
-from app.utils.iphone_market_query import MarketQueryError, parse_iphone_market_query
+from app.utils.iphone_market_query import (
+    IphoneMarketQuery,
+    MarketQueryError,
+    parse_iphone_market_query,
+)
 from app.utils.iphone_parser import get_model_display_name, sort_models_for_display
 from app.utils.price_stats import PriceSummary
 
@@ -331,6 +337,23 @@ def _seller_line(label: str, summary: PriceSummary) -> str:
     )
 
 
+def _shop_range_line(shop: ShopPriceRange) -> str:
+    if shop.count == 1 or shop.min_rub == shop.max_rub:
+        prices = _rub(shop.min_rub)
+    else:
+        prices = f"{_rub(shop.min_rub)}–{_rub(shop.max_rub)}"
+    return f"В магазине ({shop.count} шт): <b>{prices}</b>"
+
+
+async def load_shop_price_range(query: IphoneMarketQuery) -> ShopPriceRange | None:
+    """Справка из каталога б/у; сбой БД не ломает карточку Avito."""
+    try:
+        return await run_db(get_used_shop_price_range, query.model, query.memory_gb)
+    except Exception:
+        logger.exception("Failed to load shop price range for market card")
+        return None
+
+
 def _short_model_name(display_name: str) -> str:
     name = display_name.strip()
     if name.lower().startswith("iphone "):
@@ -418,7 +441,10 @@ def _seller_counts_line(estimate: MarketPriceEstimate) -> str:
     return "Продавцы в выдаче: " + ", ".join(parts)
 
 
-def format_market_estimate(estimate: MarketPriceEstimate) -> str:
+def format_market_estimate(
+    estimate: MarketPriceEstimate,
+    shop_range: ShopPriceRange | None = None,
+) -> str:
     lines = [
         f"📊 <b>{html.escape(estimate.query.display_name)}, б/у</b>",
         f"🗺 {html.escape(estimate.region)}",
@@ -430,6 +456,12 @@ def format_market_estimate(estimate: MarketPriceEstimate) -> str:
             [
                 "",
                 f"{title}: <b>{_rub(estimate.summary.q25_rub)}–{_rub(estimate.summary.q75_rub)}</b>",
+            ]
+        )
+        if shop_range:
+            lines.append(_shop_range_line(shop_range))
+        lines.extend(
+            [
                 f"Медиана: <b>{_rub(estimate.summary.median_rub)}</b>",
                 f"Учтено: {estimate.used_count} из {estimate.total_count}",
             ]
@@ -453,9 +485,11 @@ def format_market_estimate(estimate: MarketPriceEstimate) -> str:
             if estimate.business_summary:
                 lines.append(_seller_line("Магазины", estimate.business_summary))
     else:
+        lines.append("")
+        if shop_range:
+            lines.append(_shop_range_line(shop_range))
         lines.extend(
             [
-                "",
                 "Пока слишком мало подходящих объявлений, чтобы назвать цену.",
                 f"По фильтрам подошло: {estimate.used_count} из {estimate.total_count}.",
             ]
@@ -614,7 +648,10 @@ async def avito_market_open(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Не удалось открыть отчёт", show_alert=True)
         return
     await callback.message.edit_text(
-        format_market_estimate(estimate),
+        format_market_estimate(
+            estimate,
+            shop_range=await load_shop_price_range(estimate.query),
+        ),
         parse_mode=ParseMode.HTML,
         reply_markup=_result_keyboard(
             history_page=history_page if history_page is not None else 0
@@ -659,7 +696,10 @@ async def avito_market_query(message: Message, state: FSMContext):
         avito_last_snapshot_id=estimate.snapshot_id,
     )
     await message.answer(
-        format_market_estimate(estimate),
+        format_market_estimate(
+            estimate,
+            shop_range=await load_shop_price_range(query),
+        ),
         parse_mode=ParseMode.HTML,
         reply_markup=_result_keyboard(offer_watchlist=True),
         disable_web_page_preview=True,

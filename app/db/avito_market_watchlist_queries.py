@@ -1,6 +1,7 @@
 """CRUD и выбор due-позиций watchlist рынка Avito."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Optional
 
@@ -12,6 +13,7 @@ from app.api.models.product import Product
 from app.db.database import SessionLocal
 from app.utils.iphone_market_query import SUPPORTED_MEMORY_GB
 from app.utils.iphone_parser import parse_iphone_memory, parse_iphone_model
+from app.utils.price_change import price_string_to_int_rub
 
 
 _NEW_COLLECTIONS = {"iPhone новые", "Airpods", "Apple Watch", "iPad", "custom"}
@@ -68,6 +70,72 @@ def catalog_memory_to_gb(raw: Optional[str]) -> Optional[int]:
 
 def is_vintage_market_model(model: str) -> bool:
     return str(model or "").strip() in _VINTAGE_MODELS
+
+
+@dataclass(frozen=True)
+class ShopPriceRange:
+    """Min–max цен активных б/у в магазине для одной конфигурации."""
+
+    count: int
+    min_rub: int
+    max_rub: int
+
+
+def used_catalog_config(
+    name: str,
+    collection: Optional[str] = None,
+) -> Optional[tuple[str, int]]:
+    """Модель и память б/у-товара, если название однозначно разбирается."""
+    if (collection or "").strip() in _NEW_COLLECTIONS:
+        return None
+    model = parse_iphone_model(name or "")
+    memory = catalog_memory_to_gb(parse_iphone_memory(name or ""))
+    if not model or memory is None:
+        return None
+    return (model, memory)
+
+
+def shop_price_range_from_rows(
+    rows: list[tuple[str, Optional[str], Optional[str]]],
+    model: str,
+    memory_gb: int,
+) -> Optional[ShopPriceRange]:
+    """Вилка цен по уже загруженным строкам каталога (без vintage-фильтра)."""
+    want_model = str(model or "")
+    want_memory = int(memory_gb)
+    prices: list[int] = []
+    for name, collection, price in rows:
+        matched = used_catalog_config(name, collection)
+        if matched is None:
+            continue
+        got_model, got_memory = matched
+        if got_model != want_model or got_memory != want_memory:
+            continue
+        rub = price_string_to_int_rub(price)
+        if rub is None:
+            continue
+        prices.append(rub)
+    if not prices:
+        return None
+    return ShopPriceRange(count=len(prices), min_rub=min(prices), max_rub=max(prices))
+
+
+def get_used_shop_price_range(model: str, memory_gb: int) -> Optional[ShopPriceRange]:
+    """Активные б/у той же модели и памяти, что в оценке Avito."""
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(Product.name, Product.collection_name, Product.price)
+            .filter(Product.status == "active")
+            .all()
+        )
+        return shop_price_range_from_rows(
+            [(str(name or ""), collection, price) for name, collection, price in rows],
+            model,
+            int(memory_gb),
+        )
+    finally:
+        db.close()
 
 
 def list_watchlist_items() -> list[dict[str, Any]]:
@@ -288,11 +356,11 @@ def list_used_catalog_configs() -> list[dict[str, Any]]:
         )
         counts: dict[tuple[str, int], int] = {}
         for name, collection in rows:
-            if (collection or "").strip() in _NEW_COLLECTIONS:
+            matched = used_catalog_config(name or "", collection)
+            if matched is None:
                 continue
-            model = parse_iphone_model(name or "")
-            memory = catalog_memory_to_gb(parse_iphone_memory(name or ""))
-            if not model or memory is None or is_vintage_market_model(model):
+            model, memory = matched
+            if is_vintage_market_model(model):
                 continue
             key = (model, memory)
             counts[key] = counts.get(key, 0) + 1

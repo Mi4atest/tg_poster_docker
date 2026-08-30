@@ -6,7 +6,10 @@ from datetime import datetime, timezone
 
 import pytest
 
-from app.bot.handlers.product_management import format_product_card_html
+from app.bot.handlers.product_management import (
+    format_avito_market_hint_html,
+    format_product_card_html,
+)
 
 
 def _strip_html(text: str) -> str:
@@ -29,6 +32,7 @@ def test_active_product_card():
     text = _strip_html(format_product_card_html(product))
     assert "📦 iPhone 13 128Gb Pink 1141" in text
     assert "💵 Цена: 23900₽" in text
+    assert "📊 Avito" not in text
     assert "📂 Категория: смартфоны" in text
     assert "📁 Подборка: iPhone б/у" in text
     assert "📅 с 01.07.2026, 12:35" in text
@@ -149,3 +153,29 @@ def test_same_helper_all_scenarios(scenario: str):
     assert "📅 с" in text
     assert "Статус:" in text
     assert "💵 Цена:" in text
+
+
+def test_avito_market_hint_range_and_date():
+    snapshot = {
+        "q25_rub": 25_491,
+        "q75_rub": 34_240,
+        "fetched_at": datetime(2026, 8, 30, 9, 10, tzinfo=timezone.utc),
+    }
+    hint = format_avito_market_hint_html(snapshot)
+    assert hint == "📊 Avito: 25 491 ₽–34 240 ₽ · 30.08\n"
+    assert format_avito_market_hint_html(None) == ""
+    assert format_avito_market_hint_html({"q25_rub": 20_000}) == ""
+    same = format_avito_market_hint_html(
+        {"q25_rub": 30_000, "q75_rub": 30_000, "fetched_at": datetime(2026, 8, 30, 9, 10)}
+    )
+    assert same == "📊 Avito: 30 000 ₽ · 30.08\n"
+
+
+def test_product_card_shows_avito_hint_after_price():
+    product = {**BASE, "status": "active", "created_at": BASE["published_at"]}
+    hint = "📊 Avito: 25 491 ₽–34 240 ₽ · 30.08\n"
+    text = format_product_card_html(product, avito_hint=hint)
+    price = text.index("💵 Цена: 23900₽")
+    avito = text.index("📊 Avito: 25 491 ₽–34 240 ₽ · 30.08")
+    category = text.index("📂 Категория")
+    assert price < avito < category

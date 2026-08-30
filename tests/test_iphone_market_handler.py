@@ -8,6 +8,7 @@ from app.bot.handlers.iphone_market_price import (
     format_market_estimate,
     sort_market_report_rows,
 )
+from app.db.avito_market_watchlist_queries import ShopPriceRange
 from app.integrations.avito.market_search import MarketListing
 from app.services.iphone_market_price_service import MarketPriceEstimate
 from app.utils.iphone_market_query import parse_iphone_market_query
@@ -62,6 +63,56 @@ def test_market_result_is_short_and_clear():
     assert "Тула · магазин" in text
     assert "Учтённые объявления" in text
     assert "Ориентир" not in text
+    assert "В магазине" not in text
+
+
+def test_market_result_shows_shop_range_after_typical():
+    query = parse_iphone_market_query("14 pro max 128")
+    estimate = MarketPriceEstimate(
+        query=query,
+        region="Россия",
+        total_count=30,
+        matched_count=20,
+        used_count=20,
+        outlier_count=1,
+        summary=PriceSummary(20, 33_450, 32_000, 36_992),
+        private_summary=None,
+        business_summary=None,
+        fetched_at=datetime(2026, 8, 30, 9, 10),
+    )
+    text = format_market_estimate(
+        estimate,
+        shop_range=ShopPriceRange(count=5, min_rub=38_500, max_rub=41_500),
+    )
+    typical = text.index("Типичный диапазон")
+    shop = text.index("В магазине (5 шт): <b>38 500 ₽–41 500 ₽</b>")
+    median = text.index("Медиана")
+    assert typical < shop < median
+    assert "Магазины:" not in text
+
+
+def test_market_result_shop_single_price_and_hidden_when_empty():
+    query = parse_iphone_market_query("14 pro max 128")
+    estimate = MarketPriceEstimate(
+        query=query,
+        region="Россия",
+        total_count=10,
+        matched_count=8,
+        used_count=8,
+        outlier_count=0,
+        summary=PriceSummary(8, 33_000, 32_000, 35_000),
+        private_summary=None,
+        business_summary=None,
+        fetched_at=datetime(2026, 8, 30, 9, 10),
+    )
+    one = format_market_estimate(
+        estimate,
+        shop_range=ShopPriceRange(count=1, min_rub=38_500, max_rub=38_500),
+    )
+    assert "В магазине (1 шт): <b>38 500 ₽</b>" in one
+    assert "38 500 ₽–38 500 ₽" not in one
+    assert "В магазине" not in format_market_estimate(estimate)
+    assert "В магазине" not in format_market_estimate(estimate, shop_range=None)
 
 
 def test_soft_result_shows_orientir_warning():

@@ -11,6 +11,7 @@ from app.api.models.post import (  # noqa: F401
 )
 from app.api.models.product import Product  # noqa: F401
 from app.api.models.product_price_history import ProductPriceHistory  # noqa: F401
+from app.api.models.product_sale import ProductSale  # noqa: F401
 from app.api.models.new_menu_button import NewMenuButton  # noqa: F401
 from app.api.models.story import Story, StoryPublicationLog  # noqa: F401
 from app.api.models.avito_feed_operation import AvitoFeedOperation  # noqa: F401

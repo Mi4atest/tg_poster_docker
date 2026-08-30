@@ -384,26 +384,12 @@ def get_new_product_detail_keyboard(
     availability_status: Optional[str] = None,
     back_data: str = "new_products_menu"
 ) -> InlineKeyboardMarkup:
-    """
-    Клавиатура деталей нового товара:
-    - Продажа
-    - Товар недоступен
-    - Изменить цену
-    - 🟢 В наличии / 🔴 На заказ (переключатель)
-    - Назад к списку
-    """
+    """Карточка нового товара: тумблер наличия, цена, Авито, «Ещё»."""
     buttons = []
-    if status == "active":
-        buttons.append([
-            InlineKeyboardButton(text="💰 Продажа", callback_data=f"new_product_sell_{product_id}")
-        ])
-        buttons.append([
-            ikb(
-                "🚫 Товар недоступен",
-                f"new_product_unavail_{product_id}",
-                style="danger",
-            )
-        ])
+    avail_text = "🟢 В наличии" if availability_status == "available" else "🔴 На заказ"
+    buttons.append([
+        InlineKeyboardButton(text=avail_text, callback_data=f"new_product_toggle_avail_{product_id}")
+    ])
     buttons.append([
         ikb(
             "💰 Изменить цену",
@@ -414,10 +400,10 @@ def get_new_product_detail_keyboard(
     buttons.append([
         InlineKeyboardButton(text="🛒 Авито (ссылка / id)", callback_data=f"new_product_avito_{product_id}")
     ])
-    avail_text = "🟢 В наличии" if availability_status == "available" else "🔴 На заказ"
-    buttons.append([
-        InlineKeyboardButton(text=avail_text, callback_data=f"new_product_toggle_avail_{product_id}")
-    ])
+    if status == "active":
+        buttons.append([
+            InlineKeyboardButton(text="⋯ Ещё", callback_data=f"new_product_more_{product_id}")
+        ])
     buttons.append([
         InlineKeyboardButton(text="⬅️ Назад к списку", callback_data=back_data)
     ])
@@ -425,6 +411,52 @@ def get_new_product_detail_keyboard(
         InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")
     ])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_new_product_more_keyboard(product_id: int) -> InlineKeyboardMarkup:
+    """Редкие действия: продажа без снятия наличия и скрытие из каталога."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="💰 Продажа", callback_data=f"new_product_sell_{product_id}")],
+            [
+                ikb(
+                    "🚫 Товар недоступен",
+                    f"new_product_unavail_{product_id}",
+                    style="danger",
+                )
+            ],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"new_product_{product_id}")],
+        ]
+    )
+
+
+def get_new_product_stock_off_keyboard(product_id: int) -> InlineKeyboardMarkup:
+    """Развилка при снятии с наличия: продажа или перемещение."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                ikb("💰 Продажа", f"new_product_off_sale_{product_id}", style="success"),
+                ikb("📦 Перемещение", f"new_product_off_xfer_{product_id}", style="danger"),
+            ],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data=f"new_product_{product_id}")],
+        ]
+    )
+
+
+def get_new_catalog_hide_keyboard(product_id: int) -> InlineKeyboardMarkup:
+    """Подтверждение скрытия позиции из каталога (не продажа)."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                ikb(
+                    "🚫 Скрыть из каталога",
+                    f"new_product_unavail_ok_{product_id}",
+                    style="danger",
+                )
+            ],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data=f"new_product_{product_id}")],
+        ]
+    )
 
 
 def get_new_product_price_edit_keyboard(product_id: int) -> InlineKeyboardMarkup:

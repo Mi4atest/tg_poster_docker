@@ -492,6 +492,47 @@ def ensure_evening_reports_index() -> bool:
         return False
 
 
+def ensure_product_sales_table() -> bool:
+    """Журнал продаж новых позиций (сводка месяца, SKU остаётся в каталоге)."""
+    try:
+        inspector = inspect(engine)
+        if "product_sales" in inspector.get_table_names():
+            return False
+        with engine.connect() as conn:
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE product_sales (
+                        id SERIAL PRIMARY KEY,
+                        product_id INTEGER REFERENCES products(id) ON DELETE SET NULL,
+                        name VARCHAR NOT NULL,
+                        collection_name VARCHAR,
+                        price VARCHAR,
+                        sold_at TIMESTAMP NOT NULL
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_product_sales_sold_at "
+                    "ON product_sales (sold_at)"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_product_sales_product_id "
+                    "ON product_sales (product_id)"
+                )
+            )
+            conn.commit()
+        logger.info("Таблица product_sales создана")
+        return True
+    except Exception as e:
+        logger.error("Ошибка создания product_sales: %s", e)
+        return False
+
+
 def ensure_shop_notes_table() -> bool:
     """Напоминалки главного экрана."""
     try:
@@ -547,6 +588,7 @@ def ensure_database_schema():
     ensure_evening_reports_table()
     ensure_evening_reports_index()
     ensure_shop_notes_table()
+    ensure_product_sales_table()
 
     init_alembic_version_table()
 

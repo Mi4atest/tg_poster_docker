@@ -24,8 +24,10 @@ from app.bot.keyboards.new_products_keyboard import (
     get_new_iphone_storage_keyboard,
     get_new_iphone_products_keyboard,
     get_new_product_detail_keyboard,
+    get_new_product_more_keyboard,
+    get_new_product_stock_off_keyboard,
+    get_new_catalog_hide_keyboard,
     get_new_product_price_edit_keyboard,
-    get_payment_method_keyboard_new_product,
     get_airpods_models_keyboard,
     get_apple_watch_categories_keyboard,
     get_apple_watch_sizes_keyboard,
@@ -57,6 +59,11 @@ from app.utils.price_change import (
     analyze_price_change,
     format_price_change_confirm_prompt,
     price_string_to_int_rub,
+)
+from app.utils.new_product_stock import (
+    availability_label,
+    format_catalog_hide_confirm_text,
+    format_stock_off_confirm_text,
 )
 logger = logging.getLogger(__name__)
 
@@ -854,7 +861,7 @@ async def _show_new_product_card(
     text += f"💵 Цена: {price_display}\n"
     text += f"📁 Подборка: {product.get('collection_name', '—')}\n"
     av = product.get("availability_status")
-    text += f"Наличие: {'🟢 В наличии' if av == 'available' else '🔴 На заказ' if av == 'on_order' else '—'}\n"
+    text += f"Наличие: {availability_label(av)}\n"
     if product.get("vk_product_link"):
         text += f"\n🔗 <a href=\"{product['vk_product_link']}\">Ссылка на товар в ВК</a>"
     if product.get("avito_url"):
@@ -872,6 +879,17 @@ async def _show_new_product_card(
         disable_link_preview=True,
     )
     return True
+
+
+def _schedule_new_availability_refresh(bot) -> None:
+    """Прайс в ТГ/Max — debounce в фоне."""
+    try:
+        from app.services.price_sync_service import get_price_sync_service
+
+        get_price_sync_service().start(bot)
+        get_price_sync_service().schedule_availability_list_refresh()
+    except Exception as e:
+        logger.warning("Could not schedule availability/price refresh: %s", e)
 
 
 @router.callback_query(F.data.startswith("new_custom_"))
@@ -2012,6 +2030,8 @@ async def new_iphone_storage(callback: CallbackQuery, state: FSMContext):
     & ~F.data.startswith("new_product_price_")
     & ~F.data.startswith("new_product_avito_")
     & ~F.data.startswith("new_product_toggle_avail_")
+    & ~F.data.startswith("new_product_more_")
+    & ~F.data.startswith("new_product_off_")
     & ~F.data.startswith("new_pay_")
 )
 async def new_product_detail(callback: CallbackQuery, state: FSMContext):
@@ -2032,10 +2052,10 @@ async def new_product_detail(callback: CallbackQuery, state: FSMContext):
         return
 
 
-@router.callback_query(F.data.startswith("new_product_sell_"))
-async def new_product_sell(callback: CallbackQuery):
-    """Продажа: показать выбор способа оплаты (нал/карта/кредит)."""
-    pid = callback.data.replace("new_product_sell_", "")
+@router.callback_query(F.data.startswith("new_product_more_"))
+async def new_product_more(callback: CallbackQuery):
+    """Редкие действия карточки: продажа без снятия наличия и скрытие из каталога."""
+    pid = callback.data.replace("new_product_more_", "")
     try:
         product_id = int(pid)
     except ValueError:
@@ -2045,14 +2065,40 @@ async def new_product_sell(callback: CallbackQuery):
     if not product:
         await callback.answer("Товар не найден", show_alert=True)
         return
-    price_display = _normalize_price_display(product.get("price"))
-    text = f"💰 Выберите способ оплаты:\n\n📦 {product.get('name', 'Без названия')}"
+    text = (
+        f"📦 <b>{escape(product.get('name', 'Без названия'))}</b>\n\n"
+        "💰 Продажа — в сводку месяца, наличие не меняется.\n"
+        "🚫 Товар недоступен — скрыть позицию из каталога (не продажа)."
+    )
     await safe_edit_message(
         callback.message,
         text,
-        reply_markup=get_payment_method_keyboard_new_product(product_id, price_display),
+        reply_markup=get_new_product_more_keyboard(product_id),
+        parse_mode="HTML",
     )
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("new_product_sell_"))
+async def new_product_sell(callback: CallbackQuery, state: FSMContext):
+    """Продажа из «Ещё»: в сводку, без способа оплаты, наличие не трогаем."""
+    pid = callback.data.replace("new_product_sell_", "")
+    try:
+        product_id = int(pid)
+    except ValueError:
+        await callback.answer("Ошибка")
+        return
+    from app.services.product_ops_service import record_new_product_sale
+
+    updated = await run_db(record_new_product_sale, product_id, set_on_order=False)
+    if not updated:
+        await callback.answer("Не удалось записать продажу", show_alert=True)
+        return
+    sdata = await state.get_data()
+    back_data = sdata.get("new_products_back", "new_products_menu")
+    await callback.answer("✅ Продажа в сводке месяца")
+    if not await _show_new_product_card(callback, state, product_id, back_data):
+        await callback.answer("Товар не найден", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("new_pay_"))
@@ -2087,7 +2133,29 @@ async def new_product_payment(callback: CallbackQuery, state: FSMContext):
     )
 
 
-@router.callback_query(F.data.startswith("new_product_unavail_"))
+@router.callback_query(F.data.regexp(r"^new_product_unavail_\d+$"))
+async def new_product_unavailable_confirm(callback: CallbackQuery):
+    """Экран подтверждения: скрыть SKU из каталога, не продажа."""
+    pid = callback.data.replace("new_product_unavail_", "")
+    try:
+        product_id = int(pid)
+    except ValueError:
+        await callback.answer("Ошибка")
+        return
+    product = await get_product_api(product_id)
+    if not product:
+        await callback.answer("Товар не найден", show_alert=True)
+        return
+    await safe_edit_message(
+        callback.message,
+        format_catalog_hide_confirm_text(product.get("name", "Без названия")),
+        reply_markup=get_new_catalog_hide_keyboard(product_id),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("new_product_unavail_ok_"))
 async def new_product_unavailable(callback: CallbackQuery, state: FSMContext):
     """Товар недоступен: БД сразу, площадки — в очередь синхронизации."""
     from app.services.price_sync_service import (
@@ -2097,7 +2165,7 @@ async def new_product_unavailable(callback: CallbackQuery, state: FSMContext):
         is_used_product_branch,
     )
 
-    pid = callback.data.replace("new_product_unavail_", "")
+    pid = callback.data.replace("new_product_unavail_ok_", "")
     try:
         product_id = int(pid)
     except ValueError:
@@ -2139,10 +2207,13 @@ async def new_product_unavailable(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Товар не найден", show_alert=True)
         return
 
-    await callback.answer("✅ Товар помечен как недоступный")
+    await callback.answer("✅ Позиция скрыта из каталога")
     sdata = await state.get_data()
     back_data = sdata.get("new_products_back", "new_products_menu")
-    text = f"📦 <b>{product.get('name', 'Без названия')}</b>\n\n🚫 Товар недоступен (скрыт в ВК и на других площадках по привязке)."
+    text = (
+        f"📦 <b>{product.get('name', 'Без названия')}</b>\n\n"
+        "🚫 Позиция скрыта из каталога (не продажа)."
+    )
     await safe_edit_message(
         callback.message,
         text,
@@ -2433,7 +2504,7 @@ async def new_product_avito_apply(message: Message, state: FSMContext):
         text = f"📦 <b>{product.get('name', 'Без названия')}</b>\n\n💵 Цена: {price_display}\n"
         text += f"📁 Подборка: {product.get('collection_name', '—')}\n"
         av = product.get("availability_status")
-        text += f"Наличие: {'🟢 В наличии' if av == 'available' else '🔴 На заказ' if av == 'on_order' else '—'}\n"
+        text += f"Наличие: {availability_label(av)}\n"
         if product.get("vk_product_link"):
             text += f"\n🔗 <a href=\"{product['vk_product_link']}\">Ссылка на товар в ВК</a>"
         if product.get("avito_url"):
@@ -2452,7 +2523,7 @@ async def new_product_avito_apply(message: Message, state: FSMContext):
 
 @router.callback_query(F.data.startswith("new_product_toggle_avail_"))
 async def new_product_toggle_availability(callback: CallbackQuery, state: FSMContext):
-    """Переключить наличие: available <-> on_order. Прайс в канале — в фоне."""
+    """В наличии → развилка продажа/перемещение. На заказ → в наличии сразу."""
     pid = callback.data.replace("new_product_toggle_avail_", "")
     try:
         product_id = int(pid)
@@ -2464,11 +2535,20 @@ async def new_product_toggle_availability(callback: CallbackQuery, state: FSMCon
         await callback.answer("Товар не найден", show_alert=True)
         return
     cur = product.get("availability_status")
-    next_val = "on_order" if cur == "available" else "available"
+    if cur == "available":
+        await safe_edit_message(
+            callback.message,
+            format_stock_off_confirm_text(product.get("name", "Без названия")),
+            reply_markup=get_new_product_stock_off_keyboard(product_id),
+            parse_mode="HTML",
+        )
+        await callback.answer()
+        return
+
     try:
         from app.services.product_ops_service import set_product_availability
 
-        updated = await run_db(set_product_availability, product_id, next_val)
+        updated = await run_db(set_product_availability, product_id, "available")
         if not updated:
             await callback.answer("Ошибка обновления наличия", show_alert=True)
             return
@@ -2477,36 +2557,62 @@ async def new_product_toggle_availability(callback: CallbackQuery, state: FSMCon
         await callback.answer("Ошибка обновления наличия", show_alert=True)
         return
 
-    # UI сразу — не ждём edit 4 сообщений прайса в канале
-    product = await get_product_api(product_id)
-    if not product:
+    sdata = await state.get_data()
+    back_data = sdata.get("new_products_back", "new_products_menu")
+    await callback.answer("✅ 🟢 В наличии")
+    if not await _show_new_product_card(callback, state, product_id, back_data):
+        return
+    _schedule_new_availability_refresh(callback.bot)
+
+
+@router.callback_query(F.data.startswith("new_product_off_sale_"))
+async def new_product_off_sale(callback: CallbackQuery, state: FSMContext):
+    """Продажа с тумблера: журнал + на заказ, без способа оплаты."""
+    pid = callback.data.replace("new_product_off_sale_", "")
+    try:
+        product_id = int(pid)
+    except ValueError:
         await callback.answer("Ошибка")
+        return
+    from app.services.product_ops_service import record_new_product_sale
+
+    updated = await run_db(record_new_product_sale, product_id, set_on_order=True)
+    if not updated:
+        await callback.answer("Не удалось записать продажу", show_alert=True)
         return
     sdata = await state.get_data()
     back_data = sdata.get("new_products_back", "new_products_menu")
-    lbl = "🟢 В наличии" if next_val == "available" else "🔴 На заказ"
-    await callback.answer(f"✅ {lbl}")
-    price_display = _normalize_price_display(product.get("price"))
-    text = f"📦 <b>{product.get('name', 'Без названия')}</b>\n\n💵 Цена: {price_display}\nНаличие: {lbl}"
-    await safe_edit_message(
-        callback.message,
-        text,
-        reply_markup=get_new_product_detail_keyboard(
-            product_id,
-            status=product.get("status", "active"),
-            availability_status=product.get("availability_status") or next_val,
-            back_data=back_data,
-        ),
-        parse_mode="HTML",
-    )
+    await callback.answer("✅ Продажа · на заказ")
+    if not await _show_new_product_card(callback, state, product_id, back_data):
+        return
+    _schedule_new_availability_refresh(callback.bot)
 
-    # Прайс в ТГ — debounce в фоне, без сообщений об ошибках пользователю
+
+@router.callback_query(F.data.startswith("new_product_off_xfer_"))
+async def new_product_off_transfer(callback: CallbackQuery, state: FSMContext):
+    """Перемещение: только на заказ, без сводки."""
+    pid = callback.data.replace("new_product_off_xfer_", "")
     try:
-        from app.services.price_sync_service import get_price_sync_service
+        product_id = int(pid)
+    except ValueError:
+        await callback.answer("Ошибка")
+        return
+    try:
+        from app.services.product_ops_service import set_product_availability
 
-        get_price_sync_service().start(callback.bot)
-        get_price_sync_service().schedule_availability_list_refresh()
+        updated = await run_db(set_product_availability, product_id, "on_order")
+        if not updated:
+            await callback.answer("Ошибка обновления наличия", show_alert=True)
+            return
     except Exception as e:
-        logger.warning("Could not schedule availability/price refresh: %s", e)
+        logger.error("Error updating availability: %s", e)
+        await callback.answer("Ошибка обновления наличия", show_alert=True)
+        return
+    sdata = await state.get_data()
+    back_data = sdata.get("new_products_back", "new_products_menu")
+    await callback.answer("✅ Перемещение · на заказ")
+    if not await _show_new_product_card(callback, state, product_id, back_data):
+        return
+    _schedule_new_availability_refresh(callback.bot)
 
 

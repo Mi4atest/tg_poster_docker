@@ -364,6 +364,42 @@ def set_product_availability(product_id: int, availability_status: str) -> Optio
     return product
 
 
+def record_new_product_sale(
+    product_id: int,
+    *,
+    set_on_order: bool = False,
+) -> Optional[dict]:
+    """Записать продажу новой позиции. SKU остаётся в каталоге.
+
+    set_on_order=True — после продажи выключить «в наличии».
+    """
+    from app.db.product_sales_queries import insert_product_sale
+
+    with SessionLocal() as db:
+        product = _product_api_dict(db, product_id)
+        if not product:
+            return None
+        insert_product_sale(
+            db,
+            product_id=product_id,
+            name=product.get("name") or "Без названия",
+            collection_name=product.get("collection_name"),
+            price=product.get("price"),
+        )
+        if set_on_order:
+            db.execute(
+                text(
+                    "UPDATE products SET availability_status = :st, updated_at = NOW() "
+                    "WHERE id = :id"
+                ),
+                {"st": "on_order", "id": product_id},
+            )
+        db.commit()
+        updated = _product_api_dict(db, product_id)
+    _invalidate_menu_cache()
+    return updated
+
+
 def fetch_stale_price_list(
     min_days: int = 60,
     *,

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import html
 import logging
+import re
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
@@ -50,6 +51,7 @@ _COL_MODEL = 12
 _COL_MEM = 5
 _COL_PRICE = 10
 _AVITO_ORIGIN = "https://www.avito.ru"
+_IPHONE_TITLE_PREFIX = re.compile(r"^(?:apple\s+)?iphone\s+", re.IGNORECASE)
 
 
 class IphoneMarketPriceState(StatesGroup):
@@ -356,9 +358,15 @@ async def load_shop_price_range(query: IphoneMarketQuery) -> ShopPriceRange | No
 
 def _short_model_name(display_name: str) -> str:
     name = display_name.strip()
-    if name.lower().startswith("iphone "):
-        return name[7:]
-    return name
+    compact = _IPHONE_TITLE_PREFIX.sub("", name, count=1).strip(" ,")
+    return compact or name
+
+
+def _compact_listing_title(title: str, fallback: str = "") -> str:
+    """Убирает бренд iPhone из заголовка объявления — он и так в шапке отчёта."""
+    raw = (title or "").strip() or fallback
+    compact = _IPHONE_TITLE_PREFIX.sub("", raw, count=1).strip(" ,")
+    return compact or fallback or raw
 
 
 def _avito_url(raw: str) -> str:
@@ -392,10 +400,12 @@ def _listing_line(item: MarketListing, model_label: str) -> str:
     if link:
         safe_href = html.escape(link, quote=True)
         price_bit = f'<a href="{safe_href}">{html.escape(price_bit)}</a>'
-    title = (item.title or model_label).strip()
+    title = _compact_listing_title(item.title, model_label)
     if len(title) > 58:
         title = title[:57].rstrip() + "…"
-    chunks = [f"{html.escape(title)}: {price_bit}"]
+    chunks = [price_bit]
+    if title:
+        chunks.append(html.escape(title))
     city = (item.city or "").strip()
     if city:
         chunks.append(html.escape(city))
@@ -410,22 +420,30 @@ def _listing_line(item: MarketListing, model_label: str) -> str:
     return line
 
 
+def _expandable_listings(title: str, items: list[MarketListing], model_label: str) -> str:
+    rows = sorted(items, key=lambda item: item.price_rub)[:_MAX_LIST_LINES]
+    body = "\n".join(_listing_line(item, model_label) for item in rows)
+    more = ""
+    if len(items) > _MAX_LIST_LINES:
+        more = f"\n… и ещё {len(items) - _MAX_LIST_LINES}"
+    return (
+        f"\n{title}, нажмите чтобы раскрыть:\n"
+        f"<blockquote expandable>{body}{more}</blockquote>"
+    )
+
+
 def _listings_block(estimate: MarketPriceEstimate) -> str:
     if not estimate.listings:
         return ""
     model_label = _short_model_name(estimate.query.display_name)
-    rows = sorted(estimate.listings, key=lambda item: item.price_rub)[:_MAX_LIST_LINES]
-    body = "\n".join(_listing_line(item, model_label) for item in rows)
-    more = ""
-    if len(estimate.listings) > _MAX_LIST_LINES:
-        more = f"\n… и ещё {len(estimate.listings) - _MAX_LIST_LINES}"
-    has_audit = any(item.included is not None for item in estimate.listings)
-    title = (
-        "📋 Выдача Avito (жирным — учтённые)"
-        if has_audit
-        else "📋 Учтённые объявления"
-    )
-    return f"\n{title}, нажмите чтобы раскрыть:\n<blockquote expandable>{body}{more}</blockquote>"
+    included = [item for item in estimate.listings if item.included is not False]
+    rejected = [item for item in estimate.listings if item.included is False]
+    parts: list[str] = []
+    if included:
+        parts.append(_expandable_listings("📋 Учтённые объявления", included, model_label))
+    if rejected:
+        parts.append(_expandable_listings("📋 Отсеянные объявления", rejected, model_label))
+    return "".join(parts)
 
 
 def _seller_counts_line(estimate: MarketPriceEstimate) -> str:

@@ -2,8 +2,10 @@ from datetime import datetime
 
 from app.bot.handlers.iphone_market_price import (
     _cancel_keyboard,
+    _compact_listing_title,
     _history_keyboard,
     _history_text,
+    _listing_line,
     _result_keyboard,
     format_market_estimate,
     sort_market_report_rows,
@@ -61,7 +63,12 @@ def test_market_result_is_short_and_clear():
     assert 'href="https://www.avito.ru/kirov/telefony/iphone_1"' in text
     assert "Киров · частник" in text
     assert "Тула · магазин" in text
+    assert "25 000 ₽" in text and "13 mini 128" in text
+    assert "25 000 ₽ · 13 mini 128" in text or ">25 000 ₽</a> · 13 mini 128" in text
+    assert "iPhone 13 mini 128:" not in text
     assert "Учтённые объявления" in text
+    assert "Отсеянные объявления" not in text
+    assert "Выдача Avito" not in text
     assert "Ориентир" not in text
     assert "В магазине" not in text
 
@@ -311,3 +318,82 @@ def test_products_menu_hides_avito_market_when_disabled():
 def test_products_menu_shows_avito_market_when_enabled():
     labels = _product_menu_labels(avito_market_enabled=True)
     assert "📊 Оценка рынка Avito" in labels
+
+
+def test_compact_listing_title_drops_iphone_brand():
+    assert _compact_listing_title("iPhone 11 Pro, 64 ГБ, 1 SIM") == "11 Pro, 64 ГБ, 1 SIM"
+    assert (
+        _compact_listing_title("iPhone 11 Pro Max, 64 ГБ, SIM + eSIM")
+        == "11 Pro Max, 64 ГБ, SIM + eSIM"
+    )
+    assert _compact_listing_title("Apple iPhone 11 Pro, 64 ГБ") == "11 Pro, 64 ГБ"
+    assert _compact_listing_title("IPHONE 13 mini 128") == "13 mini 128"
+    assert _compact_listing_title("Чехол iPhone 11 Pro") == "Чехол iPhone 11 Pro"
+    assert _compact_listing_title("", "11 Pro") == "11 Pro"
+
+
+def test_listing_line_and_saved_report_drop_iphone_prefix():
+    query = parse_iphone_market_query("11 pro 64")
+    estimate = MarketPriceEstimate(
+        query=query,
+        region="Россия",
+        total_count=4,
+        matched_count=2,
+        used_count=2,
+        outlier_count=0,
+        summary=PriceSummary(2, 8_000, 7_000, 9_000),
+        private_summary=None,
+        business_summary=None,
+        fetched_at=datetime(2026, 8, 30, 12, 0),
+        listings=(
+            MarketListing(
+                "1",
+                "iPhone 11 Pro, 64 ГБ, 1 SIM",
+                3_000,
+                included=False,
+                rejection_reason="material_defect",
+            ),
+            MarketListing(
+                "2",
+                "iPhone 11 Pro, 64 ГБ, SIM + eSIM",
+                7_990,
+                included=True,
+            ),
+            MarketListing(
+                "3",
+                "iPhone 11 Pro Max, 64 ГБ, SIM + eSIM",
+                8_000,
+                city="Республика Башкортостан",
+                included=False,
+                rejection_reason="material_defect",
+            ),
+            MarketListing(
+                "4",
+                "Чехол для iPhone 11 Pro",
+                500,
+                included=False,
+                rejection_reason="excluded_title",
+            ),
+        ),
+    )
+    text = format_market_estimate(estimate)
+    included_at = text.index("Учтённые объявления")
+    rejected_at = text.index("Отсеянные объявления")
+    assert included_at < rejected_at
+    included_block = text[included_at:rejected_at]
+    rejected_block = text[rejected_at:]
+    assert "7 990 ₽" in included_block
+    assert "11 Pro, 64 ГБ, SIM + eSIM" in included_block
+    assert "3 000 ₽" not in included_block
+    assert "Чехол для iPhone 11 Pro" in rejected_block
+    assert "11 Pro, 64 ГБ, 1 SIM" in rejected_block
+    assert "11 Pro Max, 64 ГБ, SIM + eSIM" in rejected_block
+    assert "iPhone 11 Pro, 64 ГБ" not in text
+    assert rejected_block.index("500 ₽") < rejected_block.index("3 000 ₽") < rejected_block.index("8 000 ₽")
+    assert "Выдача Avito" not in text
+    line = _listing_line(
+        MarketListing("1", "iPhone 11 Pro, 64 ГБ, 1 SIM", 3_000),
+        "11 Pro",
+    )
+    assert line.startswith("3 000 ₽ · 11 Pro, 64 ГБ, 1 SIM")
+    assert "iPhone" not in line

@@ -537,6 +537,15 @@ async def _fetch_via_spfa_browser(
     try:
         status, text, final_url = await _once(cookies_obj, proxy)
     except BrowserFetchError as exc:
+        # #region agent log
+        agent_dbg(
+            "A",
+            "market_search.py:_fetch_via_spfa_browser:first_err",
+            "first fetch transport error",
+            {"error": type(exc).__name__, "detail": str(exc)[:160]},
+            run_id="wl",
+        )
+        # #endregion
         raise AvitoMarketError(str(exc)) from exc
 
     # #region agent log
@@ -577,7 +586,23 @@ async def _fetch_via_spfa_browser(
             try:
                 status2, text2, final_url2 = await _once(refreshed, retry_proxy)
             except BrowserFetchError as exc:
-                raise AvitoMarketError(str(exc)) from exc
+                # #region agent log
+                agent_dbg(
+                    "C",
+                    "market_search.py:_fetch_via_spfa_browser:retry_err",
+                    "retry after block failed",
+                    {
+                        "first_status": status,
+                        "error": type(exc).__name__,
+                        "detail": str(exc)[:160],
+                    },
+                    run_id="wl",
+                )
+                # #endregion
+                raise AvitoMarketBlockedError(
+                    f"Avito вернул HTTP {status}",
+                    soft=True,
+                ) from exc
             # #region agent log
             agent_dbg(
                 "E",

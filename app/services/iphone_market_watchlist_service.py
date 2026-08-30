@@ -187,7 +187,69 @@ class IphoneMarketWatchlistService:
         query = IphoneMarketQuery(model=str(item["model"]), memory_gb=int(item["memory_gb"]))
         now = _utcnow()
         await run_db(update_watchlist_item, int(item_id), last_attempt_at=now)
-        estimate = await get_iphone_market_price_service().estimate(query, source=source)
+        # #region agent log
+        try:
+            from app.integrations.avito.debug_agent_log import agent_dbg
+
+            agent_dbg(
+                "E",
+                "iphone_market_watchlist_service.py:refresh_item",
+                "refresh start",
+                {
+                    "item_id": item_id,
+                    "source": source,
+                    "model": str(item.get("model") or "")[:40],
+                    "memory_gb": item.get("memory_gb"),
+                    "has_snapshot_id": bool(item.get("last_snapshot_id")),
+                },
+                run_id="wl",
+            )
+        except Exception:
+            pass
+        # #endregion
+        try:
+            estimate = await get_iphone_market_price_service().estimate(query, source=source)
+        except Exception as exc:
+            # #region agent log
+            try:
+                from app.integrations.avito.debug_agent_log import agent_dbg
+
+                agent_dbg(
+                    "E",
+                    "iphone_market_watchlist_service.py:refresh_item:exc",
+                    "refresh raised",
+                    {"item_id": item_id, "error_type": type(exc).__name__, "detail": str(exc)[:160]},
+                    run_id="wl",
+                )
+            except Exception:
+                pass
+            # #endregion
+            raise
+        outcome = "cache"
+        if estimate.live_fetched and not estimate.is_stale:
+            outcome = "live"
+        elif estimate.is_stale:
+            outcome = "stale"
+        # #region agent log
+        try:
+            from app.integrations.avito.debug_agent_log import agent_dbg
+
+            agent_dbg(
+                "E",
+                "iphone_market_watchlist_service.py:refresh_item:out",
+                "refresh outcome",
+                {
+                    "item_id": item_id,
+                    "outcome": outcome,
+                    "live_fetched": estimate.live_fetched,
+                    "is_stale": estimate.is_stale,
+                    "snapshot_id": estimate.snapshot_id,
+                },
+                run_id="wl",
+            )
+        except Exception:
+            pass
+        # #endregion
         if estimate.live_fetched and not estimate.is_stale:
             nxt = compute_next_refresh_at(str(item.get("tier") or "daily"), now=now)
             updated = await run_db(

@@ -352,6 +352,26 @@ class IphoneMarketPriceService:
                     last_request_at=last_request_at,
                 )
                 if reason:
+                    # #region agent log
+                    try:
+                        from app.integrations.avito.debug_agent_log import agent_dbg
+
+                        agent_dbg(
+                            "D",
+                            "iphone_market_price_service.py:restriction",
+                            "live skipped by restriction",
+                            {
+                                "source": source,
+                                "key": key[:80],
+                                "reason_prefix": reason[:80],
+                                "has_snapshot": bool(snapshot and snapshot.get("status") == "success"),
+                                "daily_count": int(daily_count or 0),
+                            },
+                            run_id="wl",
+                        )
+                    except Exception:
+                        pass
+                    # #endregion
                     return self._fallback_or_raise(query, snapshot, reason)
 
                 self._last_request_at = now
@@ -389,11 +409,39 @@ class IphoneMarketPriceService:
                         cooldown,
                         exc,
                     )
+                    # #region agent log
+                    try:
+                        from app.integrations.avito.debug_agent_log import agent_dbg
+
+                        agent_dbg(
+                            "B",
+                            "iphone_market_price_service.py:blocked",
+                            "live classified as block",
+                            {"source": source, "soft": soft, "cooldown": cooldown},
+                            run_id="wl",
+                        )
+                    except Exception:
+                        pass
+                    # #endregion
                 except AvitoMarketError as exc:
                     self._failed_until[key] = _utcnow() + timedelta(minutes=15)
                     reason = "не удалось обновить данные Avito"
                     retry_after_seconds = 15 * 60
                     logger.warning("Avito market request failed: %s", exc)
+                    # #region agent log
+                    try:
+                        from app.integrations.avito.debug_agent_log import agent_dbg
+
+                        agent_dbg(
+                            "A",
+                            "iphone_market_price_service.py:failed",
+                            "live classified as fail",
+                            {"source": source, "error": str(exc)[:160]},
+                            run_id="wl",
+                        )
+                    except Exception:
+                        pass
+                    # #endregion
                 except Exception:
                     self._failed_until[key] = _utcnow() + timedelta(minutes=15)
                     reason = "внутренняя ошибка обновления оценки"

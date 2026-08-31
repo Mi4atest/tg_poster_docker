@@ -7,6 +7,7 @@ from app.integrations.avito.market_search import (
     AvitoMarketBlockedError,
     MarketListing,
     build_market_search_url,
+    build_market_web_url,
     parse_market_search_html,
     parse_market_search_payload,
 )
@@ -21,6 +22,23 @@ def test_market_url_is_one_page_for_kirov_phone_category():
     assert f"categoryId={AVITO_MARKET_CATEGORY_ID}" in url
     assert "presentationType=serp" in url
     assert "query=" in url
+    assert "p=" not in url
+    assert "page=" not in url
+
+
+def test_search_stays_plain_without_quotes_minus_or_second_page():
+    query = parse_iphone_market_query("11 64")
+    assert query.search_text == "iPhone 11 64 ГБ"
+    assert '"' not in query.search_text
+    assert "-Pro" not in query.search_text
+    web = build_market_web_url(query)
+    api = build_market_search_url(query)
+    for url in (web, api):
+        assert "%22" not in url
+        assert "-Pro" not in url
+        assert "p=2" not in url
+        assert "page=2" not in url
+        assert "offset=" not in url
 
 
 def test_parse_market_search_embedded_json():

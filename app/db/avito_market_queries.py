@@ -20,6 +20,8 @@ from app.utils.market_daily import (
     observed_on_msk,
     should_replace_daily,
 )
+from app.integrations.avito.market_search import MarketListing
+from app.utils.market_harvest import apply_harvest
 from app.utils.price_stats import MarketAnalysis
 
 
@@ -283,6 +285,25 @@ def get_active_market_block_until() -> Optional[datetime]:
         db.close()
 
 
+def _listing_audit_payload(analysis: MarketAnalysis, *, limit: int = 100) -> list[dict[str, Any]]:
+    included = [item for item in analysis.audited_listings if item.included]
+    rest = [item for item in analysis.audited_listings if not item.included]
+    return [
+        {
+            "id": item.item_id,
+            "title": item.title[:300],
+            "price_rub": item.price_rub,
+            "seller_type": item.seller_type,
+            "condition": item.condition,
+            "city": item.city or "",
+            "url": (item.url or "")[:500],
+            "included": item.included,
+            "rejection_reason": item.rejection_reason,
+        }
+        for item in (*included, *rest)[:limit]
+    ]
+
+
 def save_market_snapshot(
     cache_key: str,
     query: IphoneMarketQuery,
@@ -327,20 +348,7 @@ def save_market_snapshot(
             row.quote_quality = quality
         row.private_summary = asdict(analysis.private_summary) if analysis.private_summary else None
         row.business_summary = asdict(analysis.business_summary) if analysis.business_summary else None
-        row.listing_audit = [
-            {
-                "id": item.item_id,
-                "title": item.title[:300],
-                "price_rub": item.price_rub,
-                "seller_type": item.seller_type,
-                "condition": item.condition,
-                "city": item.city or "",
-                "url": (item.url or "")[:500],
-                "included": item.included,
-                "rejection_reason": item.rejection_reason,
-            }
-            for item in analysis.audited_listings[:100]
-        ]
+        row.listing_audit = _listing_audit_payload(analysis)
         row.fetched_at = now
         row.expires_at = now + timedelta(seconds=ttl_seconds)
         row.last_error_at = None
@@ -363,6 +371,61 @@ def save_market_snapshot(
             snapshot_id=row.id,
             now=now,
         )
+        db.commit()
+        db.refresh(row)
+        return _snapshot_dict(row)
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+def merge_harvest_into_snapshot(
+    cache_key: str,
+    query: IphoneMarketQuery,
+    harvested: list[MarketListing],
+    *,
+    region: str,
+) -> Optional[dict[str, Any]]:
+    """Дописать уникальные карточки в уже существующий снимок без live-запроса.
+
+    fetched_at / expires_at не трогаем: это не новый поиск Avito и не сброс TTL.
+    """
+    db = SessionLocal()
+    try:
+        row = (
+            db.query(AvitoMarketSnapshot)
+            .filter(AvitoMarketSnapshot.cache_key == cache_key)
+            .first()
+        )
+        if row is None:
+            return None
+        snapshot = _snapshot_dict(row)
+        applied = apply_harvest(snapshot, query, harvested)
+        if applied is None:
+            return None
+        analysis, _added = applied
+        now = _utcnow()
+        quality = classify_sample_quality(
+            analysis.used_count,
+            min_sample_size=AVITO_MARKET_MIN_SAMPLE_SIZE,
+            min_soft_sample_size=AVITO_MARKET_SOFT_SAMPLE_SIZE,
+        )
+        summary = analysis.summary
+        row.total_count = analysis.total_count
+        row.matched_count = analysis.matched_count
+        row.used_count = analysis.used_count
+        row.outlier_count = analysis.outlier_count
+        if summary:
+            row.median_rub = summary.median_rub
+            row.q25_rub = summary.q25_rub
+            row.q75_rub = summary.q75_rub
+            row.quote_as_of = now
+            row.quote_quality = quality
+        row.private_summary = asdict(analysis.private_summary) if analysis.private_summary else None
+        row.business_summary = asdict(analysis.business_summary) if analysis.business_summary else None
+        row.listing_audit = _listing_audit_payload(analysis)
         db.commit()
         db.refresh(row)
         return _snapshot_dict(row)

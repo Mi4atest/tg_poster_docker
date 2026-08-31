@@ -239,6 +239,58 @@ def test_persisted_daily_limit_blocks_live_fetch(monkeypatch):
     assert "лимит" in (result.stale_reason or "").lower()
 
 
+def test_live_harvest_does_not_spend_extra_live_or_build_missing_quote(monkeypatch):
+    source = parse_iphone_market_query("11 64")
+    live_calls = 0
+    save_calls = 0
+    harvest_calls = []
+    listings = [
+        MarketListing(str(index), "iPhone 11, 64 ГБ", 16_000 + index * 100, condition="Б/у")
+        for index in range(12)
+    ]
+    listings.append(MarketListing("pro-1", "iPhone 11 Pro, 64 ГБ", 22_000, condition="Б/у"))
+    listings.append(MarketListing("max-1", "iPhone 11 Pro Max, 256 ГБ", 31_000, condition="Б/у"))
+
+    async def fetcher(_query):
+        return listings
+
+    async def fake_run_db(fn, *args, **kwargs):
+        nonlocal live_calls, save_calls
+        name = getattr(fn, "__name__", "")
+        if name == "get_market_snapshot":
+            return None
+        if name in {"get_active_market_block_until", "get_last_live_request_at"}:
+            return None
+        if name == "count_live_requests_since":
+            return 0
+        if name == "record_live_request":
+            live_calls += 1
+            return None
+        if name == "save_market_snapshot":
+            save_calls += 1
+            now = _utcnow()
+            return {
+                **_snapshot(source, fresh=True),
+                "id": 4,
+                "fetched_at": now,
+                "expires_at": now + timedelta(hours=12),
+            }
+        if name == "merge_harvest_into_snapshot":
+            harvest_calls.append((args[1], list(args[2])))
+            return {"id": 8, "used_count": 14}
+        return None
+
+    monkeypatch.setattr(service_module, "run_db", fake_run_db)
+    result = asyncio.run(IphoneMarketPriceService(fetcher=fetcher).estimate(source))
+    assert result.live_fetched is True
+    assert live_calls == 1
+    assert save_calls == 1
+    harvested_models = {(query.model, query.memory_gb) for query, _items in harvest_calls}
+    assert harvested_models == {("iPhone 11 Pro", 64), ("iPhone 11 Pro Max", 256)}
+    pro_items = next(items for query, items in harvest_calls if query.model == "iPhone 11 Pro")
+    assert [item.item_id for item in pro_items] == ["pro-1"]
+
+
 def test_global_block_on_success_snapshot_after_restart(monkeypatch):
     query = parse_iphone_market_query("13 mini 128")
     stale = {

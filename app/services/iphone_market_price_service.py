@@ -26,6 +26,7 @@ from app.db.avito_market_queries import (
     get_market_snapshot,
     get_market_snapshot_by_id,
     list_recent_market_snapshots,
+    merge_harvest_into_snapshot,
     record_live_request,
     record_market_daily_gap,
     record_market_error,
@@ -37,6 +38,7 @@ from app.integrations.avito.market_diag import (
     CODE_DAILY_LIMIT,
     CODE_FAIL,
     CODE_INTERVAL,
+    CODE_LIVE,
     infer_market_code,
     log_market,
     user_facing_market_error,
@@ -50,6 +52,7 @@ from app.integrations.avito.market_search import (
 )
 from app.utils.iphone_market_query import IphoneMarketQuery
 from app.utils.market_daily import QUALITY_SOFT, classify_sample_quality, quote_is_carried
+from app.utils.market_harvest import group_foreign_listings, listings_from_audit
 from app.utils.price_stats import PriceSummary, analyze_market_listings
 
 
@@ -107,40 +110,7 @@ def _summary_from_json(value: object) -> Optional[PriceSummary]:
 
 
 def _listings_from_audit(raw: object) -> tuple[MarketListing, ...]:
-    if not isinstance(raw, list):
-        return ()
-    items: list[MarketListing] = []
-    for row in raw:
-        if not isinstance(row, dict):
-            continue
-        try:
-            price = int(row.get("price_rub") or 0)
-            item_id = str(row.get("id") or "").strip()
-            title = str(row.get("title") or "").strip()
-        except (TypeError, ValueError):
-            continue
-        if not item_id or not title or price <= 0:
-            continue
-        seller = row.get("seller_type")
-        items.append(
-            MarketListing(
-                item_id=item_id,
-                title=title,
-                price_rub=price,
-                url=str(row.get("url") or ""),
-                seller_type=str(seller) if seller else None,
-                condition=str(row.get("condition") or "") or None,
-                city=str(row.get("city") or ""),
-                included=(
-                    bool(row.get("included"))
-                    if row.get("included") is not None
-                    else True
-                ),
-                rejection_reason=str(row.get("rejection_reason") or "") or None,
-            )
-        )
-    items.sort(key=lambda item: item.price_rub)
-    return tuple(items)
+    return listings_from_audit(raw)
 
 
 class IphoneMarketPriceService:
@@ -329,6 +299,34 @@ class IphoneMarketPriceService:
             )
         raise MarketTemporarilyUnavailable(friendly)
 
+    async def _harvest_bonus_listings(
+        self,
+        source_query: IphoneMarketQuery,
+        listings: list[MarketListing],
+    ) -> None:
+        """Разложить чужие карточки по уже существующим снимкам. Без HTTP и лимита."""
+        buckets = group_foreign_listings(listings, source_query)
+        if not buckets:
+            return
+        for target, items in buckets.items():
+            merged = await run_db(
+                merge_harvest_into_snapshot,
+                self._cache_key(target),
+                target,
+                items,
+                region=AVITO_MARKET_REGION,
+            )
+            if not merged:
+                continue
+            log_market(
+                "harvest",
+                CODE_LIVE,
+                model=target.cache_key,
+                added=len(items),
+                used=merged.get("used_count"),
+                snapshot_id=merged.get("id"),
+            )
+
     async def estimate(
         self,
         query: IphoneMarketQuery,
@@ -407,6 +405,10 @@ class IphoneMarketPriceService:
                         ttl_seconds=AVITO_MARKET_CACHE_TTL_SEC,
                         source=source,
                     )
+                    try:
+                        await self._harvest_bonus_listings(query, listings)
+                    except Exception:
+                        logger.exception("Avito market harvest failed")
                     return self._from_snapshot(query, saved, live_fetched=True)
                 except AvitoMarketBlockedError as exc:
                     soft = bool(getattr(exc, "soft", False))

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.integrations.avito import http_client as avito_http
 from app.services.settings_service import get_settings_service
@@ -58,6 +58,9 @@ def _stock_edit_result_ok(data: Any, item_id: int) -> tuple[bool, str, bool]:
 
 _token_cache: str = ""
 _token_expires_at: float = 0.0
+_ITEMS_CACHE_TTL_SEC = 150.0
+_items_cache: List[Dict[str, Any]] = []
+_items_cache_at: float = 0.0
 
 
 def _credentials() -> Tuple[str, str]:
@@ -109,6 +112,43 @@ async def get_avito_user_id() -> int:
 async def update_item_price_rub(item_id: int, price_rub: int) -> Dict[str, Any]:
     token = await get_access_token()
     return await avito_http.post_item_price_update(token, item_id, price_rub)
+
+
+def _resources_from_items_payload(data: Any) -> List[Dict[str, Any]]:
+    if not isinstance(data, dict):
+        return []
+    resources = data.get("resources")
+    if isinstance(resources, list):
+        return [row for row in resources if isinstance(row, dict)]
+    return []
+
+
+async def fetch_active_listings(*, force_refresh: bool = False) -> List[Dict[str, Any]]:
+    """Активные объявления кабинета. Кэш ~2.5 мин, чтобы очередь привязки не упиралась в 25 req/min."""
+    global _items_cache, _items_cache_at
+    now = time.time()
+    if not force_refresh and _items_cache and now < _items_cache_at + _ITEMS_CACHE_TTL_SEC:
+        return list(_items_cache)
+    token = await get_access_token()
+    collected: List[Dict[str, Any]] = []
+    page = 1
+    while page <= 20:
+        data = await avito_http.fetch_items(token, status="active", page=page, per_page=99)
+        chunk = _resources_from_items_payload(data)
+        collected.extend(chunk)
+        if len(chunk) < 99:
+            break
+        page += 1
+    _items_cache = collected
+    _items_cache_at = now
+    logger.info("Avito listings fetched count=%s pages=%s", len(collected), page)
+    return list(collected)
+
+
+def invalidate_items_cache() -> None:
+    global _items_cache, _items_cache_at
+    _items_cache = []
+    _items_cache_at = 0.0
 
 
 async def archive_item(item_id: int, *, post=None, db=None) -> Dict[str, Any]:
@@ -210,3 +250,4 @@ def invalidate_token_cache() -> None:
     global _token_cache, _token_expires_at
     _token_cache = ""
     _token_expires_at = 0.0
+    invalidate_items_cache()

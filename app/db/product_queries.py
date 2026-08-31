@@ -203,6 +203,71 @@ def fetch_used_products_for_list(db: Session) -> list[dict[str, Any]]:
     ]
 
 
+_UNLINKED_USED_WHERE = """
+p.status = 'active'
+AND (p.avito_item_id IS NULL OR BTRIM(CAST(p.avito_item_id AS text)) = '')
+AND (p.collection_name IS NULL OR p.collection_name NOT IN
+     (:c1, :c2, :c3, :c4, :c5))
+"""
+
+
+def _used_collection_params() -> dict[str, str]:
+    return {
+        "c1": USED_EXCLUDED_COLLECTIONS[0],
+        "c2": USED_EXCLUDED_COLLECTIONS[1],
+        "c3": USED_EXCLUDED_COLLECTIONS[2],
+        "c4": USED_EXCLUDED_COLLECTIONS[3],
+        "c5": USED_EXCLUDED_COLLECTIONS[4],
+    }
+
+
+def fetch_linked_avito_item_ids(db: Session) -> set[int]:
+    """Все занятые avito_item_id (новые и б/у), чтобы не предлагать их повторно."""
+    rows = db.execute(
+        text(
+            "SELECT avito_item_id FROM products "
+            "WHERE avito_item_id IS NOT NULL AND BTRIM(CAST(avito_item_id AS text)) <> ''"
+        )
+    ).all()
+    out: set[int] = set()
+    for (raw,) in rows:
+        try:
+            iid = int(str(raw).strip())
+        except (TypeError, ValueError):
+            continue
+        if iid > 0:
+            out.add(iid)
+    return out
+
+
+def count_unlinked_used_avito_products(db: Session) -> int:
+    n = db.execute(
+        text(f"SELECT COUNT(*) FROM products p WHERE {_UNLINKED_USED_WHERE}"),
+        _used_collection_params(),
+    ).scalar()
+    return int(n or 0)
+
+
+def fetch_unlinked_used_avito_products(db: Session) -> list[dict[str, Any]]:
+    """Активные б/у без avito_item_id — очередь ручной привязки."""
+    rows = db.execute(
+        text(
+            "SELECT p.id, p.name, p.price, p.collection_name "
+            f"FROM products p WHERE {_UNLINKED_USED_WHERE} ORDER BY p.id"
+        ),
+        _used_collection_params(),
+    ).mappings().all()
+    return [
+        {
+            "id": r["id"],
+            "name": r["name"],
+            "price": r.get("price"),
+            "collection_name": r.get("collection_name"),
+        }
+        for r in rows
+    ]
+
+
 _POST_DETAIL_SELECT = """
 SELECT max_share_url, vk_post_id, vk_post_link,
        published_telegram_at, published_vk_at, published_max_at, published_instagram_at

@@ -302,10 +302,13 @@ def test_history_header_highlights_latest_and_collapses_catalog():
     assert "12 128ГБ: 20 000 ₽ · 29.08.26 05:00" in text
 
 
-def _product_menu_labels(*, avito_market_enabled: bool) -> list[str]:
+def _product_menu_labels(*, avito_market_enabled: bool, avito_unlinked_count: int = 0) -> list[str]:
     from app.bot.keyboards.product_keyboard import get_products_menu_keyboard
 
-    markup = get_products_menu_keyboard(avito_market_enabled=avito_market_enabled)
+    markup = get_products_menu_keyboard(
+        avito_market_enabled=avito_market_enabled,
+        avito_unlinked_count=avito_unlinked_count,
+    )
     return [btn.text for row in markup.inline_keyboard for btn in row]
 
 
@@ -314,11 +317,25 @@ def test_products_menu_hides_avito_market_when_disabled():
     assert "📊 Оценка рынка Avito" not in labels
     assert "📦 Список б/у товаров" in labels
     assert "📁 Архив товаров" in labels
+    assert all("Авито без ссылки" not in text for text in labels)
 
 
 def test_products_menu_shows_avito_market_when_enabled():
     labels = _product_menu_labels(avito_market_enabled=True)
     assert "📊 Оценка рынка Avito" in labels
+
+
+def test_products_menu_shows_unlinked_avito_queue_when_count_positive():
+    from app.bot.keyboards.product_keyboard import get_products_menu_keyboard
+
+    markup = get_products_menu_keyboard(avito_market_enabled=False, avito_unlinked_count=3)
+    labels = [btn.text for row in markup.inline_keyboard for btn in row]
+    cbs = [btn.callback_data for row in markup.inline_keyboard for btn in row]
+    assert "🛒 Авито без ссылки (3)" in labels
+    assert "avito_match_queue" in cbs
+    hidden = get_products_menu_keyboard(avito_market_enabled=False, avito_unlinked_count=0)
+    hidden_labels = [btn.text for row in hidden.inline_keyboard for btn in row]
+    assert all("Авито без ссылки" not in text for text in hidden_labels)
 
 
 def test_compact_listing_title_drops_iphone_brand():

@@ -13,7 +13,6 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from app.bot.keyboards.product_keyboard import get_products_menu_keyboard
 from app.config.settings import (
     AVITO_MARKET_CACHE_TTL_SEC,
     AVITO_MARKET_DAILY_REQUEST_LIMIT,
@@ -604,10 +603,12 @@ async def avito_market_start(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "avito_market_cancel")
 async def avito_market_cancel(callback: CallbackQuery, state: FSMContext):
+    from app.bot.handlers.product_management import products_menu_markup
+
     await state.clear()
     await callback.message.edit_text(
         "📦 Управление товарами\n\nВыберите действие:",
-        reply_markup=get_products_menu_keyboard(),
+        reply_markup=await products_menu_markup(),
     )
     await callback.answer()
 

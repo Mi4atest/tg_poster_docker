@@ -17,6 +17,7 @@ from app.bot.keyboards.product_keyboard import (
     get_product_list_keyboard,
     get_search_results_keyboard,
     get_product_detail_keyboard,
+    get_avito_match_keyboard,
     get_product_price_edit_keyboard,
     get_product_status_confirmation_keyboard,
     get_stale_price_detail_keyboard,
@@ -91,6 +92,26 @@ def _filter_used_products_only(products: list[dict]) -> list[dict]:
         p for p in products
         if (p.get("collection_name") or "").strip() not in new_collection_values
     ]
+
+
+async def products_menu_markup():
+    """Клавиатура меню товаров со счётчиком б/у без ссылки Авито."""
+    from app.db.database import SessionLocal, run_db
+    from app.db.product_queries import count_unlinked_used_avito_products
+
+    def _count():
+        db = SessionLocal()
+        try:
+            return count_unlinked_used_avito_products(db)
+        finally:
+            db.close()
+
+    n = 0
+    try:
+        n = int(await run_db(_count) or 0)
+    except Exception:
+        logger.exception("Failed to count unlinked Avito used products")
+    return get_products_menu_keyboard(avito_unlinked_count=n)
 
 
 class ProductSearch(StatesGroup):
@@ -786,7 +807,7 @@ async def update_product_avito_link_api(product_id: int, avito_link_or_id: str):
 async def products_menu(callback: CallbackQuery):
     """Показать меню товаров."""
     text = "📦 Управление товарами\n\nВыберите действие:"
-    await safe_edit_message(callback.message, text, reply_markup=get_products_menu_keyboard())
+    await safe_edit_message(callback.message, text, reply_markup=await products_menu_markup())
     await callback.answer()
 
 
@@ -817,7 +838,7 @@ async def sync_telegram_links(callback: CallbackQuery):
                 f"Ссылки синхронизированы ({updated_products} обновлено).\n"
                 "Обновляю список и новинки в канале…"
             ),
-            reply_markup=get_products_menu_keyboard(),
+            reply_markup=await products_menu_markup(),
         )
         channel_ok = await update_used_products_list_in_channel(callback.bot)
         max_ok = False
@@ -851,7 +872,7 @@ async def sync_telegram_links(callback: CallbackQuery):
     except Exception as e:
         logger.exception("sync_telegram_links failed")
         text = f"🔄 Обновление постов\n\n❌ Ошибка: {e}"
-    await safe_edit_message(callback.message, text, reply_markup=get_products_menu_keyboard())
+    await safe_edit_message(callback.message, text, reply_markup=await products_menu_markup())
 
 
 @router.callback_query(F.data == "products_list")
@@ -865,7 +886,7 @@ async def products_list(callback: CallbackQuery, state: FSMContext):
     total = len(products)
     if not products:
         text = "📦 Список товаров пуст."
-        await safe_edit_message(callback.message, text, reply_markup=get_products_menu_keyboard())
+        await safe_edit_message(callback.message, text, reply_markup=await products_menu_markup())
         await callback.answer("Список товаров пуст")
         return
     
@@ -1513,6 +1534,299 @@ async def product_price_cancel(callback: CallbackQuery, state: FSMContext):
     await _return_to_used_product_detail(callback, product_id, back_data)
 
 
+def _avito_paste_prompt_html(product: dict) -> str:
+    cur = product.get("avito_url") or product.get("avito_item_id") or "не привязано"
+    return (
+        f"🛒 <b>Привязка Авито</b>\n\n"
+        f"📦 {html.escape(product.get('name', 'Без названия'))}\n\n"
+        f"Текущее: {html.escape(str(cur))}\n\n"
+        "Отправьте <b>ссылку на объявление</b> или только <b>числовой id</b> (цифры из URL).\n"
+        "Лучше всего: откройте объявление в <b>браузере</b> и скопируйте адрес "
+        "(в конце часто <code>…_1234567890</code> или сегмент <code>/1234567890</code>).\n"
+        "Ссылка «Поделиться» из приложения подойдёт, если в тексте есть этот id; "
+        "короткая ссылка без цифр — не сработает."
+    )
+
+
+def _avito_paste_keyboard(product_id: int, *, in_queue: bool, back_data: str) -> InlineKeyboardMarkup:
+    rows = []
+    if in_queue:
+        rows.append(
+            [InlineKeyboardButton(text="Пропустить", callback_data=f"avm_skip_{product_id}")]
+        )
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=back_data)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _format_avito_match_html(
+    product: dict,
+    candidates: list,
+    *,
+    queue_index: Optional[int] = None,
+    queue_total: Optional[int] = None,
+    api_error: Optional[str] = None,
+) -> str:
+    lines = ["🛒 <b>Привязка Авито</b>"]
+    if queue_total:
+        pos = (queue_index or 0) + 1
+        lines.append(f"<i>{pos} из {queue_total}</i>")
+    lines.append("")
+    lines.append(f"📦 {html.escape(product.get('name') or 'Без названия')}")
+    if product.get("price"):
+        lines.append(f"💵 {html.escape(str(product['price']))}")
+    if api_error:
+        lines.append("")
+        lines.append(html.escape(api_error))
+    elif not candidates:
+        lines.append("")
+        lines.append("Среди свободных объявлений кабинета не нашлось совпадения по модели, памяти и цене.")
+        lines.append("Вставьте ссылку вручную или пропустите.")
+    elif len(candidates) == 1:
+        cand = candidates[0]
+        lines.append("")
+        lines.append("Похоже на это объявление:")
+        lines.append(_format_candidate_line(cand))
+        lines.append("")
+        lines.append("Нажмите «Это оно», если верно.")
+    else:
+        lines.append("")
+        lines.append("Несколько похожих объявлений — выберите нужное:")
+        for i, cand in enumerate(candidates, 1):
+            lines.append(f"{i}. {_format_candidate_line(cand)}")
+    return "\n".join(lines)
+
+
+def _format_candidate_line(cand: dict) -> str:
+    title = html.escape(str(cand.get("title") or "объявление"))
+    price = cand.get("price_rub")
+    price_bit = f"{price}₽ · " if price else ""
+    url = cand.get("url") or f"https://www.avito.ru/{cand.get('item_id')}"
+    href = html.escape(str(url), quote=True)
+    return f'{price_bit}<a href="{href}">{title}</a>'
+
+
+def _listings_to_cand_dicts(listings) -> list[dict]:
+    return [
+        {
+            "item_id": item.item_id,
+            "title": item.title,
+            "price_rub": item.price_rub,
+            "url": item.url,
+        }
+        for item in listings
+    ]
+
+
+async def _load_avito_match_pool():
+    from app.db.database import SessionLocal, run_db
+    from app.db.product_queries import fetch_linked_avito_item_ids
+    from app.integrations.avito import actions as avito_actions
+    from app.services.avito_listing_match import listings_from_api_rows
+
+    rows = await avito_actions.fetch_active_listings()
+    listings = listings_from_api_rows(rows)
+
+    def _occupied():
+        db = SessionLocal()
+        try:
+            return fetch_linked_avito_item_ids(db)
+        finally:
+            db.close()
+
+    occupied = await run_db(_occupied)
+    return listings, occupied
+
+
+async def _show_avito_match_for_product(
+    target_message,
+    state: FSMContext,
+    product: dict,
+    *,
+    in_queue: bool,
+    back_data: str,
+    queue_index: Optional[int] = None,
+    queue_total: Optional[int] = None,
+) -> None:
+    from app.services.avito_listing_match import match_product_to_listings
+
+    product_id = int(product["id"])
+    api_error = None
+    candidates: list[dict] = []
+    already = str(product.get("avito_item_id") or "").strip()
+    if already:
+        await _show_avito_paste(
+            target_message,
+            state,
+            product,
+            in_queue=in_queue,
+            back_data=back_data,
+        )
+        return
+    try:
+        listings, occupied = await _load_avito_match_pool()
+        matched = match_product_to_listings(
+            product, listings, occupied_item_ids=occupied
+        )
+        candidates = _listings_to_cand_dicts(matched)
+    except Exception as exc:
+        logger.exception("Avito match listings failed product_id=%s", product_id)
+        api_error = "Не удалось получить список объявлений Авито. Можно вставить ссылку вручную."
+        _ = exc
+
+    await state.update_data(
+        product_id=product_id,
+        avito_match_in_queue=in_queue,
+        avito_match_back=back_data,
+    )
+    if not candidates:
+        await _show_avito_paste(
+            target_message,
+            state,
+            product,
+            in_queue=in_queue,
+            back_data=back_data,
+            extra_html=(
+                html.escape(api_error) + "\n\n"
+                if api_error
+                else "Среди свободных объявлений не нашлось совпадения.\n\n"
+            ),
+        )
+        return
+
+    await state.set_state(None)
+    text = _format_avito_match_html(
+        product,
+        candidates,
+        queue_index=queue_index,
+        queue_total=queue_total,
+    )
+    await safe_edit_message(
+        target_message,
+        text,
+        reply_markup=get_avito_match_keyboard(
+            product_id,
+            candidates,
+            in_queue=in_queue,
+            back_data=back_data,
+        ),
+        parse_mode="HTML",
+        disable_link_preview=True,
+    )
+
+
+async def _show_avito_paste(
+    target_message,
+    state: FSMContext,
+    product: dict,
+    *,
+    in_queue: bool,
+    back_data: str,
+    extra_html: str = "",
+) -> None:
+    product_id = int(product["id"])
+    await state.update_data(
+        product_id=product_id,
+        avito_match_in_queue=in_queue,
+        avito_match_back=back_data,
+    )
+    await state.set_state(ProductAvitoLinkEdit.waiting_for_avito_ref)
+    text = extra_html + _avito_paste_prompt_html(product)
+    await safe_edit_message(
+        target_message,
+        text,
+        reply_markup=_avito_paste_keyboard(
+            product_id, in_queue=in_queue, back_data=back_data
+        ),
+        parse_mode="HTML",
+    )
+
+
+async def _advance_avito_match_queue(target_message, state: FSMContext) -> bool:
+    """Показать следующий товар очереди. False — очередь кончилась."""
+    data = await state.get_data()
+    ids = list(data.get("avito_match_ids") or [])
+    index = int(data.get("avito_match_index") or 0) + 1
+    while index < len(ids):
+        product = await get_product_api(int(ids[index]))
+        if product and not str(product.get("avito_item_id") or "").strip():
+            await state.update_data(avito_match_index=index)
+            await _show_avito_match_for_product(
+                target_message,
+                state,
+                product,
+                in_queue=True,
+                back_data="products_menu",
+                queue_index=index,
+                queue_total=len(ids),
+            )
+            return True
+        index += 1
+    return False
+
+
+async def _finish_avito_match_queue(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.update_data(avito_match_ids=None, avito_match_index=None, avito_match_in_queue=False)
+    await state.set_state(None)
+    await safe_edit_message(
+        callback.message,
+        "📦 Управление товарами\n\nВыберите действие:",
+        reply_markup=await products_menu_markup(),
+    )
+
+
+@router.callback_query(F.data == "avito_match_queue")
+async def avito_match_queue_start(callback: CallbackQuery, state: FSMContext):
+    from app.db.database import SessionLocal, run_db
+    from app.db.product_queries import fetch_unlinked_used_avito_products
+
+    def _load():
+        db = SessionLocal()
+        try:
+            return fetch_unlinked_used_avito_products(db)
+        finally:
+            db.close()
+
+    try:
+        rows = await run_db(_load)
+    except Exception:
+        logger.exception("Failed to list unlinked used Avito products")
+        await callback.answer("Не удалось загрузить список", show_alert=True)
+        return
+    await callback.answer()
+    ids = [int(r["id"]) for r in rows if r.get("id")]
+    if not ids:
+        await safe_edit_message(
+            callback.message,
+            "📦 Управление товарами\n\nНет б/у без ссылки Авито.",
+            reply_markup=await products_menu_markup(),
+        )
+        return
+    await state.update_data(
+        avito_match_ids=ids,
+        avito_match_index=0,
+        avito_match_in_queue=True,
+        avito_match_back="products_menu",
+        products_back="products_menu",
+    )
+    product = await get_product_api(ids[0])
+    if not product:
+        await safe_edit_message(
+            callback.message,
+            "📦 Управление товарами\n\nВыберите действие:",
+            reply_markup=await products_menu_markup(),
+        )
+        return
+    await _show_avito_match_for_product(
+        callback.message,
+        state,
+        product,
+        in_queue=True,
+        back_data="products_menu",
+        queue_index=0,
+        queue_total=len(ids),
+    )
+
+
 @router.callback_query(F.data.startswith("product_avito_link_"))
 async def product_avito_link_start(callback: CallbackQuery, state: FSMContext):
     try:
@@ -1524,21 +1838,117 @@ async def product_avito_link_start(callback: CallbackQuery, state: FSMContext):
     if not product:
         await callback.answer("Товар не найден", show_alert=True)
         return
-    cur = product.get("avito_url") or product.get("avito_item_id") or "не привязано"
-    text = (
-        f"🛒 <b>Привязка Авито</b>\n\n"
-        f"📦 {html.escape(product.get('name', 'Без названия'))}\n\n"
-        f"Текущее: {html.escape(str(cur))}\n\n"
-        "Отправьте <b>ссылку на объявление</b> или только <b>числовой id</b> (цифры из URL).\n"
-        "Лучше всего: откройте объявление в <b>браузере</b> и скопируйте адрес "
-        "(в конце часто <code>…_1234567890</code> или сегмент <code>/1234567890</code>).\n"
-        "Ссылка «Поделиться» из приложения подойдёт, если в тексте есть этот id; "
-        "короткая ссылка без цифр — не сработает."
+    back_data = _products_back_from_state(await state.get_data())
+    await state.update_data(
+        avito_match_ids=None,
+        avito_match_index=None,
+        avito_match_in_queue=False,
+        products_back=back_data,
+        avito_match_back=f"product_{product_id}",
     )
-    await state.update_data(product_id=product_id)
-    await state.set_state(ProductAvitoLinkEdit.waiting_for_avito_ref)
-    await safe_edit_message(callback.message, text, parse_mode="HTML")
     await callback.answer()
+    await _show_avito_match_for_product(
+        callback.message,
+        state,
+        product,
+        in_queue=False,
+        back_data=f"product_{product_id}",
+    )
+
+
+@router.callback_query(F.data.startswith("avm_ok_"))
+async def avito_match_confirm(callback: CallbackQuery, state: FSMContext):
+    try:
+        rest = callback.data[len("avm_ok_") :]
+        product_id_s, item_id_s = rest.split("_", 1)
+        product_id = int(product_id_s)
+        item_id = int(item_id_s)
+    except ValueError:
+        await callback.answer("Ошибка")
+        return
+    result = await update_product_avito_link_api(product_id, str(item_id))
+    if not result:
+        await callback.answer("Не удалось сохранить", show_alert=True)
+        return
+    await callback.answer("Привязано")
+    data = await state.get_data()
+    in_queue = bool(data.get("avito_match_in_queue"))
+    if in_queue:
+        moved = await _advance_avito_match_queue(callback.message, state)
+        if not moved:
+            await _finish_avito_match_queue(callback, state)
+        return
+    back_data = data.get("avito_match_back") or _products_back_from_state(data)
+    await state.set_state(None)
+    await _return_to_used_product_detail(callback, product_id, back_data)
+
+
+@router.callback_query(F.data.startswith("avm_none_"))
+async def avito_match_none(callback: CallbackQuery, state: FSMContext):
+    try:
+        product_id = int(callback.data.replace("avm_none_", ""))
+    except ValueError:
+        await callback.answer("Ошибка")
+        return
+    product = await get_product_api(product_id)
+    if not product:
+        await callback.answer("Товар не найден", show_alert=True)
+        return
+    data = await state.get_data()
+    in_queue = bool(data.get("avito_match_in_queue"))
+    back_data = data.get("avito_match_back") or (
+        "products_menu" if in_queue else _products_back_from_state(data)
+    )
+    await callback.answer()
+    await _show_avito_paste(
+        callback.message,
+        state,
+        product,
+        in_queue=in_queue,
+        back_data=back_data,
+    )
+
+
+@router.callback_query(F.data.startswith("avm_paste_"))
+async def avito_match_paste(callback: CallbackQuery, state: FSMContext):
+    try:
+        product_id = int(callback.data.replace("avm_paste_", ""))
+    except ValueError:
+        await callback.answer("Ошибка")
+        return
+    product = await get_product_api(product_id)
+    if not product:
+        await callback.answer("Товар не найден", show_alert=True)
+        return
+    data = await state.get_data()
+    in_queue = bool(data.get("avito_match_in_queue"))
+    back_data = data.get("avito_match_back") or (
+        "products_menu" if in_queue else _products_back_from_state(data)
+    )
+    await callback.answer()
+    await _show_avito_paste(
+        callback.message,
+        state,
+        product,
+        in_queue=in_queue,
+        back_data=back_data,
+    )
+
+
+@router.callback_query(F.data.startswith("avm_skip_"))
+async def avito_match_skip(callback: CallbackQuery, state: FSMContext):
+    await callback.answer("Пропущено")
+    data = await state.get_data()
+    if not data.get("avito_match_in_queue"):
+        product_id = data.get("product_id")
+        back_data = data.get("avito_match_back") or _products_back_from_state(data)
+        await state.set_state(None)
+        if product_id:
+            await _return_to_used_product_detail(callback, int(product_id), back_data)
+        return
+    moved = await _advance_avito_match_queue(callback.message, state)
+    if not moved:
+        await _finish_avito_match_queue(callback, state)
 
 
 @router.message(ProductAvitoLinkEdit.waiting_for_avito_ref)
@@ -1554,7 +1964,6 @@ async def product_avito_link_process(message: Message, state: FSMContext):
         await message.answer("❌ Введите ссылку или id.")
         return
     result = await update_product_avito_link_api(product_id, ref)
-    back_data = await _clear_state_keep_products_back(state)
     if not result:
         await message.answer(
             "❌ Не удалось распознать объявление. Пришлите полный URL из браузера "
@@ -1563,6 +1972,20 @@ async def product_avito_link_process(message: Message, state: FSMContext):
         )
         return
     await message.answer("✅ Объявление Авито привязано.")
+    in_queue = bool(data.get("avito_match_in_queue"))
+    if in_queue:
+        moved = await _advance_avito_match_queue(message, state)
+        if not moved:
+            await state.update_data(
+                avito_match_ids=None, avito_match_index=None, avito_match_in_queue=False
+            )
+            await state.set_state(None)
+            await message.answer(
+                "📦 Управление товарами\n\nВыберите действие:",
+                reply_markup=await products_menu_markup(),
+            )
+        return
+    back_data = await _clear_state_keep_products_back(state)
     status = result.get("status", "active")
     text = f"📦 <b>{result.get('name', 'Без названия')}</b>\n\n"
     if result.get("price"):
@@ -1687,7 +2110,7 @@ async def product_confirm_action(callback: CallbackQuery, state: FSMContext):
             await safe_edit_message(
                 callback.message,
                 text,
-                reply_markup=get_products_menu_keyboard()
+                reply_markup=await products_menu_markup()
             )
             try:
                 from app.bot.utils.used_products_lists import refresh_used_products_catalogs
@@ -1832,7 +2255,7 @@ async def _render_product_search(
         await safe_edit_message(
             message,
             "🔍 Введите название товара для поиска:",
-            reply_markup=get_products_menu_keyboard(),
+            reply_markup=await products_menu_markup(),
         )
         return
 
@@ -1853,7 +2276,7 @@ async def _render_product_search(
         await safe_edit_message(
             message,
             f"🔍 По запросу «{query}» ничего не найдено.",
-            reply_markup=get_products_menu_keyboard(),
+            reply_markup=await products_menu_markup(),
         )
         await state.update_data(products_back="products_list")
         return
@@ -2015,7 +2438,7 @@ async def show_archived_products(message, year=None, month=None, day=None, state
             )
             return
         text = "📁 Архив товаров пуст."
-        await safe_edit_message(message, text, reply_markup=get_products_menu_keyboard())
+        await safe_edit_message(message, text, reply_markup=await products_menu_markup())
         return
     
     # Группируем товары по дате архивации

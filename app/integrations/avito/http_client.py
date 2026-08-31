@@ -144,6 +144,23 @@ async def fetch_item(access_token: str, user_id: int, item_id: int) -> Dict[str,
     )
 
 
+async def fetch_items(
+    access_token: str,
+    *,
+    status: str = "active",
+    page: int = 1,
+    per_page: int = 99,
+) -> Dict[str, Any]:
+    """GET /core/v1/items — список своих объявлений (title, price, url, status)."""
+    per_page_n = max(1, min(99, int(per_page)))
+    page_n = max(1, int(page))
+    path = f"/core/v1/items?per_page={per_page_n}&page={page_n}"
+    st = (status or "").strip()
+    if st:
+        path += f"&status={st}"
+    return await _request_json("GET", path, token=access_token)
+
+
 async def post_item_archive(access_token: str, user_id: int, item_id: int) -> Dict[str, Any]:
     """
     Снятие объявления с публикации (архив).

@@ -7,6 +7,7 @@ from app.bot.utils.button_styles import ikb
 def get_products_menu_keyboard(
     *,
     avito_market_enabled: Optional[bool] = None,
+    avito_unlinked_count: int = 0,
 ) -> InlineKeyboardMarkup:
     """Создает клавиатуру главного меню товаров."""
     if avito_market_enabled is None:
@@ -22,13 +23,22 @@ def get_products_menu_keyboard(
         buttons.append(
             [InlineKeyboardButton(text="📊 Оценка рынка Avito", callback_data="avito_market_start")]
         )
-    buttons.extend(
-        [
-            [InlineKeyboardButton(text="📁 Архив товаров", callback_data="products_archive")],
-            [InlineKeyboardButton(text="🔄 Обновление постов", callback_data="sync_telegram_links")],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main")],
-        ]
-    )
+    extra = [
+        [InlineKeyboardButton(text="📁 Архив товаров", callback_data="products_archive")],
+        [InlineKeyboardButton(text="🔄 Обновление постов", callback_data="sync_telegram_links")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main")],
+    ]
+    if int(avito_unlinked_count or 0) > 0:
+        extra.insert(
+            0,
+            [
+                InlineKeyboardButton(
+                    text=f"🛒 Авито без ссылки ({int(avito_unlinked_count)})",
+                    callback_data="avito_match_queue",
+                )
+            ],
+        )
+    buttons.extend(extra)
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
@@ -230,6 +240,72 @@ def get_product_detail_keyboard(
         InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")
     ])
 
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_avito_match_keyboard(
+    product_id: int,
+    candidates: List[Dict],
+    *,
+    in_queue: bool = False,
+    back_data: str = "products_list",
+) -> InlineKeyboardMarkup:
+    """Кандидаты объявлений: всегда подтверждение, без тихой записи."""
+    buttons: List[List[InlineKeyboardButton]] = []
+    if len(candidates) == 1:
+        item_id = int(candidates[0]["item_id"])
+        buttons.append(
+            [
+                ikb(
+                    "Это оно",
+                    f"avm_ok_{product_id}_{item_id}",
+                    style="success",
+                )
+            ]
+        )
+    else:
+        for idx, cand in enumerate(candidates[:8], 1):
+            item_id = int(cand["item_id"])
+            price = cand.get("price_rub")
+            title = (cand.get("title") or "объявление").strip()
+            price_bit = f"{price}₽ " if price else ""
+            label = f"{idx}. {price_bit}{title}"
+            if len(label) > 60:
+                label = label[:59].rstrip() + "…"
+            buttons.append(
+                [
+                    InlineKeyboardButton(
+                        text=label,
+                        callback_data=f"avm_ok_{product_id}_{item_id}",
+                    )
+                ]
+            )
+    buttons.append(
+        [
+            InlineKeyboardButton(
+                text="Нет среди этих",
+                callback_data=f"avm_none_{product_id}",
+            )
+        ]
+    )
+    buttons.append(
+        [
+            InlineKeyboardButton(
+                text="Вставить ссылку / id",
+                callback_data=f"avm_paste_{product_id}",
+            )
+        ]
+    )
+    if in_queue:
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    text="Пропустить",
+                    callback_data=f"avm_skip_{product_id}",
+                )
+            ]
+        )
+    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=back_data)])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 

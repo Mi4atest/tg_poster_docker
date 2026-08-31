@@ -558,8 +558,12 @@ def format_market_estimate(
     return text
 
 
-def _intro_text() -> str:
+async def _intro_text() -> str:
     cache_hours = max(1, AVITO_MARKET_CACHE_TTL_SEC // 3600)
+    from app.integrations.avito.market_account_status import load_market_account_status_html
+
+    status = await load_market_account_status_html(detailed=False)
+    status_block = f"\n\n{status}" if status else ""
     return (
         "<b>Оценка рынка Avito</b>\n\n"
         "Напишите модель и память одной строкой.\n"
@@ -571,6 +575,7 @@ def _intro_text() -> str:
         f"Между <b>новыми</b> поисками пауза {AVITO_MARKET_MIN_REQUEST_INTERVAL_SEC} сек, "
         f"в сутки не больше {AVITO_MARKET_DAILY_REQUEST_LIMIT} свежих запросов — "
         "чтобы не перегружать Avito."
+        f"{status_block}"
     )
 
 
@@ -590,7 +595,7 @@ async def avito_market_start(callback: CallbackQuery, state: FSMContext):
     )
     # endregion
     await callback.message.edit_text(
-        _intro_text(),
+        await _intro_text(),
         parse_mode=ParseMode.HTML,
         reply_markup=_cancel_keyboard(),
     )
@@ -727,7 +732,8 @@ async def avito_market_query(message: Message, state: FSMContext):
     except Exception:
         logger.exception("Avito market handler failed")
         await message.answer(
-            "Сейчас не удалось посчитать оценку. Попробуйте позже.",
+            "Не получилось посчитать оценку — сбой на нашей стороне. "
+            "Подождите минуту и отправьте запрос ещё раз.",
             reply_markup=_block_back_keyboard(),
         )
         return

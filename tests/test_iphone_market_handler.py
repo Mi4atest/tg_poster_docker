@@ -158,11 +158,12 @@ def test_stale_result_has_explicit_warning():
         business_summary=None,
         fetched_at=datetime(2026, 8, 28, 18, 30),
         is_stale=True,
-        stale_reason="Avito временно ограничил автоматические запросы. Оценка недоступна какое-то время — попробуйте позже.",
+        stale_reason="Avito не пустил запрос — сработала защита от роботов. Обычно отпускает примерно через час. Если оценка этой модели уже была, она осталась в истории.",
     )
     text = format_market_estimate(estimate)
     assert "Показан сохранённый результат" in text
-    assert "временно ограничил" in text
+    assert "не пустил" in text
+    assert "роботов" in text
 
 
 def test_market_reports_sorted_old_to_new_then_memory():

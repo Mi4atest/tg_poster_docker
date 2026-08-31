@@ -32,6 +32,16 @@ from app.db.avito_market_queries import (
     save_market_snapshot,
 )
 from app.db.database import run_db
+from app.integrations.avito.market_diag import (
+    CODE_AVITO_BLOCK,
+    CODE_DAILY_LIMIT,
+    CODE_FAIL,
+    CODE_INTERVAL,
+    infer_market_code,
+    log_market,
+    user_facing_market_error,
+    user_notice,
+)
 from app.integrations.avito.market_search import (
     AvitoMarketBlockedError,
     AvitoMarketError,
@@ -131,28 +141,6 @@ def _listings_from_audit(raw: object) -> tuple[MarketListing, ...]:
         )
     items.sort(key=lambda item: item.price_rub)
     return tuple(items)
-
-
-def user_facing_market_error(reason: str) -> str:
-    """Простые формулировки для продавца (без SPFA/прокси/HTTP)."""
-    text = (reason or "").lower()
-    if "через ~" in text or "через примерно" in text:
-        return reason
-    if "интервал" in text or "подождите" in text or "сек" in text:
-        return reason
-    if "суточн" in text or ("лимит" in text and "свеж" in text):
-        return (
-            "На сегодня достигнут лимит свежих поисков. "
-            "Повторите завтра или откройте уже сохранённую оценку по этой модели."
-        )
-    if "ограничил" in text or "проверк" in text or "captcha" in text or "block" in text:
-        return (
-            "Avito временно ограничил автоматические запросы. "
-            "Оценка недоступна какое-то время — попробуйте позже."
-        )
-    if "не удалось" in text or "ошибк" in text or "приостанов" in text:
-        return "Сейчас не удалось обновить оценку рынка. Попробуйте позже."
-    return "Сейчас оценка рынка временно недоступна. Попробуйте позже."
 
 
 class IphoneMarketPriceService:
@@ -267,12 +255,9 @@ class IphoneMarketPriceService:
             retry_after = snapshot["retry_after"]
             mins = max(1, int((retry_after - now).total_seconds() / 60) + 1)
             last = str(snapshot.get("last_error") or "")
-            if "проверк" in last.lower() or "ограничил" in last.lower():
-                return (
-                    f"Avito временно ограничил автоматические запросы. "
-                    f"Повторите через ~{mins} мин."
-                )
-            return user_facing_market_error(last or "обновление временно приостановлено")
+            code = infer_market_code(last or CODE_AVITO_BLOCK)
+            log_market("skip", code, wait_mins=mins, source="snapshot_retry")
+            return user_notice(code, wait_mins=mins)
 
         if global_until and global_until > now:
             mins = max(1, int((global_until - now).total_seconds() / 60) + 1)
@@ -289,23 +274,29 @@ class IphoneMarketPriceService:
             except Exception:
                 pass
             # #endregion
-            return (
-                f"Avito временно ограничил автоматические запросы. "
-                f"Повторите через ~{mins} мин."
-            )
+            log_market("skip", CODE_AVITO_BLOCK, wait_mins=mins, source="global_retry")
+            return user_notice(CODE_AVITO_BLOCK, wait_mins=mins)
 
         if self._blocked_until and self._blocked_until > now:
             mins = max(1, int((self._blocked_until - now).total_seconds() / 60) + 1)
-            return (
-                f"Avito временно ограничил автоматические запросы. "
-                f"Повторите через ~{mins} мин."
-            )
+            log_market("skip", CODE_AVITO_BLOCK, wait_mins=mins, source="memory_block")
+            return user_notice(CODE_AVITO_BLOCK, wait_mins=mins)
         failed_until = self._failed_until.get(key)
         if failed_until and failed_until > now:
             mins = max(1, int((failed_until - now).total_seconds() / 60) + 1)
-            return f"Сейчас не удалось обновить оценку. Повторите через ~{mins} мин."
+            log_market("skip", CODE_FAIL, wait_mins=mins, source="fail_cooldown")
+            return user_notice(CODE_FAIL, wait_mins=mins)
         if daily_count >= AVITO_MARKET_DAILY_REQUEST_LIMIT:
-            return user_facing_market_error("достигнут безопасный суточный лимит запросов")
+            log_market(
+                "skip",
+                CODE_DAILY_LIMIT,
+                count=daily_count,
+                limit=AVITO_MARKET_DAILY_REQUEST_LIMIT,
+            )
+            return user_notice(
+                CODE_DAILY_LIMIT,
+                daily_limit=AVITO_MARKET_DAILY_REQUEST_LIMIT,
+            )
         effective_last = last_request_at or self._last_request_at
         if (
             effective_last
@@ -317,10 +308,8 @@ class IphoneMarketPriceService:
                 - (now - effective_last).total_seconds()
             )
             wait = max(1, wait)
-            return (
-                f"Подождите ещё {wait} сек. между новыми поисками — "
-                "так мы не перегружаем Avito и не сжигаем лишние запросы."
-            )
+            log_market("skip", CODE_INTERVAL, wait_sec=wait)
+            return user_notice(CODE_INTERVAL, wait_sec=wait)
         return None
 
     @staticmethod
@@ -425,10 +414,26 @@ class IphoneMarketPriceService:
                         20 * 60 if soft else AVITO_MARKET_BLOCK_COOLDOWN_SEC
                     )
                     self._blocked_until = _utcnow() + timedelta(seconds=cooldown)
-                    reason = "Avito запросил проверку или ограничил запросы"
+                    code = getattr(exc, "code", None) or CODE_AVITO_BLOCK
+                    has_proxy = getattr(exc, "has_proxy", True)
+                    wait_mins = max(1, int(cooldown / 60))
+                    reason = user_notice(
+                        code,
+                        wait_mins=wait_mins,
+                        has_proxy=has_proxy,
+                    )
                     retry_after_seconds = cooldown
+                    log_market(
+                        "cooldown",
+                        code,
+                        soft=soft,
+                        cooldown_sec=cooldown,
+                        has_proxy=has_proxy,
+                        source=source,
+                    )
                     logger.warning(
-                        "Avito market request blocked (soft=%s cooldown=%ss): %s",
+                        "Avito market request blocked code=%s soft=%s cooldown=%ss: %s",
+                        code,
                         soft,
                         cooldown,
                         exc,
@@ -449,9 +454,18 @@ class IphoneMarketPriceService:
                     # #endregion
                 except AvitoMarketError as exc:
                     self._failed_until[key] = _utcnow() + timedelta(minutes=15)
-                    reason = "не удалось обновить данные Avito"
+                    code = getattr(exc, "code", None) or CODE_FAIL
+                    has_proxy = getattr(exc, "has_proxy", True)
+                    reason = user_notice(code, wait_mins=15, has_proxy=has_proxy)
                     retry_after_seconds = 15 * 60
-                    logger.warning("Avito market request failed: %s", exc)
+                    log_market(
+                        "cooldown",
+                        code,
+                        retry_min=15,
+                        has_proxy=has_proxy,
+                        source=source,
+                    )
+                    logger.warning("Avito market request failed code=%s: %s", code, exc)
                     # #region agent log
                     try:
                         from app.integrations.avito.debug_agent_log import agent_dbg
@@ -460,7 +474,7 @@ class IphoneMarketPriceService:
                             "A",
                             "iphone_market_price_service.py:failed",
                             "live classified as fail",
-                            {"source": source, "error": str(exc)[:160]},
+                            {"source": source, "code": code, "error": str(exc)[:160]},
                             run_id="wl",
                         )
                     except Exception:
@@ -468,8 +482,9 @@ class IphoneMarketPriceService:
                     # #endregion
                 except Exception:
                     self._failed_until[key] = _utcnow() + timedelta(minutes=15)
-                    reason = "внутренняя ошибка обновления оценки"
+                    reason = user_notice(CODE_FAIL, wait_mins=15)
                     retry_after_seconds = 15 * 60
+                    log_market("cooldown", CODE_FAIL, retry_min=15, source=source)
                     logger.exception("Unexpected Avito market estimate failure")
 
                 try:

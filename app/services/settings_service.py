@@ -190,6 +190,7 @@ ENV_SECRET_DEFAULTS: Dict[str, str] = {
     "backup_bot_token": getattr(env_settings, "BACKUP_BOT_TOKEN", "") or "",
     "spfa_api_key": getattr(env_settings, "SPFA_API_KEY", "") or "",
     "avito_market_proxy": getattr(env_settings, "AVITO_MARKET_PROXY", "") or "",
+    "mobileproxy_api_token": getattr(env_settings, "MOBILEPROXY_API_TOKEN", "") or "",
 }
 
 
@@ -723,6 +724,9 @@ class SettingsService:
 
     def get_avito_market_proxy(self) -> str:
         return str(self.get_secret("avito_market_proxy") or "").strip()
+
+    def get_mobileproxy_api_token(self) -> str:
+        return str(self.get_secret("mobileproxy_api_token") or "").strip()
 
     def get_avito_market_proxy_change_url(self) -> str:
         return str(

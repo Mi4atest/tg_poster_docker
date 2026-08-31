@@ -6,24 +6,66 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Запасные impersonate, если SPFA вернул неизвестный для текущей curl_cffi.
-_IMPERSONATE_FALLBACKS = (
-    "chrome131_android",
-    "chrome131",
-    "chrome124",
-    "chrome120",
-)
+_DROP_HEADERS = {"host", "content-length", "connection", "transfer-encoding"}
+_ANDROID_FALLBACK = "chrome131_android"
+_DESKTOP_FALLBACK = "chrome131"
 
 
 class BrowserFetchError(RuntimeError):
     """Сетевая/транспортная ошибка curl_cffi."""
 
 
-def resolve_impersonate(preferred: Optional[str]) -> str:
+def impersonate_is_android(name: str) -> bool:
+    value = (name or "").strip().lower()
+    return value.endswith("_android") or "android" in value
+
+
+def impersonate_candidates(preferred: Optional[str]) -> list[str]:
+    """Близкий fallback той же платформы. Не смешивать Android TLS с desktop UA."""
     value = (preferred or "").strip()
-    if value:
-        return value
-    return _IMPERSONATE_FALLBACKS[0]
+    if not value:
+        return [_ANDROID_FALLBACK]
+    names = [value]
+    fallback = _ANDROID_FALLBACK if impersonate_is_android(value) else _DESKTOP_FALLBACK
+    if fallback not in names:
+        names.append(fallback)
+    return names
+
+
+def resolve_impersonate(preferred: Optional[str]) -> str:
+    return impersonate_candidates(preferred)[0]
+
+
+def canonicalize_headers(headers: Optional[dict[str, str]]) -> dict[str, str]:
+    """Нижний регистр, без дублей Accept/accept. Как отдаёт SPFA fingerprint.headers."""
+    result: dict[str, str] = {}
+    for key, value in (headers or {}).items():
+        if not key or value is None:
+            continue
+        lowered = key.strip().lower()
+        if not lowered or lowered in _DROP_HEADERS:
+            continue
+        result[lowered] = str(value)
+    return result
+
+
+def spfa_request_headers(
+    fingerprint_headers: Optional[dict[str, str]],
+    *,
+    user_agent: str,
+) -> dict[str, str]:
+    """Только заголовки сессии SPFA + UA. Без своего Accept/json."""
+    headers = canonicalize_headers(fingerprint_headers)
+    ua = (user_agent or "").strip()
+    if ua:
+        headers["user-agent"] = ua
+    if "accept" not in headers:
+        headers["accept"] = (
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        )
+    if "accept-language" not in headers:
+        headers["accept-language"] = "ru-RU,ru;q=0.9"
+    return headers
 
 
 async def browser_get(
@@ -44,18 +86,10 @@ async def browser_get(
             "Не установлен curl_cffi — нужен для TLS-impersonate SPFA"
         ) from exc
 
-    clean_headers = {
-        key: value
-        for key, value in headers.items()
-        if key.lower() not in {"host", "content-length", "connection", "transfer-encoding"}
-    }
+    clean_headers = canonicalize_headers(headers)
     proxy_value = (proxy or "").strip() or None
-    candidates = []
-    preferred = resolve_impersonate(impersonate)
-    candidates.append(preferred)
-    for item in _IMPERSONATE_FALLBACKS:
-        if item not in candidates:
-            candidates.append(item)
+    candidates = impersonate_candidates(impersonate)
+    preferred = candidates[0]
 
     last_error: Optional[BaseException] = None
     async with AsyncSession() as session:
@@ -67,6 +101,7 @@ async def browser_get(
                     cookies=cookies or {},
                     proxy=proxy_value,
                     impersonate=name,
+                    default_headers=False,
                     timeout=timeout_seconds,
                     allow_redirects=True,
                 )
@@ -74,21 +109,28 @@ async def browser_get(
                 last_error = exc
                 msg = str(exc).lower()
                 if "impersonat" in msg or "not supported" in msg:
-                    logger.warning("curl_cffi impersonate=%s недоступен: %s", name, exc)
+                    logger.warning(
+                        "Avito market fail code=transport impersonate=%s "
+                        "detail=unsupported",
+                        name,
+                    )
                     continue
                 raise BrowserFetchError(f"Запрос через curl_cffi не удался: {exc}") from exc
 
             content = response.content or b""
             if len(content) > max_bytes:
                 raise BrowserFetchError("Ответ Avito превышает допустимый размер")
-            charset = "utf-8"
             try:
-                # response.text уже декодирован; для лимита смотрим raw.
                 text = response.text
             except Exception:
-                text = content.decode(charset, errors="replace")
+                text = content.decode("utf-8", errors="replace")
             if name != preferred:
-                logger.info("curl_cffi: использован fallback impersonate=%s", name)
+                logger.warning(
+                    "Avito market note code=transport impersonate_requested=%s "
+                    "impersonate_used=%s tls_may_mismatch=1",
+                    preferred,
+                    name,
+                )
             return int(response.status_code), text, str(response.url)
 
     raise BrowserFetchError(

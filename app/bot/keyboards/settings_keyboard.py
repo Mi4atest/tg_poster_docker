@@ -436,6 +436,12 @@ def get_settings_avito_market_keyboard(
                 callback_data="settings_edit_integration_avito_market_proxy_change_url",
             )
         ],
+        [
+            InlineKeyboardButton(
+                text="Токен API mobileproxy",
+                callback_data="settings_edit_integration_mobileproxy_api_token",
+            )
+        ],
         [InlineKeyboardButton(text="⬅️ Назад к настройкам", callback_data="settings_root")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)

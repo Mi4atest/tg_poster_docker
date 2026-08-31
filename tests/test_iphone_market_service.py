@@ -236,6 +236,7 @@ def test_persisted_daily_limit_blocks_live_fetch(monkeypatch):
     result = asyncio.run(IphoneMarketPriceService(fetcher=fetcher).estimate(query))
     assert result.is_stale
     assert calls == 0
+    assert "лимит" in (result.stale_reason or "").lower()
 
 
 def test_global_block_on_success_snapshot_after_restart(monkeypatch):

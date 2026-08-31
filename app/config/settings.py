@@ -182,6 +182,14 @@ AVITO_MARKET_WL_BLOCK_PAUSE_SEC = int(
 # Переменные ниже — только одноразовый bootstrap в encrypted_secrets при старте.
 SPFA_API_KEY = (os.getenv("SPFA_API_KEY") or "").strip()
 AVITO_MARKET_PROXY = (os.getenv("AVITO_MARKET_PROXY") or "").strip()
+MOBILEPROXY_API_TOKEN = (os.getenv("MOBILEPROXY_API_TOKEN") or "").strip()
+# Пакет residential: 1 ГБ на 3 месяца (если кабинет не отдал остаток явно).
+AVITO_MARKET_RESIDENTIAL_PACKAGE_MB = int(
+    os.getenv("AVITO_MARKET_RESIDENTIAL_PACKAGE_MB", "1024")
+)
+AVITO_MARKET_RESIDENTIAL_PACKAGE_DAYS = int(
+    os.getenv("AVITO_MARKET_RESIDENTIAL_PACKAGE_DAYS", "90")
+)
 AVITO_MARKET_USE_SPFA = os.getenv("AVITO_MARKET_USE_SPFA", "true").lower() in (
     "1",
     "true",

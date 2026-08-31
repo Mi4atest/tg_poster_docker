@@ -249,7 +249,9 @@ async def watchlist_run(callback: CallbackQuery):
         await callback.message.answer(user_facing_market_error(str(exc)))
         return
     except Exception:
-        await callback.message.answer("Сейчас не удалось обновить оценку.")
+        await callback.message.answer(
+            "Не получилось обновить эту позицию. Подождите пару минут и нажмите ещё раз."
+        )
         return
     from app.bot.handlers.iphone_market_price import (
         _result_keyboard,
@@ -265,7 +267,7 @@ async def watchlist_run(callback: CallbackQuery):
     if outcome == "cache":
         hint = "\n\nПоказан сохранённый результат — живой запрос не требовался."
     elif outcome == "stale":
-        hint = "\n\nAvito ограничил запросы, показан прошлый отчёт. Фон на паузе."
+        hint = "\n\nAvito не пустил свежий запрос, показан прошлый отчёт. Фон автообновления на паузе."
     await callback.message.edit_text(
         format_market_estimate(
             estimate,

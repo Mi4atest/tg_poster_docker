@@ -17,7 +17,22 @@ from app.config.settings import (
     AVITO_MARKET_CATEGORY_ID,
     AVITO_MARKET_LOCATION_ID,
 )
-from app.integrations.avito.browser_fetch import BrowserFetchError, browser_get
+from app.integrations.avito.browser_fetch import (
+    BrowserFetchError,
+    browser_get,
+    spfa_request_headers,
+)
+from app.integrations.avito.market_diag import (
+    CODE_AVITO_BLOCK,
+    CODE_CAPTCHA,
+    CODE_LIVE,
+    CODE_NO_PROXY,
+    CODE_PARSE,
+    CODE_SPFA,
+    CODE_TRANSPORT,
+    code_from_http_status,
+    log_market,
+)
 from app.integrations.avito.spfa_client import SpfaClient, SpfaCookies, SpfaError, proxy_url
 from app.services.settings_service import get_settings_service
 from app.utils.iphone_market_query import IphoneMarketQuery
@@ -37,18 +52,44 @@ _avito_url_cache: dict[str, tuple[float, str]] = {}
 class AvitoMarketError(RuntimeError):
     """Базовая ошибка публичной выдачи."""
 
+    def __init__(self, message: str, *, code: str = "fail") -> None:
+        super().__init__(message)
+        self.code = code
+        self.has_proxy = True
+
 
 class AvitoMarketBlockedError(AvitoMarketError):
     """Avito потребовал CAPTCHA или ограничил запросы."""
 
-    def __init__(self, message: str, *, soft: bool = False) -> None:
-        super().__init__(message)
+    def __init__(
+        self,
+        message: str,
+        *,
+        soft: bool = False,
+        code: str = CODE_AVITO_BLOCK,
+        has_proxy: bool = True,
+    ) -> None:
+        super().__init__(message, code=code)
         # soft=True: egress уже сменили (sticky session) — короче пауза.
         self.soft = soft
+        self.has_proxy = has_proxy
+        if self.code == CODE_AVITO_BLOCK:
+            lowered = message.lower()
+            if "439" in lowered:
+                self.code = "http_439"
+            elif "429" in lowered:
+                self.code = "http_429"
+            elif "403" in lowered:
+                self.code = "http_403"
+            elif "captcha" in lowered or "не робот" in lowered:
+                self.code = CODE_CAPTCHA
 
 
 class AvitoMarketParseError(AvitoMarketError):
     """Структура выдачи не содержит распознаваемых карточек."""
+
+    def __init__(self, message: str, *, code: str = CODE_PARSE) -> None:
+        super().__init__(message, code=code)
 
 
 @dataclass(frozen=True)
@@ -305,7 +346,10 @@ def parse_market_search_html(page_html: str) -> list[MarketListing]:
             "pow_challenge",
         )
     ):
-        raise AvitoMarketBlockedError("Avito запросил дополнительную проверку")
+        raise AvitoMarketBlockedError(
+            "Avito запросил дополнительную проверку",
+            code=CODE_CAPTCHA,
+        )
 
     listings: dict[str, MarketListing] = {}
     for payload in _json_candidates(page_html):
@@ -329,7 +373,10 @@ def parse_market_search_payload(payload: Any) -> list[MarketListing]:
         or "captcha" in result_text
         or "pow_challenge" in payload
     ):
-        raise AvitoMarketBlockedError("Avito запросил дополнительную проверку")
+        raise AvitoMarketBlockedError(
+            "Avito запросил дополнительную проверку",
+            code=CODE_CAPTCHA,
+        )
 
     candidates: list[Any] = [payload.get("items")]
     for envelope in ("catalog", "data", "result"):
@@ -354,7 +401,10 @@ def parse_market_search_payload(payload: Any) -> list[MarketListing]:
 
 def _parse_response_body(text: str) -> list[MarketListing]:
     if "pow_challenge" in text or "проверка безопасности" in text.lower():
-        raise AvitoMarketBlockedError("Avito запросил проверку безопасности")
+        raise AvitoMarketBlockedError(
+            "Avito запросил проверку безопасности",
+            code=CODE_CAPTCHA,
+        )
     try:
         payload = json.loads(text)
     except json.JSONDecodeError:
@@ -515,15 +565,32 @@ async def _fetch_via_spfa_browser(
 
     from app.integrations.avito.debug_agent_log import agent_dbg
 
+    has_proxy = bool((proxy or "").strip())
+
+    def _block(
+        message: str,
+        *,
+        code: str,
+        soft: bool = False,
+    ) -> AvitoMarketBlockedError:
+        log_market(
+            "fail",
+            code,
+            status=message.replace(" ", "_")[:40],
+            has_proxy=has_proxy,
+            cookie_id=cookies_obj.cookie_id,
+            impersonate=cookies_obj.impersonate,
+            soft=soft,
+        )
+        return AvitoMarketBlockedError(
+            message,
+            soft=soft,
+            code=code,
+            has_proxy=has_proxy,
+        )
+
     async def _once(cookies: SpfaCookies, proxy_value: Optional[str]) -> tuple[int, str, str]:
-        headers = {
-            "Accept": "application/json,text/plain,*/*",
-            "Accept-Language": "ru-RU,ru;q=0.9",
-            "Referer": "https://www.avito.ru/",
-            "User-Agent": cookies.user_agent,
-        }
-        headers.update(cookies.headers)
-        headers["User-Agent"] = cookies.user_agent
+        headers = spfa_request_headers(cookies.headers, user_agent=cookies.user_agent)
         return await browser_get(
             search_url,
             headers=headers,
@@ -546,8 +613,15 @@ async def _fetch_via_spfa_browser(
             run_id="wl",
         )
         # #endregion
-        raise AvitoMarketError(str(exc)) from exc
+        log_market(
+            "fail",
+            CODE_TRANSPORT,
+            has_proxy=has_proxy,
+            detail=str(exc)[:120],
+        )
+        raise AvitoMarketError(str(exc), code=CODE_TRANSPORT) from exc
 
+    host = _urlparse(final_url or search_url).hostname
     # #region agent log
     agent_dbg(
         "E",
@@ -555,7 +629,7 @@ async def _fetch_via_spfa_browser(
         "Avito response",
         {
             "status": status,
-            "host": _urlparse(final_url or search_url).hostname,
+            "host": host,
             "path_prefix": (_urlparse(final_url or search_url).path or "")[:40],
             "cookie_id": cookies_obj.cookie_id,
             "impersonate": cookies_obj.impersonate,
@@ -564,14 +638,27 @@ async def _fetch_via_spfa_browser(
         },
     )
     # #endregion
-    logger.info(
-        "Avito market fetch status=%s host=%s cookie_id=%s attempt=1",
-        status,
-        _urlparse(final_url or search_url).hostname,
-        cookies_obj.cookie_id,
+    log_market(
+        "fetch",
+        CODE_LIVE,
+        status=status,
+        host=host,
+        cookie_id=cookies_obj.cookie_id,
+        impersonate=cookies_obj.impersonate,
+        has_proxy=has_proxy,
+        attempt=1,
     )
 
     if status in {403, 429, 439}:
+        http_code = code_from_http_status(status)
+        log_market(
+            "block",
+            http_code,
+            status=status,
+            has_proxy=has_proxy,
+            cookie_id=cookies_obj.cookie_id,
+            attempt=1,
+        )
         egress_ok = await _handle_block(
             spfa=spfa, cookies_obj=cookies_obj, detail=f"HTTP {status}"
         )
@@ -599,8 +686,9 @@ async def _fetch_via_spfa_browser(
                     run_id="wl",
                 )
                 # #endregion
-                raise AvitoMarketBlockedError(
+                raise _block(
                     f"Avito вернул HTTP {status}",
+                    code=http_code,
                     soft=True,
                 ) from exc
             # #region agent log
@@ -617,43 +705,67 @@ async def _fetch_via_spfa_browser(
                 },
             )
             # #endregion
-            logger.info(
-                "Avito market fetch status=%s host=%s cookie_id=%s attempt=2 (after rotate)",
-                status2,
-                _urlparse(final_url2 or search_url).hostname,
-                refreshed.cookie_id,
+            log_market(
+                "fetch",
+                CODE_LIVE,
+                status=status2,
+                host=_urlparse(final_url2 or search_url).hostname,
+                cookie_id=refreshed.cookie_id,
+                has_proxy=1,
+                attempt=2,
             )
             if status2 == 200 and "captcha" not in (final_url2 or "").lower():
                 try:
                     return _parse_response_body(text2)
-                except AvitoMarketBlockedError:
-                    pass
+                except AvitoMarketParseError:
+                    log_market("fail", CODE_PARSE, attempt=2, has_proxy=has_proxy)
+                    raise
+                except AvitoMarketBlockedError as exc:
+                    log_market(
+                        "fail",
+                        exc.code or CODE_CAPTCHA,
+                        attempt=2,
+                        has_proxy=has_proxy,
+                    )
             status, text, final_url = status2, text2, final_url2
             if status in {403, 429, 439}:
-                raise AvitoMarketBlockedError(
-                    f"Avito вернул HTTP {status}", soft=True
+                raise _block(
+                    f"Avito вернул HTTP {status}",
+                    code=code_from_http_status(status),
+                    soft=True,
                 )
-        # Без ротации / повтор не помог.
-        soft = bool(egress_ok)
-        raise AvitoMarketBlockedError(f"Avito вернул HTTP {status}", soft=soft)
+        raise _block(
+            f"Avito вернул HTTP {status}",
+            code=code_from_http_status(status),
+            soft=bool(egress_ok),
+        )
     if status != 200:
-        raise AvitoMarketError(f"Avito вернул HTTP {status}")
+        log_market("fail", CODE_TRANSPORT, status=status, has_proxy=has_proxy)
+        raise AvitoMarketError(f"Avito вернул HTTP {status}", code=CODE_TRANSPORT)
     if "captcha" in final_url.lower():
         egress_ok = await _handle_block(
             spfa=spfa, cookies_obj=cookies_obj, detail="captcha redirect"
         )
-        raise AvitoMarketBlockedError(
-            "Avito перенаправил запрос на CAPTCHA", soft=egress_ok
+        raise _block(
+            "Avito перенаправил запрос на CAPTCHA",
+            code=CODE_CAPTCHA,
+            soft=egress_ok,
         )
     try:
         return _parse_response_body(text)
-    except AvitoMarketBlockedError:
+    except AvitoMarketParseError:
+        log_market("fail", CODE_PARSE, has_proxy=has_proxy, cookie_id=cookies_obj.cookie_id)
+        raise
+    except AvitoMarketBlockedError as exc:
         egress_ok = await _handle_block(
             spfa=spfa, cookies_obj=cookies_obj, detail="security page"
         )
-        raise AvitoMarketBlockedError(
-            "Avito запросил проверку безопасности", soft=egress_ok
-        )
+        raise _block(
+            str(exc) or "Avito запросил проверку безопасности",
+            code=exc.code or CODE_CAPTCHA,
+            soft=egress_ok,
+        ) from exc
+
 
 async def fetch_market_listings(
     query: IphoneMarketQuery,
@@ -666,17 +778,33 @@ async def fetch_market_listings(
     spfa_key = settings.get_spfa_api_key()
     market_proxy = settings.get_avito_market_proxy()
     use_spfa = settings.is_avito_market_spfa_enabled() and bool(spfa_key)
+    has_proxy = bool((market_proxy or "").strip())
     spfa = SpfaClient(spfa_key, proxy=market_proxy) if use_spfa else None
-    prefer_mobile = bool(use_spfa and market_proxy)
+    prefer_mobile = bool(use_spfa and has_proxy)
+    if use_spfa and not has_proxy:
+        log_market("note", CODE_NO_PROXY, use_spfa=1, prefer_mobile=0)
     search_url = await _resolve_search_url(query, spfa, prefer_mobile=prefer_mobile)
     proxy = proxy_url(market_proxy) or None
+    log_market(
+        "start",
+        CODE_LIVE,
+        has_proxy=has_proxy,
+        use_spfa=bool(use_spfa),
+        prefer_mobile=prefer_mobile,
+        query=query.cache_key,
+    )
 
     # SPFA-путь: TLS-impersonate через curl_cffi (aiohttp даёт 439 даже с cookies).
     if spfa is not None:
         try:
             cookies_obj = await spfa.get_cookies(prefer_mobile=prefer_mobile)
         except SpfaError as exc:
-            raise AvitoMarketBlockedError(f"SPFA cookies недоступны: {exc}") from exc
+            log_market("fail", CODE_SPFA, detail=str(exc)[:120], has_proxy=has_proxy)
+            raise AvitoMarketBlockedError(
+                f"SPFA cookies недоступны: {exc}",
+                code=CODE_SPFA,
+                has_proxy=has_proxy,
+            ) from exc
         return await _fetch_via_spfa_browser(
             search_url,
             spfa=spfa,
@@ -707,18 +835,48 @@ async def fetch_market_listings(
             headers=headers,
         ) as response:
             if response.status in {403, 429, 439}:
-                raise AvitoMarketBlockedError(f"Avito вернул HTTP {response.status}")
+                code = code_from_http_status(response.status)
+                log_market("fail", code, status=response.status, has_proxy=has_proxy)
+                raise AvitoMarketBlockedError(
+                    f"Avito вернул HTTP {response.status}",
+                    code=code,
+                    has_proxy=has_proxy,
+                )
             if response.status != 200:
-                raise AvitoMarketError(f"Avito вернул HTTP {response.status}")
+                log_market("fail", CODE_TRANSPORT, status=response.status, has_proxy=has_proxy)
+                raise AvitoMarketError(
+                    f"Avito вернул HTTP {response.status}",
+                    code=CODE_TRANSPORT,
+                )
             body = await response.content.read(MAX_RESPONSE_BYTES + 1)
             if len(body) > MAX_RESPONSE_BYTES:
                 raise AvitoMarketParseError("Страница Avito превышает допустимый размер")
             text = body.decode(response.charset or "utf-8", errors="replace")
             if "captcha" in str(response.url).lower():
-                raise AvitoMarketBlockedError("Avito перенаправил запрос на CAPTCHA")
-            return _parse_response_body(text)
+                log_market("fail", CODE_CAPTCHA, has_proxy=has_proxy)
+                raise AvitoMarketBlockedError(
+                    "Avito перенаправил запрос на CAPTCHA",
+                    code=CODE_CAPTCHA,
+                    has_proxy=has_proxy,
+                )
+            try:
+                return _parse_response_body(text)
+            except AvitoMarketParseError:
+                log_market("fail", CODE_PARSE, has_proxy=has_proxy)
+                raise
+            except AvitoMarketBlockedError as exc:
+                log_market("fail", exc.code or CODE_CAPTCHA, has_proxy=has_proxy)
+                raise AvitoMarketBlockedError(
+                    str(exc),
+                    code=exc.code,
+                    has_proxy=has_proxy,
+                ) from exc
     except (aiohttp.ClientError, TimeoutError) as exc:
-        raise AvitoMarketError("Не удалось получить выдачу Avito") from exc
+        log_market("fail", CODE_TRANSPORT, has_proxy=has_proxy)
+        raise AvitoMarketError(
+            "Не удалось получить выдачу Avito",
+            code=CODE_TRANSPORT,
+        ) from exc
     finally:
         if owns_session:
             await session.close()

@@ -28,6 +28,8 @@ class AvitoMarketSnapshot(Base):
     median_rub = Column(Integer, nullable=True)
     q25_rub = Column(Integer, nullable=True)
     q75_rub = Column(Integer, nullable=True)
+    quote_as_of = Column(DateTime, nullable=True)
+    quote_quality = Column(String(8), nullable=True)
     private_summary = Column(JSON, nullable=True)
     business_summary = Column(JSON, nullable=True)
     listing_audit = Column(JSON, nullable=True)

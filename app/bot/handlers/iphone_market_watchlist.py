@@ -134,8 +134,21 @@ async def _show_item(callback: CallbackQuery, item: dict) -> None:
         f"Данные: {_fmt_msk(item.get('fetched_at'))} МСК",
         f"След. автообновление: {_fmt_msk(item.get('next_refresh_at'))} МСК",
     ]
+    from app.bot.handlers.iphone_market_price import load_market_daily_points
+    from app.bot.utils.market_daily_formatter import format_market_daily_html
+    from app.utils.iphone_market_query import IphoneMarketQuery
+
+    daily_html = ""
+    try:
+        query = IphoneMarketQuery(
+            model=str(item.get("model") or ""),
+            memory_gb=int(item.get("memory_gb") or 0),
+        )
+        daily_html = format_market_daily_html(await load_market_daily_points(query))
+    except Exception:
+        daily_html = ""
     await callback.message.edit_text(
-        "\n".join(lines),
+        "\n".join(lines) + daily_html,
         parse_mode=ParseMode.HTML,
         reply_markup=watchlist_item_keyboard(item),
     )
@@ -241,6 +254,7 @@ async def watchlist_run(callback: CallbackQuery):
     from app.bot.handlers.iphone_market_price import (
         _result_keyboard,
         format_market_estimate,
+        load_market_daily_points,
         load_shop_price_range,
     )
 
@@ -256,6 +270,7 @@ async def watchlist_run(callback: CallbackQuery):
         format_market_estimate(
             estimate,
             shop_range=await load_shop_price_range(estimate.query),
+            daily_points=await load_market_daily_points(estimate.query),
         )
         + hint,
         parse_mode=ParseMode.HTML,

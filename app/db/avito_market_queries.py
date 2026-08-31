@@ -6,9 +6,20 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Optional
 
 from app.api.models.avito_market_snapshot import AvitoMarketSnapshot
+from app.api.models.avito_market_daily import AvitoMarketDaily
 from app.api.models.avito_market_request_log import AvitoMarketRequestLog
+from app.config.settings import AVITO_MARKET_MIN_SAMPLE_SIZE, AVITO_MARKET_SOFT_SAMPLE_SIZE
 from app.db.database import SessionLocal
 from app.utils.iphone_market_query import IphoneMarketQuery
+from app.utils.market_daily import (
+    MARKET_DAILY_DAYS,
+    QUALITY_GAP,
+    QUALITY_OK,
+    QUALITY_SOFT,
+    classify_sample_quality,
+    observed_on_msk,
+    should_replace_daily,
+)
 from app.utils.price_stats import MarketAnalysis
 
 
@@ -31,6 +42,8 @@ def _snapshot_dict(row: AvitoMarketSnapshot) -> dict[str, Any]:
         "median_rub": row.median_rub,
         "q25_rub": row.q25_rub,
         "q75_rub": row.q75_rub,
+        "quote_as_of": getattr(row, "quote_as_of", None),
+        "quote_quality": getattr(row, "quote_quality", None),
         "private_summary": row.private_summary,
         "business_summary": row.business_summary,
         "listing_audit": row.listing_audit or [],
@@ -40,6 +53,137 @@ def _snapshot_dict(row: AvitoMarketSnapshot) -> dict[str, Any]:
         "last_error": row.last_error,
         "retry_after": row.retry_after,
     }
+
+
+def _daily_dict(row: AvitoMarketDaily) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "model": row.model,
+        "memory_gb": row.memory_gb,
+        "region": row.region,
+        "observed_on": row.observed_on,
+        "median_rub": row.median_rub,
+        "q25_rub": row.q25_rub,
+        "q75_rub": row.q75_rub,
+        "used_count": row.used_count,
+        "total_count": row.total_count,
+        "quality": row.quality,
+        "source": row.source,
+        "snapshot_id": row.snapshot_id,
+    }
+
+
+def _upsert_daily(
+    db,
+    *,
+    model: str,
+    memory_gb: int,
+    region: str,
+    observed_on,
+    quality: str,
+    source: str,
+    used_count: int,
+    total_count: int,
+    median_rub: Optional[int],
+    q25_rub: Optional[int],
+    q75_rub: Optional[int],
+    snapshot_id: Optional[int],
+    now: datetime,
+) -> None:
+    row = (
+        db.query(AvitoMarketDaily)
+        .filter(
+            AvitoMarketDaily.model == model,
+            AvitoMarketDaily.memory_gb == int(memory_gb),
+            AvitoMarketDaily.region == str(region),
+            AvitoMarketDaily.observed_on == observed_on,
+        )
+        .first()
+    )
+    if row is not None and not should_replace_daily(row.quality, quality):
+        return
+    if row is None:
+        row = AvitoMarketDaily(
+            model=model,
+            memory_gb=int(memory_gb),
+            region=str(region),
+            observed_on=observed_on,
+        )
+        db.add(row)
+    row.quality = quality
+    row.source = (source or "manual")[:24]
+    row.used_count = int(used_count or 0)
+    row.total_count = int(total_count or 0)
+    row.snapshot_id = snapshot_id
+    if quality in {QUALITY_OK, QUALITY_SOFT}:
+        row.median_rub = median_rub
+        row.q25_rub = q25_rub
+        row.q75_rub = q75_rub
+    else:
+        row.median_rub = None
+        row.q25_rub = None
+        row.q75_rub = None
+    if row.created_at is None:
+        row.created_at = now
+
+
+def list_market_daily(
+    model: str,
+    memory_gb: int,
+    *,
+    days: int = MARKET_DAILY_DAYS,
+    region: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    db = SessionLocal()
+    try:
+        query = db.query(AvitoMarketDaily).filter(
+            AvitoMarketDaily.model == str(model),
+            AvitoMarketDaily.memory_gb == int(memory_gb),
+        )
+        if region:
+            query = query.filter(AvitoMarketDaily.region == str(region))
+        since = observed_on_msk(_utcnow()) - timedelta(days=max(1, int(days)) - 1)
+        rows = (
+            query.filter(AvitoMarketDaily.observed_on >= since)
+            .order_by(AvitoMarketDaily.observed_on.asc())
+            .all()
+        )
+        return [_daily_dict(row) for row in rows]
+    finally:
+        db.close()
+
+
+def record_market_daily_gap(
+    query: IphoneMarketQuery,
+    *,
+    region: str,
+    source: str = "manual",
+) -> None:
+    now = _utcnow()
+    db = SessionLocal()
+    try:
+        _upsert_daily(
+            db,
+            model=query.model,
+            memory_gb=query.memory_gb,
+            region=region,
+            observed_on=observed_on_msk(now),
+            quality=QUALITY_GAP,
+            source=source,
+            used_count=0,
+            total_count=0,
+            median_rub=None,
+            q25_rub=None,
+            q75_rub=None,
+            snapshot_id=None,
+            now=now,
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
 
 
 def get_market_snapshot(cache_key: str) -> Optional[dict[str, Any]]:
@@ -146,8 +290,14 @@ def save_market_snapshot(
     *,
     region: str,
     ttl_seconds: int,
+    source: str = "manual",
 ) -> dict[str, Any]:
     now = _utcnow()
+    quality = classify_sample_quality(
+        analysis.used_count,
+        min_sample_size=AVITO_MARKET_MIN_SAMPLE_SIZE,
+        min_soft_sample_size=AVITO_MARKET_SOFT_SAMPLE_SIZE,
+    )
     db = SessionLocal()
     try:
         row = (
@@ -167,9 +317,14 @@ def save_market_snapshot(
         row.matched_count = analysis.matched_count
         row.used_count = analysis.used_count
         row.outlier_count = analysis.outlier_count
-        row.median_rub = summary.median_rub if summary else None
-        row.q25_rub = summary.q25_rub if summary else None
-        row.q75_rub = summary.q75_rub if summary else None
+        if summary:
+            row.median_rub = summary.median_rub
+            row.q25_rub = summary.q25_rub
+            row.q75_rub = summary.q75_rub
+            row.quote_as_of = now
+            row.quote_quality = quality
+        elif row.median_rub is None:
+            row.quote_quality = quality
         row.private_summary = asdict(analysis.private_summary) if analysis.private_summary else None
         row.business_summary = asdict(analysis.business_summary) if analysis.business_summary else None
         row.listing_audit = [
@@ -191,6 +346,23 @@ def save_market_snapshot(
         row.last_error_at = None
         row.last_error = None
         row.retry_after = None
+        db.flush()
+        _upsert_daily(
+            db,
+            model=query.model,
+            memory_gb=query.memory_gb,
+            region=region,
+            observed_on=observed_on_msk(now),
+            quality=quality,
+            source=source,
+            used_count=analysis.used_count,
+            total_count=analysis.total_count,
+            median_rub=summary.median_rub if summary else None,
+            q25_rub=summary.q25_rub if summary else None,
+            q75_rub=summary.q75_rub if summary else None,
+            snapshot_id=row.id,
+            now=now,
+        )
         db.commit()
         db.refresh(row)
         return _snapshot_dict(row)

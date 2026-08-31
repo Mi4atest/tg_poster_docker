@@ -397,3 +397,69 @@ def test_listing_line_and_saved_report_drop_iphone_prefix():
     )
     assert line.startswith("3 000 ₽ · 11 Pro, 64 ГБ, 1 SIM")
     assert "iPhone" not in line
+
+
+def test_carried_quote_keeps_numbers_and_warns():
+    query = parse_iphone_market_query("11 pro 64")
+    estimate = MarketPriceEstimate(
+        query=query,
+        region="Россия",
+        total_count=40,
+        matched_count=2,
+        used_count=2,
+        outlier_count=0,
+        summary=PriceSummary(34, 8_000, 7_500, 9_000),
+        private_summary=None,
+        business_summary=None,
+        fetched_at=datetime(2026, 8, 31, 10, 0),
+        quote_as_of=datetime(2026, 8, 28, 18, 0),
+        quote_quality="ok",
+        quote_carried=True,
+    )
+    text = format_market_estimate(estimate)
+    assert "8 000 ₽" in text
+    assert "почти не было" in text
+    assert "не обновлялись" in text
+    assert "Мало объявлений" not in text
+
+
+def test_daily_history_block_in_report():
+    from datetime import date
+
+    query = parse_iphone_market_query("11 pro 64")
+    estimate = MarketPriceEstimate(
+        query=query,
+        region="Россия",
+        total_count=20,
+        matched_count=14,
+        used_count=14,
+        outlier_count=0,
+        summary=PriceSummary(14, 8_000, 7_500, 9_000),
+        private_summary=None,
+        business_summary=None,
+        fetched_at=datetime(2026, 8, 30, 12, 0),
+    )
+    text = format_market_estimate(
+        estimate,
+        daily_points=[
+            {
+                "observed_on": date(2026, 8, 29),
+                "quality": "ok",
+                "median_rub": 8_200,
+                "q25_rub": 7_500,
+                "q75_rub": 9_000,
+                "used_count": 30,
+            },
+            {
+                "observed_on": date(2026, 8, 30),
+                "quality": "ok",
+                "median_rub": 8_000,
+                "q25_rub": 7_200,
+                "q75_rub": 8_900,
+                "used_count": 28,
+            },
+        ],
+    )
+    assert "Динамика по дням" in text
+    assert "8 000 ₽ · 7 200 ₽–8 900 ₽" in text
+    assert "blockquote expandable" in text

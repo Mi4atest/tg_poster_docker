@@ -533,6 +533,137 @@ def ensure_product_sales_table() -> bool:
         return False
 
 
+def ensure_avito_market_daily_table() -> bool:
+    """Дневные точки медианы/вилки Avito и поля котировки на снимке."""
+    created = False
+    daily_created = False
+    try:
+        inspector = inspect(engine)
+        tables = inspector.get_table_names()
+        with engine.connect() as conn:
+            if "avito_market_daily" not in tables:
+                conn.execute(
+                    text(
+                        """
+                        CREATE TABLE avito_market_daily (
+                            id SERIAL PRIMARY KEY,
+                            model VARCHAR(80) NOT NULL,
+                            memory_gb INTEGER NOT NULL,
+                            region VARCHAR(80) NOT NULL DEFAULT 'Россия',
+                            observed_on DATE NOT NULL,
+                            median_rub INTEGER,
+                            q25_rub INTEGER,
+                            q75_rub INTEGER,
+                            used_count INTEGER NOT NULL DEFAULT 0,
+                            total_count INTEGER NOT NULL DEFAULT 0,
+                            quality VARCHAR(8) NOT NULL DEFAULT 'thin',
+                            source VARCHAR(24) NOT NULL DEFAULT 'manual',
+                            snapshot_id INTEGER REFERENCES avito_market_snapshots(id)
+                                ON DELETE SET NULL,
+                            created_at TIMESTAMP
+                        )
+                        """
+                    )
+                )
+                conn.execute(
+                    text(
+                        """
+                        CREATE UNIQUE INDEX IF NOT EXISTS
+                        uq_avito_market_daily_model_mem_region_day
+                        ON avito_market_daily (model, memory_gb, region, observed_on)
+                        """
+                    )
+                )
+                conn.execute(
+                    text(
+                        """
+                        CREATE INDEX IF NOT EXISTS ix_avito_market_daily_lookup
+                        ON avito_market_daily (model, memory_gb, observed_on)
+                        """
+                    )
+                )
+                created = True
+                daily_created = True
+                logger.info("Таблица avito_market_daily создана")
+            if "avito_market_snapshots" in inspector.get_table_names():
+                columns = {
+                    col["name"] for col in inspector.get_columns("avito_market_snapshots")
+                }
+                if "quote_as_of" not in columns:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE avito_market_snapshots "
+                            "ADD COLUMN quote_as_of TIMESTAMP"
+                        )
+                    )
+                    created = True
+                if "quote_quality" not in columns:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE avito_market_snapshots "
+                            "ADD COLUMN quote_quality VARCHAR(8)"
+                        )
+                    )
+                    created = True
+            daily_ready = "avito_market_daily" in tables or daily_created
+            if daily_ready and "avito_market_snapshots" in inspector.get_table_names():
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO avito_market_daily (
+                            model, memory_gb, region, observed_on,
+                            median_rub, q25_rub, q75_rub,
+                            used_count, total_count, quality, source,
+                            snapshot_id, created_at
+                        )
+                        SELECT
+                            model, memory_gb, region,
+                            ((fetched_at AT TIME ZONE 'UTC')
+                                AT TIME ZONE 'Europe/Moscow')::date,
+                            median_rub, q25_rub, q75_rub,
+                            used_count, total_count,
+                            CASE
+                                WHEN used_count >= 10 THEN 'ok'
+                                WHEN used_count >= 3 THEN 'soft'
+                                ELSE 'thin'
+                            END,
+                            'manual',
+                            id,
+                            fetched_at
+                        FROM avito_market_snapshots
+                        WHERE status = 'success'
+                          AND fetched_at IS NOT NULL
+                          AND median_rub IS NOT NULL
+                        ON CONFLICT (model, memory_gb, region, observed_on)
+                        DO NOTHING
+                        """
+                    )
+                )
+                conn.execute(
+                    text(
+                        """
+                        UPDATE avito_market_snapshots
+                        SET quote_as_of = COALESCE(quote_as_of, fetched_at),
+                            quote_quality = COALESCE(
+                                quote_quality,
+                                CASE
+                                    WHEN used_count >= 10 THEN 'ok'
+                                    WHEN used_count >= 3 THEN 'soft'
+                                    ELSE 'thin'
+                                END
+                            )
+                        WHERE status = 'success'
+                          AND median_rub IS NOT NULL
+                        """
+                    )
+                )
+            conn.commit()
+        return created
+    except Exception as e:
+        logger.error("Ошибка ensure_avito_market_daily_table: %s", e)
+        return False
+
+
 def ensure_shop_notes_table() -> bool:
     """Напоминалки главного экрана."""
     try:
@@ -589,6 +720,7 @@ def ensure_database_schema():
     ensure_evening_reports_index()
     ensure_shop_notes_table()
     ensure_product_sales_table()
+    ensure_avito_market_daily_table()
 
     init_alembic_version_table()
 

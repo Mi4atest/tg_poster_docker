@@ -169,6 +169,15 @@ def test_avito_market_hint_range_and_date():
         {"q25_rub": 30_000, "q75_rub": 30_000, "fetched_at": datetime(2026, 8, 30, 9, 10)}
     )
     assert same == "📊 Avito: 30 000 ₽ · 30.08\n"
+    carried = format_avito_market_hint_html(
+        {
+            "q25_rub": 25_000,
+            "q75_rub": 34_000,
+            "quote_as_of": datetime(2026, 8, 28, 18, 0, tzinfo=timezone.utc),
+            "fetched_at": datetime(2026, 8, 31, 10, 0, tzinfo=timezone.utc),
+        }
+    )
+    assert carried == "📊 Avito: 25 000 ₽–34 000 ₽ · 28.08\n"
 
 
 def test_product_card_shows_avito_hint_after_price():

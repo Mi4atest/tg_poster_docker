@@ -20,7 +20,9 @@ from app.config.settings import (
     AVITO_MARKET_MIN_REQUEST_INTERVAL_SEC,
     AVITO_MARKET_REGION,
 )
+from app.bot.utils.market_daily_formatter import format_market_daily_html
 from app.db.avito_market_watchlist_queries import ShopPriceRange, get_used_shop_price_range
+from app.db.avito_market_queries import list_market_daily
 from app.db.database import run_db
 from app.integrations.avito.market_search import MarketListing
 from app.services.iphone_market_price_service import (
@@ -356,6 +358,15 @@ async def load_shop_price_range(query: IphoneMarketQuery) -> ShopPriceRange | No
         return None
 
 
+async def load_market_daily_points(query: IphoneMarketQuery) -> list[dict]:
+    """Дневной ряд медианы/вилки; сбой БД не ломает отчёт."""
+    try:
+        return await run_db(list_market_daily, query.model, query.memory_gb)
+    except Exception:
+        logger.exception("Failed to load Avito daily history")
+        return []
+
+
 def _short_model_name(display_name: str) -> str:
     name = display_name.strip()
     compact = _IPHONE_TITLE_PREFIX.sub("", name, count=1).strip(" ,")
@@ -462,6 +473,7 @@ def _seller_counts_line(estimate: MarketPriceEstimate) -> str:
 def format_market_estimate(
     estimate: MarketPriceEstimate,
     shop_range: ShopPriceRange | None = None,
+    daily_points: list | None = None,
 ) -> str:
     lines = [
         f"📊 <b>{html.escape(estimate.query.display_name)}, б/у</b>",
@@ -490,7 +502,16 @@ def format_market_estimate(
                 + (", выбросы" if estimate.outlier_count else "")
                 + ")"
             )
-        if estimate.is_soft:
+        if estimate.quote_carried:
+            when = ""
+            if estimate.quote_as_of:
+                when = f" с {_fmt_msk_short(estimate.quote_as_of)}"
+            lines.append(
+                "⚠️ Сегодня подходящих объявлений почти не было "
+                f"({estimate.used_count} из {estimate.total_count}). "
+                f"Цифры{when}, не обновлялись."
+            )
+        elif estimate.is_soft:
             lines.append(
                 "⚠️ Мало объявлений для уверенной оценки — цифры ориентировочные."
             )
@@ -530,7 +551,9 @@ def format_market_estimate(
     elif estimate.limit_hint:
         lines.append(f"ℹ️ {html.escape(estimate.limit_hint)}")
 
-    text = "\n".join(lines) + _listings_block(estimate)
+    text = "\n".join(lines)
+    text += format_market_daily_html(daily_points or [])
+    text += _listings_block(estimate)
     text += "\n\nМожно отправить следующий запрос или открыть последние отчёты."
     return text
 
@@ -669,6 +692,7 @@ async def avito_market_open(callback: CallbackQuery, state: FSMContext):
         format_market_estimate(
             estimate,
             shop_range=await load_shop_price_range(estimate.query),
+            daily_points=await load_market_daily_points(estimate.query),
         ),
         parse_mode=ParseMode.HTML,
         reply_markup=_result_keyboard(
@@ -717,6 +741,7 @@ async def avito_market_query(message: Message, state: FSMContext):
         format_market_estimate(
             estimate,
             shop_range=await load_shop_price_range(query),
+            daily_points=await load_market_daily_points(query),
         ),
         parse_mode=ParseMode.HTML,
         reply_markup=_result_keyboard(offer_watchlist=True),

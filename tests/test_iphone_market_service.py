@@ -42,6 +42,22 @@ def _snapshot(query, *, fresh):
     }
 
 
+def test_from_snapshot_marks_carried_quote_and_keeps_median():
+    query = parse_iphone_market_query("13 mini 128")
+    snap = {
+        **_snapshot(query, fresh=True),
+        "used_count": 2,
+        "total_count": 40,
+        "quote_quality": "ok",
+        "quote_as_of": _utcnow() - timedelta(days=3),
+    }
+    result = IphoneMarketPriceService._from_snapshot(query, snap)
+    assert result.quote_carried is True
+    assert result.summary is not None
+    assert result.summary.median_rub == 27_000
+    assert result.is_soft is False
+
+
 def test_fresh_cache_does_not_call_fetcher(monkeypatch):
     query = parse_iphone_market_query("13 mini 128")
     calls = 0

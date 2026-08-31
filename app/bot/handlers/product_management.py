@@ -459,7 +459,7 @@ def format_avito_market_hint_html(snapshot: Optional[dict]) -> str:
         q75 = int(snapshot["q75_rub"])
     except (KeyError, TypeError, ValueError):
         return ""
-    fetched = snapshot.get("fetched_at")
+    fetched = snapshot.get("quote_as_of") or snapshot.get("fetched_at")
     date_bit = ""
     if isinstance(fetched, datetime):
         date_bit = f" · {to_msk(fetched).strftime('%d.%m')}"

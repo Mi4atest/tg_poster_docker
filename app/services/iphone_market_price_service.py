@@ -27,6 +27,7 @@ from app.db.avito_market_queries import (
     get_market_snapshot_by_id,
     list_recent_market_snapshots,
     record_live_request,
+    record_market_daily_gap,
     record_market_error,
     save_market_snapshot,
 )
@@ -38,6 +39,7 @@ from app.integrations.avito.market_search import (
     fetch_market_listings,
 )
 from app.utils.iphone_market_query import IphoneMarketQuery
+from app.utils.market_daily import QUALITY_SOFT, classify_sample_quality, quote_is_carried
 from app.utils.price_stats import PriceSummary, analyze_market_listings
 
 
@@ -72,6 +74,9 @@ class MarketPriceEstimate:
     listings: tuple[MarketListing, ...] = ()
     live_fetched: bool = False
     snapshot_id: Optional[int] = None
+    quote_as_of: Optional[datetime] = None
+    quote_quality: Optional[str] = None
+    quote_carried: bool = False
 
 
 ListingFetcher = Callable[[IphoneMarketQuery], Awaitable[list[MarketListing]]]
@@ -169,6 +174,9 @@ class IphoneMarketPriceService:
 
     @staticmethod
     def _is_soft_snapshot(snapshot: dict) -> bool:
+        quality = snapshot.get("quote_quality")
+        if quality:
+            return quality == QUALITY_SOFT
         if snapshot.get("median_rub") is None:
             return False
         return int(snapshot.get("used_count") or 0) < AVITO_MARKET_MIN_SAMPLE_SIZE
@@ -196,6 +204,14 @@ class IphoneMarketPriceService:
             snapshot_id_int = int(snapshot_id) if snapshot_id is not None else None
         except (TypeError, ValueError):
             snapshot_id_int = None
+        quote_quality = snapshot.get("quote_quality")
+        if not quote_quality and snapshot.get("median_rub") is not None:
+            quote_quality = classify_sample_quality(
+                int(snapshot.get("used_count") or 0),
+                min_sample_size=AVITO_MARKET_MIN_SAMPLE_SIZE,
+                min_soft_sample_size=AVITO_MARKET_SOFT_SAMPLE_SIZE,
+            )
+        quote_as_of = snapshot.get("quote_as_of") or snapshot.get("fetched_at")
         return MarketPriceEstimate(
             query=query,
             region=str(snapshot.get("region") or AVITO_MARKET_REGION),
@@ -214,6 +230,13 @@ class IphoneMarketPriceService:
             listings=_listings_from_audit(snapshot.get("listing_audit")),
             live_fetched=live_fetched,
             snapshot_id=snapshot_id_int,
+            quote_as_of=quote_as_of if isinstance(quote_as_of, datetime) else None,
+            quote_quality=str(quote_quality) if quote_quality else None,
+            quote_carried=quote_is_carried(
+                quote_quality=str(quote_quality) if quote_quality else None,
+                used_count=int(snapshot.get("used_count") or 0),
+                has_summary=summary is not None,
+            ),
         )
 
     @staticmethod
@@ -393,6 +416,7 @@ class IphoneMarketPriceService:
                         analysis,
                         region=AVITO_MARKET_REGION,
                         ttl_seconds=AVITO_MARKET_CACHE_TTL_SEC,
+                        source=source,
                     )
                     return self._from_snapshot(query, saved, live_fetched=True)
                 except AvitoMarketBlockedError as exc:
@@ -456,6 +480,12 @@ class IphoneMarketPriceService:
                         reason,
                         region=AVITO_MARKET_REGION,
                         retry_after_seconds=retry_after_seconds,
+                    )
+                    await run_db(
+                        record_market_daily_gap,
+                        query,
+                        region=AVITO_MARKET_REGION,
+                        source=source,
                     )
                 except Exception:
                     logger.exception("Failed to record Avito market error")

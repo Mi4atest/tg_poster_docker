@@ -13,7 +13,18 @@ from app.api.models.post import Post, PublicationQueue
 
 logger = logging.getLogger(__name__)
 
-_IG_RETRY_MARKER_RE = re.compile(r"\[ig_retry=(\d+)/(\d+)\]")
+# Старый маркер Instagram и общий [retry=n/m] для ВК/IG.
+_RETRY_MARKER_RE = re.compile(r"\[(?:ig_)?retry=(\d+)/(\d+)\]")
+
+
+def parse_retry_attempt(error_message: Optional[str]) -> int:
+    """Следующий номер попытки авто-ретрая (1, если маркера ещё не было)."""
+    match = _RETRY_MARKER_RE.search(error_message or "")
+    return int(match.group(1)) + 1 if match else 1
+
+
+def format_retry_marker(attempt: int, max_attempts: int) -> str:
+    return f"[retry={attempt}/{max_attempts}]"
 
 
 class QueueManager:
@@ -519,14 +530,13 @@ class QueueManager:
                     return False
 
                 prev = row["error_message"] or ""
-                match = _IG_RETRY_MARKER_RE.search(prev)
-                attempt = int(match.group(1)) + 1 if match else 1
+                attempt = parse_retry_attempt(prev)
                 if attempt > max_attempts:
                     return False
 
                 now = datetime.now(timezone.utc)
                 scheduled_at = now + timedelta(seconds=delay_seconds)
-                marker = f"[ig_retry={attempt}/{max_attempts}]"
+                marker = format_retry_marker(attempt, max_attempts)
                 msg = f"{marker} {error_message or 'publish failed'}".strip()[:2000]
 
                 db.execute(

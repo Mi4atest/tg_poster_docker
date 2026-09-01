@@ -190,6 +190,8 @@ class InstagramStoryPublisher:
 
     async def publish_story(self, story_id: str) -> bool:
         _set_last_error("")
+        post = None
+        instagram_link = None
         db = SessionLocal()
         try:
             story = db.query(Story).filter(Story.id == story_id).first()
@@ -220,6 +222,37 @@ class InstagramStoryPublisher:
                 db.commit()
                 return False
 
+            for name in (
+                "id",
+                "text",
+                "photos",
+                "videos",
+                "instagram_link",
+                "vk_post_id",
+                "vk_post_link",
+                "name",
+            ):
+                getattr(post, name, None)
+            instagram_link = (post.instagram_link or "").strip() or None
+            db.expunge(post)
+            db.rollback()
+        except Exception as exc:
+            reason = f"{type(exc).__name__}: {exc}"
+            _set_last_error(reason)
+            logger.error("IG story publish error story_id=%s: %s", story_id, reason, exc_info=True)
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            self._persist_story_log(story_id, "error", reason)
+            return False
+        finally:
+            try:
+                db.close()
+            except Exception:
+                pass
+
+        try:
             preview_path: Optional[Path] = None
             vk_publisher = VKStoryPublisher()
             image_bytes = await vk_publisher.compose_frame_for_post(post)
@@ -240,15 +273,13 @@ class InstagramStoryPublisher:
                     "или сначала опубликуйте живую сторис ВК (для CDN fallback)"
                 )
                 _set_last_error(reason)
-                self._log(db, story.id, "error", reason)
-                db.commit()
+                self._persist_story_log(story_id, "error", reason)
                 return False
 
             media_id = await self._publish_with_fallbacks(post, candidates)
             if not media_id:
                 reason = last_instagram_story_error() or "Graph API не опубликовал сторис"
-                self._log(db, story.id, "error", reason)
-                db.commit()
+                self._persist_story_log(story_id, "error", reason)
                 return False
 
             permalink = None
@@ -258,33 +289,66 @@ class InstagramStoryPublisher:
             except Exception as exc:
                 logger.warning("IG story permalink fetch failed media_id=%s: %s", media_id, exc)
 
-            feed_link = (post.instagram_link or "").strip() or None
-            story.is_published = True
-            story.published_at = datetime.now(timezone.utc)
-            story.post_link = permalink or feed_link or story.post_link
-            self._log(
-                db,
-                story.id,
-                "success",
-                (
-                    f"Published IG story media_id={media_id}"
-                    + (f" permalink={permalink}" if permalink else "")
-                    + (f" feed={feed_link}" if feed_link else "")
-                    + f" sources={[s for s, _ in candidates]}"
-                ),
+            extra = (
+                f"Published IG story media_id={media_id}"
+                + (f" permalink={permalink}" if permalink else "")
+                + (f" feed={instagram_link}" if instagram_link else "")
+                + f" sources={[s for s, _ in candidates]}"
             )
-            db.commit()
-            logger.info("IG story %s published media_id=%s", story_id, media_id)
-            return True
+            ok = self._mark_story_published(
+                story_id,
+                permalink or instagram_link,
+                extra,
+            )
+            if ok:
+                logger.info("IG story %s published media_id=%s", story_id, media_id)
+            else:
+                _set_last_error("Сторис ушла в Instagram, но не записалась в БД")
+            return ok
         except Exception as exc:
             reason = f"{type(exc).__name__}: {exc}"
             _set_last_error(reason)
             logger.error("IG story publish error story_id=%s: %s", story_id, reason, exc_info=True)
+            self._persist_story_log(story_id, "error", reason)
+            return False
+
+    def _persist_story_log(self, story_id: str, status: str, message: str) -> None:
+        db = SessionLocal()
+        try:
+            self._log(db, story_id, status, message)
+            db.commit()
+        except Exception:
+            logger.exception("Failed to persist IG story log story_id=%s", story_id)
             try:
-                self._log(db, story_id, "error", reason)
-                db.commit()
-            except Exception:
                 db.rollback()
+            except Exception:
+                pass
+        finally:
+            db.close()
+
+    def _mark_story_published(
+        self, story_id: str, post_link: Optional[str], extra: str
+    ) -> bool:
+        """Свежая сессия: Graph API длится дольше idle_in_transaction_session_timeout."""
+        db = SessionLocal()
+        try:
+            story = db.query(Story).filter(Story.id == story_id).first()
+            if not story:
+                logger.error("IG story %s disappeared before DB update", story_id)
+                return False
+            story.is_published = True
+            story.published_at = datetime.now(timezone.utc)
+            if post_link:
+                story.post_link = post_link
+            self._log(db, story.id, "success", extra)
+            db.commit()
+            return True
+        except Exception:
+            logger.exception("Failed to mark IG story published story_id=%s", story_id)
+            try:
+                db.rollback()
+            except Exception:
+                pass
             return False
         finally:
             db.close()

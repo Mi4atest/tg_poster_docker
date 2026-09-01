@@ -14,6 +14,7 @@ from app.workers.avito.publisher import (
 )
 from app.integrations.avito.autoload_coordinator import get_coordinator
 from app.integrations.avito.errors import AvitoAutoCreateUnavailableError
+from app.scheduler.publish_stagger import PublishStagger
 from app.services.settings_service import get_settings_service
 
 logger = logging.getLogger(__name__)
@@ -30,8 +31,15 @@ class PlatformWorker:
         "max": 3 * 60,  # 3 минуты
         "avito": 60 * 60,
     }
-    # Сколько раз автоматически возвращать IG-задачу в очередь после сбоя.
+    # Сколько раз автоматически возвращать задачу в очередь после сбоя.
     INSTAGRAM_QUEUE_MAX_RETRIES = 5
+    VK_QUEUE_MAX_RETRIES = 5
+    QUEUE_AUTO_RETRY_MAX = {
+        "instagram": INSTAGRAM_QUEUE_MAX_RETRIES,
+        "vk": VK_QUEUE_MAX_RETRIES,
+    }
+    VK_RETRY_DELAY_MIN_SECONDS = 120
+    VK_RETRY_DELAY_MAX_SECONDS = 180
 
     def __init__(self, platform: str, queue_manager: QueueManager, signature_enabled: bool = True, orchestrator=None):
         """Инициализация worker.
@@ -61,26 +69,38 @@ class PlatformWorker:
         except Exception:
             return self.INTERVALS.get(self.platform, 3 * 60)
 
+    def _retry_delay_seconds(self) -> int:
+        interval = self._platform_interval_seconds()
+        if self.platform == "vk":
+            return max(
+                self.VK_RETRY_DELAY_MIN_SECONDS,
+                min(self.VK_RETRY_DELAY_MAX_SECONDS, interval),
+            )
+        return interval
+
     def _handle_publish_failure(self, queue_item_id: int, post_id: str, error_msg: str) -> None:
-        """Для Instagram — авто-ретрай с паузой ≈ интервал публикации; иначе failed."""
-        if self.platform == "instagram":
-            delay = self._platform_interval_seconds()
+        """Для VK и Instagram — авто-ретрай с паузой; иначе сразу failed."""
+        max_attempts = self.QUEUE_AUTO_RETRY_MAX.get(self.platform)
+        if max_attempts:
+            delay = self._retry_delay_seconds()
             requeued = self.queue_manager.requeue_for_retry(
                 queue_item_id,
                 error_msg,
                 delay_seconds=delay,
-                max_attempts=self.INSTAGRAM_QUEUE_MAX_RETRIES,
+                max_attempts=max_attempts,
             )
             if requeued:
                 logger.warning(
-                    "Instagram publish failed for %s; auto-retry in %ss (queue id=%s)",
+                    "%s publish failed for %s; auto-retry in %ss (queue id=%s)",
+                    self.platform,
                     post_id,
                     delay,
                     queue_item_id,
                 )
                 return
             logger.error(
-                "Instagram retries exhausted for %s (queue id=%s); marking failed",
+                "%s retries exhausted for %s (queue id=%s); marking failed",
+                self.platform,
                 post_id,
                 queue_item_id,
             )
@@ -201,6 +221,18 @@ class PlatformWorker:
                     waited = await self.wait_for_interval()
                     if not waited or self._is_effectively_paused():
                         continue
+                    stagger = (
+                        getattr(self.orchestrator, "publish_stagger", None)
+                        if self.orchestrator
+                        else None
+                    )
+                    if isinstance(stagger, PublishStagger):
+                        claimed = await stagger.wait_turn(
+                            self.platform,
+                            should_abort=self._is_effectively_paused,
+                        )
+                        if not claimed or self._is_effectively_paused():
+                            continue
                     if not self.queue_manager.mark_as_publishing(queue_item.id):
                         continue
                     await self.publish_post(queue_item.id, queue_item.post_id)

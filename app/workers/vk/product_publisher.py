@@ -29,6 +29,13 @@ from app.utils.vk_client import (
     resolved_vk_group_id_int,
 )
 
+from app.workers.vk.upload_retry import (
+    VK_API_CALL_TIMEOUT,
+    VK_MARKET_POST_TIMEOUT,
+    VK_MARKET_UPLOAD_ATTEMPTS,
+    vk_upload_backoff_seconds,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -65,6 +72,19 @@ class VKProductPublisher:
             wait_time = self._min_api_interval - elapsed
             await asyncio.sleep(wait_time)
         self._last_api_call = time.time()
+
+    async def _await_vk_step(self, step: str, coro, timeout: float):
+        """Синхронный шаг VK API с жёстким лимитом времени."""
+        try:
+            return await asyncio.wait_for(coro, timeout=timeout)
+        except Exception as exc:
+            logger.warning(
+                "VK Market step %s failed: %s: %s",
+                step,
+                type(exc).__name__,
+                str(exc)[:200],
+            )
+            raise
 
     def _coerce_saved_market_photo_list(self, raw: object, _depth: int = 0) -> List[Dict]:
         """Ответ saveMarketPhoto / saveProductPhoto → список {id, owner_id} для market.add."""
@@ -189,9 +209,11 @@ class VKProductPublisher:
         message = str(exc).lower()
         return (
             isinstance(exc, requests.RequestException)
+            or isinstance(exc, TimeoutError)
             or code in {6, 8, 9, 10, 29}
             or (code == 100 and "photo is undefined" in message)
             or "timeout" in message
+            or "timed out" in message
             or "temporar" in message
             or "connection" in message
         )
@@ -214,7 +236,7 @@ class VKProductPublisher:
             response = requests.post(
                 upload_url,
                 files={"file": photo_file},
-                timeout=(10, 120),
+                timeout=VK_MARKET_POST_TIMEOUT,
             )
         response.raise_for_status()
         return response.status_code, response.json()
@@ -466,20 +488,33 @@ class VKProductPublisher:
 
                 # Загружаем фото на сервер ВК для товаров
                 try:
-                    for attempt in range(1, 4):
+                    for attempt in range(1, VK_MARKET_UPLOAD_ATTEMPTS + 1):
                         try:
                             await self._wait_for_api_interval()
-                            upload_server = await asyncio.to_thread(
-                                self._get_market_upload_server_sync
+                            upload_server = await self._await_vk_step(
+                                "get_server",
+                                asyncio.to_thread(self._get_market_upload_server_sync),
+                                VK_API_CALL_TIMEOUT,
                             )
-                            _status, upload_data = await asyncio.to_thread(
-                                self._post_market_photo_sync,
-                                upload_server["upload_url"],
-                                temp_file,
+                            post_budget = (
+                                VK_MARKET_POST_TIMEOUT[0] + VK_MARKET_POST_TIMEOUT[1] + 5
+                            )
+                            _status, upload_data = await self._await_vk_step(
+                                "post",
+                                asyncio.to_thread(
+                                    self._post_market_photo_sync,
+                                    upload_server["upload_url"],
+                                    temp_file,
+                                ),
+                                post_budget,
                             )
                             await self._wait_for_api_interval()
-                            photo_result = await asyncio.to_thread(
-                                self._save_market_uploaded_product_photo, upload_data
+                            photo_result = await self._await_vk_step(
+                                "save",
+                                asyncio.to_thread(
+                                    self._save_market_uploaded_product_photo, upload_data
+                                ),
+                                VK_API_CALL_TIMEOUT,
                             )
                             if not photo_result:
                                 raise RuntimeError(
@@ -497,14 +532,19 @@ class VKProductPublisher:
                             uploaded = True
                             break
                         except Exception as exc:
-                            if attempt >= 3 or not self._is_retryable_upload_error(exc):
+                            if attempt >= VK_MARKET_UPLOAD_ATTEMPTS or not self._is_retryable_upload_error(exc):
                                 raise
+                            delay = vk_upload_backoff_seconds(attempt, exc)
                             logger.warning(
-                                "VK Market photo upload failed (attempt %s/3, code=%s), retrying",
+                                "VK Market photo upload failed (attempt %s/%s, code=%s, type=%s): %s; retry in %ss",
                                 attempt,
+                                VK_MARKET_UPLOAD_ATTEMPTS,
                                 getattr(exc, "code", None),
+                                type(exc).__name__,
+                                str(exc)[:200],
+                                delay,
                             )
-                            await asyncio.sleep(attempt * 2)
+                            await asyncio.sleep(delay)
 
                     # Удаляем временный файл
                     if os.path.exists(temp_file):
@@ -556,13 +596,17 @@ class VKProductPublisher:
                 f.write(video_data)
 
             # Загружаем видео на сервер ВК
-            for attempt in range(1, 4):
+            for attempt in range(1, VK_MARKET_UPLOAD_ATTEMPTS + 1):
                 await self._wait_for_api_interval()
                 try:
-                    upload_result = await asyncio.to_thread(
-                        self._upload_product_video_sync,
-                        temp_file,
-                        post.name or "Product video",
+                    upload_result = await self._await_vk_step(
+                        "video",
+                        asyncio.to_thread(
+                            self._upload_product_video_sync,
+                            temp_file,
+                            post.name or "Product video",
+                        ),
+                        90.0,
                     )
                     video_id = upload_result.get('video_id')
                     if not video_id:
@@ -572,14 +616,19 @@ class VKProductPublisher:
                     )
                     return video_id
                 except Exception as exc:
-                    if attempt >= 3 or not self._is_retryable_upload_error(exc):
+                    if attempt >= VK_MARKET_UPLOAD_ATTEMPTS or not self._is_retryable_upload_error(exc):
                         raise
+                    delay = vk_upload_backoff_seconds(attempt, exc)
                     logger.warning(
-                        "VK Market video upload failed (attempt %s/3, code=%s), retrying",
+                        "VK Market video upload failed (attempt %s/%s, code=%s, type=%s): %s; retry in %ss",
                         attempt,
+                        VK_MARKET_UPLOAD_ATTEMPTS,
                         getattr(exc, "code", None),
+                        type(exc).__name__,
+                        str(exc)[:200],
+                        delay,
                     )
-                    await asyncio.sleep(attempt * 2)
+                    await asyncio.sleep(delay)
 
         except Exception as e:
             logger.error(f"Error processing product video {video_file_id}: {str(e)}")

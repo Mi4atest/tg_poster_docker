@@ -206,7 +206,7 @@ class InstagramGraphPublisher:
             preflight_ok, preflight_error = await self.token_manager.preflight_or_error()
             if not preflight_ok:
                 reason = f"Preflight Graph token failed: {preflight_error}"
-                self._log_error(db, post_id, reason)
+                self._log_error_safe(post_id, reason)
                 await send_admin_alert(f"Instagram публикация остановлена: {preflight_error}")
                 logger.error(reason)
                 return False
@@ -233,7 +233,7 @@ class InstagramGraphPublisher:
                 media_candidates.append((source_name, source_items))
 
             if not media_candidates:
-                self._log_error(db, post_id, "Нет доступных медиафайлов для Graph API")
+                self._log_error_safe(post_id, "Нет доступных медиафайлов для Graph API")
                 return False
 
             creation_id = None
@@ -269,7 +269,7 @@ class InstagramGraphPublisher:
                 if self._last_graph_error_code == 190:
                     details = f"OAuthException code 190: {details}"
                     await send_admin_alert(f"Instagram OAuthException (code 190) при создании media: {details}")
-                self._log_error(db, post_id, f"Graph API ошибка: {details}")
+                self._log_error_safe(post_id, f"Graph API ошибка: {details}")
                 return False
 
             logger.info(
@@ -290,7 +290,7 @@ class InstagramGraphPublisher:
 
             published_media_id = self._last_published_media_id
             if not published_media_id:
-                self._log_error(db, post_id, "Graph API не вернул ID опубликованного медиа")
+                self._log_error_safe(post_id, "Graph API не вернул ID опубликованного медиа")
                 return False
 
             graph_client = InstagramGraphClient()

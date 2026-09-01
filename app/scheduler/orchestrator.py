@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from app.config import settings as env_settings
 from app.scheduler.queue_manager import QueueManager
 from app.scheduler.platform_worker import PlatformWorker
+from app.scheduler.publish_stagger import PublishStagger
 from app.scheduler.avito_archive_worker import AvitoArchiveWorker
 from app.scheduler.market_watchlist_worker import MarketWatchlistWorker
 from app.services.settings_service import get_settings_service
@@ -25,6 +26,7 @@ class PublicationOrchestrator:
         """
         self.queue_manager = QueueManager()
         self.signature_enabled = signature_enabled
+        self.publish_stagger = PublishStagger()
         self.workers: Dict[str, PlatformWorker] = {}
         self.worker_tasks: Dict[str, asyncio.Task] = {}
         self.maintenance_tasks: Dict[str, asyncio.Task] = {}

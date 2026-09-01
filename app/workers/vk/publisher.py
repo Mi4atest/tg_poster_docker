@@ -22,6 +22,10 @@ from app.db.post_queries import (
     mark_post_published_vk,
 )
 from app.utils.text_formatter import format_for_vk
+from app.workers.vk.upload_retry import (
+    VK_WALL_UPLOAD_ATTEMPTS,
+    vk_upload_backoff_seconds,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -222,20 +226,24 @@ class VKPublisher:
                     hash=response["hash"],
                 )
 
-    async def _upload_photo_with_retry(self, temp_file: str, attempts: int = 3):
+    async def _upload_photo_with_retry(
+        self, temp_file: str, attempts: int = VK_WALL_UPLOAD_ATTEMPTS
+    ):
         for attempt in range(1, attempts + 1):
             try:
                 return await asyncio.to_thread(self._upload_photo_sync, temp_file)
             except Exception as exc:
                 if attempt >= attempts or not self._is_retryable_upload_error(exc):
                     raise
+                delay = vk_upload_backoff_seconds(attempt, exc)
                 logger.warning(
-                    "VK wall photo upload failed (attempt %s/%s, code=%s), retrying",
+                    "VK wall photo upload failed (attempt %s/%s, code=%s), retrying in %ss",
                     attempt,
                     attempts,
                     getattr(exc, "code", None),
+                    delay,
                 )
-                await asyncio.sleep(attempt * 2)
+                await asyncio.sleep(delay)
 
     def _upload_video_sync(self, temp_file: str, name: str, description: str):
         return self.upload.video(
@@ -246,7 +254,11 @@ class VKPublisher:
         )
 
     async def _upload_video_with_retry(
-        self, temp_file: str, name: str, description: str, attempts: int = 3
+        self,
+        temp_file: str,
+        name: str,
+        description: str,
+        attempts: int = VK_WALL_UPLOAD_ATTEMPTS,
     ):
         for attempt in range(1, attempts + 1):
             try:
@@ -256,13 +268,15 @@ class VKPublisher:
             except Exception as exc:
                 if attempt >= attempts or not self._is_retryable_upload_error(exc):
                     raise
+                delay = vk_upload_backoff_seconds(attempt, exc)
                 logger.warning(
-                    "VK wall video upload failed (attempt %s/%s, code=%s), retrying",
+                    "VK wall video upload failed (attempt %s/%s, code=%s), retrying in %ss",
                     attempt,
                     attempts,
                     getattr(exc, "code", None),
+                    delay,
                 )
-                await asyncio.sleep(attempt * 2)
+                await asyncio.sleep(delay)
 
     def _wall_post_sync(self, text: str, attachments: str):
         return self.vk.wall.post(

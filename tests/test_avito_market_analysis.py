@@ -96,6 +96,54 @@ def test_parse_live_shaped_json_payload():
     assert listing.description == "Телефон в хорошем состоянии"
 
 
+def test_parse_condition_from_nested_iva_and_is_new_flag():
+    nested = parse_market_search_payload(
+        {
+            "items": [
+                {
+                    "id": 1,
+                    "title": "iPhone 17 Pro Max, 256 ГБ, 1 SIM",
+                    "priceDetailed": {"value": 126_500},
+                    "urlPath": "/moskva/telefony/1",
+                    "iva": {
+                        "ParamsStep": [
+                            {"title": "Состояние", "description": "Новое"},
+                        ]
+                    },
+                }
+            ]
+        }
+    )[0]
+    assert nested.condition == "Новое"
+    flagged = parse_market_search_payload(
+        {
+            "items": [
+                {
+                    "id": 2,
+                    "title": "iPhone 17 Pro Max, 256 ГБ",
+                    "price": 130_000,
+                    "isNew": True,
+                    "condition": {"name": "Новое"},
+                    "urlPath": "/moskva/telefony/2",
+                }
+            ]
+        }
+    )[0]
+    assert flagged.condition == "Новое"
+
+
+def test_analysis_rejects_catalog_new_1_sim_title():
+    query = parse_iphone_market_query("17 pro max 256")
+    listings = [
+        MarketListing("used", "iPhone 17 Pro Max, 256 ГБ, eSIM", 90_000, condition="Б/у"),
+        MarketListing("shop-new", "iPhone 17 Pro Max, 256 ГБ, 1 SIM", 126_500),
+    ]
+    result = analyze_market_listings(listings, query)
+    by_id = {item.item_id: item for item in result.audited_listings}
+    assert by_id["shop-new"].rejection_reason == "new"
+    assert by_id["used"].included is True
+
+
 def test_parse_json_payload_detects_firewall_status():
     with pytest.raises(AvitoMarketBlockedError):
         parse_market_search_payload(

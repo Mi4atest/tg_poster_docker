@@ -268,17 +268,48 @@ async def watchlist_run(callback: CallbackQuery):
         hint = "\n\nПоказан сохранённый результат — живой запрос не требовался."
     elif outcome == "stale":
         hint = "\n\nAvito не пустил свежий запрос, показан прошлый отчёт. Фон автообновления на паузе."
-    await callback.message.edit_text(
+    text = (
         format_market_estimate(
             estimate,
             shop_range=await load_shop_price_range(estimate.query),
             daily_points=await load_market_daily_points(estimate.query),
         )
-        + hint,
-        parse_mode=ParseMode.HTML,
-        reply_markup=_result_keyboard(history_page=0),
-        disable_web_page_preview=True,
+        + hint
     )
+    try:
+        await callback.message.edit_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=_result_keyboard(history_page=0),
+            disable_web_page_preview=True,
+        )
+    except Exception as exc:
+        from aiogram.exceptions import TelegramBadRequest
+
+        lowered = str(exc).upper()
+        if isinstance(exc, TelegramBadRequest) and (
+            "ENTITIES_TOO_LONG" in lowered or "MESSAGE_TOO_LONG" in lowered
+        ):
+            fallback = (
+                format_market_estimate(
+                    estimate,
+                    shop_range=await load_shop_price_range(estimate.query),
+                    daily_points=await load_market_daily_points(estimate.query),
+                    include_listings=False,
+                )
+                + hint
+            )
+            try:
+                await callback.message.edit_text(
+                    fallback,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=_result_keyboard(history_page=0),
+                    disable_web_page_preview=True,
+                )
+            except Exception:
+                return
+            return
+        return
 
 
 async def _show_import(callback: CallbackQuery, state: FSMContext, *, page: int | None = None) -> None:

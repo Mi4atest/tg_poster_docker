@@ -81,7 +81,12 @@ def _looks_used(listing: MarketListing) -> bool:
             return True
         if any(word in condition for word in ("нов", "new")):
             return False
-    if re.search(r"\b(?:новый|новая|новое|запечатан\w*)\b", text):
+    if re.search(r"\b(?:новый|новая|новое|запечатан\w*|не\s+активир\w*)\b", text):
+        return False
+    if re.search(r"\bв\s+пл[её]нке\b", text):
+        return False
+    # Каталожные карточки новых iPhone на Avito часто заканчиваются «, 1 SIM».
+    if re.search(r",\s*1\s*SIM\s*$", listing.title, re.IGNORECASE):
         return False
     return True
 

@@ -219,23 +219,49 @@ def _seller_type(data: dict[str, Any]) -> Optional[str]:
     return None
 
 
+def _condition_from_mapping(node: dict[str, Any]) -> Optional[str]:
+    name = _first_text(node, ("name", "title", "label")).lower()
+    value = _first_text(node, ("value", "description", "text"))
+    if value and ("состояни" in name or "condition" in name):
+        return value
+    return None
+
+
+def _walk_condition(value: Any) -> Optional[str]:
+    if isinstance(value, dict):
+        found = _condition_from_mapping(value)
+        if found:
+            return found
+        for child in value.values():
+            found = _walk_condition(child)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = _walk_condition(child)
+            if found:
+                return found
+    elif isinstance(value, str) and "состояни" in value.lower():
+        match = re.search(r"состояни[ея]\s*[:\n]\s*([^\n,;]+)", value, re.I)
+        if match:
+            return match.group(1).strip()
+    return None
+
+
 def _condition(data: dict[str, Any]) -> Optional[str]:
-    direct = _first_text(data, ("condition", "state"))
-    if direct:
-        return direct
-    iva = data.get("iva")
-    if isinstance(iva, dict):
-        iva = iva.get("items") or iva.get("values")
-    if isinstance(iva, list):
-        for item in iva:
-            if not isinstance(item, dict):
-                continue
-            name = _first_text(item, ("name", "title", "label")).lower()
-            if "состояни" not in name and "condition" not in name:
-                continue
-            value = _first_text(item, ("value", "description", "text"))
-            if value:
-                return value
+    if data.get("isNew") is True or data.get("is_new") is True:
+        return "Новое"
+    raw = data.get("condition") if data.get("condition") is not None else data.get("state")
+    if isinstance(raw, str) and raw.strip():
+        return html.unescape(raw.strip())
+    if isinstance(raw, dict):
+        nested = _first_text(raw, ("name", "title", "value", "label"))
+        if nested:
+            return nested
+    for key in ("iva", "params", "itemParams", "attributes"):
+        found = _walk_condition(data.get(key))
+        if found:
+            return found
     return None
 
 

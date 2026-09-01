@@ -30,6 +30,7 @@ from app.db.avito_market_queries import (
     record_live_request,
     record_market_daily_gap,
     record_market_error,
+    refresh_snapshot_filters,
     save_market_snapshot,
 )
 from app.db.database import run_db
@@ -90,6 +91,8 @@ class MarketPriceEstimate:
     quote_as_of: Optional[datetime] = None
     quote_quality: Optional[str] = None
     quote_carried: bool = False
+    last_error: Optional[str] = None
+    last_error_at: Optional[datetime] = None
 
 
 ListingFetcher = Callable[[IphoneMarketQuery], Awaitable[list[MarketListing]]]
@@ -195,6 +198,10 @@ class IphoneMarketPriceService:
                 used_count=int(snapshot.get("used_count") or 0),
                 has_summary=summary is not None,
             ),
+            last_error=str(snapshot.get("last_error") or "") or None,
+            last_error_at=snapshot.get("last_error_at")
+            if isinstance(snapshot.get("last_error_at"), datetime)
+            else None,
         )
 
     @staticmethod
@@ -510,7 +517,9 @@ class IphoneMarketPriceService:
 
     async def get_cached_report(self, snapshot_id: int) -> MarketPriceEstimate:
         """Открыть сохранённый отчёт без запроса к Avito."""
-        snapshot = await run_db(get_market_snapshot_by_id, int(snapshot_id))
+        snapshot = await run_db(refresh_snapshot_filters, int(snapshot_id))
+        if not snapshot:
+            snapshot = await run_db(get_market_snapshot_by_id, int(snapshot_id))
         if not snapshot or snapshot.get("status") != "success" or not snapshot.get("fetched_at"):
             raise MarketTemporarilyUnavailable("Сохранённый отчёт не найден.")
         query = IphoneMarketQuery(

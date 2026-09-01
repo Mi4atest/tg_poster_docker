@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 from aiogram import F, Router
 from aiogram.enums import ChatAction, ParseMode
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -46,6 +47,8 @@ router = Router()
 
 _MSK = ZoneInfo("Europe/Moscow")
 _MAX_LIST_LINES = 40
+_MAX_REJECTED_LINES = 8
+_TG_ENTITY_BUDGET = 50
 _HISTORY_PER_PAGE = 10
 _HISTORY_RECENT = 3
 _COL_MODEL = 12
@@ -158,6 +161,26 @@ def sort_market_report_rows(rows: list[dict]) -> list[dict]:
             str(row.get("model") or ""),
         ),
     )
+
+
+def _report_row_rank(row: dict) -> tuple:
+    region = str(row.get("region") or "")
+    region_match = 1 if region == AVITO_MARKET_REGION else 0
+    fetched = row.get("fetched_at") or datetime.min
+    if isinstance(fetched, datetime) and fetched.tzinfo is not None:
+        fetched = fetched.replace(tzinfo=None)
+    return (region_match, fetched, int(row.get("id") or 0))
+
+
+def unique_market_report_rows(rows: list[dict]) -> list[dict]:
+    """Один отчёт на модель+память: текущий регион, иначе самый свежий."""
+    best: dict[tuple[str, int], dict] = {}
+    for row in rows:
+        key = (str(row.get("model") or ""), int(row.get("memory_gb") or 0))
+        current = best.get(key)
+        if current is None or _report_row_rank(row) > _report_row_rank(current):
+            best[key] = row
+    return sort_market_report_rows(list(best.values()))
 
 
 def _memory_label(memory: object) -> str:
@@ -404,12 +427,12 @@ def _rejection_label(reason: str | None) -> str:
     }.get(reason or "", "не подошло")
 
 
-def _listing_line(item: MarketListing, model_label: str) -> str:
-    price_bit = _rub(item.price_rub)
-    link = _avito_url(item.url)
+def _listing_line(item: MarketListing, model_label: str, *, with_link: bool = True) -> str:
+    price_bit = html.escape(_rub(item.price_rub))
+    link = _avito_url(item.url) if with_link else ""
     if link:
         safe_href = html.escape(link, quote=True)
-        price_bit = f'<a href="{safe_href}">{html.escape(price_bit)}</a>'
+        price_bit = f'<a href="{safe_href}">{price_bit}</a>'
     title = _compact_listing_title(item.title, model_label)
     if len(title) > 58:
         title = title[:57].rstrip() + "…"
@@ -423,36 +446,78 @@ def _listing_line(item: MarketListing, model_label: str) -> str:
     if seller:
         chunks.append(seller)
     line = " · ".join(chunks)
-    if item.included is True:
-        return f"<b>{line}</b>"
     if item.included is False:
-        return f"{line} · <i>{html.escape(_rejection_label(item.rejection_reason))}</i>"
+        return f"{line} · {html.escape(_rejection_label(item.rejection_reason))}"
     return line
 
 
-def _expandable_listings(title: str, items: list[MarketListing], model_label: str) -> str:
-    rows = sorted(items, key=lambda item: item.price_rub)[:_MAX_LIST_LINES]
-    body = "\n".join(_listing_line(item, model_label) for item in rows)
-    more = ""
-    if len(items) > _MAX_LIST_LINES:
-        more = f"\n… и ещё {len(items) - _MAX_LIST_LINES}"
+def _html_entity_count(text: str) -> int:
     return (
-        f"\n{title}, нажмите чтобы раскрыть:\n"
-        f"<blockquote expandable>{body}{more}</blockquote>"
+        text.count("<a ")
+        + text.count("<b>")
+        + text.count("<i>")
+        + text.count("<blockquote")
+        + text.count("<code>")
     )
 
 
-def _listings_block(estimate: MarketPriceEstimate) -> str:
+def _expandable_listings(
+    title: str,
+    items: list[MarketListing],
+    model_label: str,
+    *,
+    skipped: int = 0,
+    link_budget: int = 0,
+) -> tuple[str, int]:
+    remaining = max(0, int(link_budget))
+    rows = sorted(items, key=lambda item: item.price_rub)
+    lines: list[str] = []
+    for item in rows:
+        with_link = remaining > 0 and bool(_avito_url(item.url))
+        lines.append(_listing_line(item, model_label, with_link=with_link))
+        if with_link:
+            remaining -= 1
+    body = "\n".join(lines)
+    more = f"\n… и ещё {skipped}" if skipped > 0 else ""
+    html_block = (
+        f"\n{title}, нажмите чтобы раскрыть:\n"
+        f"<blockquote expandable>{body}{more}</blockquote>"
+    )
+    return html_block, remaining
+
+
+def _listings_block(estimate: MarketPriceEstimate, *, max_entities: int = 40) -> str:
+    """Учтённые забирают ссылки первыми; остаток лимита — в отсеянные."""
     if not estimate.listings:
         return ""
-    model_label = _short_model_name(estimate.query.display_name)
     included = [item for item in estimate.listings if item.included is not False]
     rejected = [item for item in estimate.listings if item.included is False]
+    model_label = _short_model_name(estimate.query.display_name)
+    extra_bq = (1 if included else 0) + (1 if rejected else 0)
+    remaining = max(0, int(max_entities) - extra_bq)
     parts: list[str] = []
     if included:
-        parts.append(_expandable_listings("📋 Учтённые объявления", included, model_label))
+        shown = sorted(included, key=lambda item: item.price_rub)[:_MAX_LIST_LINES]
+        skipped = max(0, len(included) - len(shown))
+        block, remaining = _expandable_listings(
+            "📋 Учтённые объявления",
+            shown,
+            model_label,
+            skipped=skipped,
+            link_budget=remaining,
+        )
+        parts.append(block)
     if rejected:
-        parts.append(_expandable_listings("📋 Отсеянные объявления", rejected, model_label))
+        shown = sorted(rejected, key=lambda item: item.price_rub)[:_MAX_REJECTED_LINES]
+        skipped = max(0, len(rejected) - len(shown))
+        block, remaining = _expandable_listings(
+            "📋 Отсеянные объявления",
+            shown,
+            model_label,
+            skipped=skipped,
+            link_budget=remaining,
+        )
+        parts.append(block)
     return "".join(parts)
 
 
@@ -473,6 +538,8 @@ def format_market_estimate(
     estimate: MarketPriceEstimate,
     shop_range: ShopPriceRange | None = None,
     daily_points: list | None = None,
+    *,
+    include_listings: bool = True,
 ) -> str:
     lines = [
         f"📊 <b>{html.escape(estimate.query.display_name)}, б/у</b>",
@@ -533,14 +600,30 @@ def format_market_estimate(
             ]
         )
         if rejected:
-            lines.append(f"Отсеяно фильтром: {rejected}.")
-        lines.append("Попробуйте позже или другую модель/память.")
+            lines.append(
+                f"Отсеяно фильтром: {rejected} — что пришло в выдаче, ниже в свёрнутом списке."
+            )
+        else:
+            lines.append("Попробуйте позже или другую модель/память.")
 
     seller_counts = _seller_counts_line(estimate)
     if seller_counts:
         lines.extend(["", seller_counts])
     lines.extend(["", f"Данные: {_fmt_msk(estimate.fetched_at)} (МСК)"])
-    if estimate.is_stale:
+    error_at = estimate.last_error_at
+    fetched = estimate.fetched_at
+    if (
+        error_at
+        and fetched
+        and error_at > fetched
+        and (estimate.last_error or "").strip()
+    ):
+        lines.append(
+            "⚠️ Живой запрос "
+            f"{_fmt_msk_short(error_at)} не дал новую выборку. "
+            f"{html.escape(estimate.last_error or '')}"
+        )
+    elif estimate.is_stale:
         reason = html.escape(
             estimate.stale_reason
             or estimate.limit_hint
@@ -552,7 +635,9 @@ def format_market_estimate(
 
     text = "\n".join(lines)
     text += format_market_daily_html(daily_points or [])
-    text += _listings_block(estimate)
+    if include_listings:
+        remain = max(8, _TG_ENTITY_BUDGET - _html_entity_count(text) - 4)
+        text += _listings_block(estimate, max_entities=remain)
     text += "\n\nМожно отправить следующий запрос или открыть последние отчёты."
     return text
 
@@ -614,7 +699,7 @@ async def avito_market_cancel(callback: CallbackQuery, state: FSMContext):
 
 
 async def _show_history(callback: CallbackQuery, *, page: int = 0) -> None:
-    rows = sort_market_report_rows(
+    rows = unique_market_report_rows(
         await get_iphone_market_price_service().list_recent_reports()
     )
     if not rows:
@@ -694,18 +779,52 @@ async def avito_market_open(callback: CallbackQuery, state: FSMContext):
         logger.exception("Failed to open cached market report")
         await callback.answer("Не удалось открыть отчёт", show_alert=True)
         return
-    await callback.message.edit_text(
-        format_market_estimate(
-            estimate,
-            shop_range=await load_shop_price_range(estimate.query),
-            daily_points=await load_market_daily_points(estimate.query),
-        ),
-        parse_mode=ParseMode.HTML,
-        reply_markup=_result_keyboard(
-            history_page=history_page if history_page is not None else 0
-        ),
-        disable_web_page_preview=True,
+    text = format_market_estimate(
+        estimate,
+        shop_range=await load_shop_price_range(estimate.query),
+        daily_points=await load_market_daily_points(estimate.query),
     )
+    markup = _result_keyboard(
+        history_page=history_page if history_page is not None else 0
+    )
+    try:
+        await callback.message.edit_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=markup,
+            disable_web_page_preview=True,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Avito market open failed snapshot=%s text_len=%s: %s",
+            snapshot_id,
+            len(text),
+            exc,
+        )
+        lowered = str(exc).upper()
+        if isinstance(exc, TelegramBadRequest) and (
+            "ENTITIES_TOO_LONG" in lowered or "MESSAGE_TOO_LONG" in lowered
+        ):
+            fallback = format_market_estimate(
+                estimate,
+                shop_range=await load_shop_price_range(estimate.query),
+                daily_points=await load_market_daily_points(estimate.query),
+                include_listings=False,
+            )
+            try:
+                await callback.message.edit_text(
+                    fallback,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=markup,
+                    disable_web_page_preview=True,
+                )
+            except Exception:
+                await callback.answer("Не удалось открыть отчёт", show_alert=True)
+                return
+            await callback.answer()
+            return
+        await callback.answer("Не удалось открыть отчёт", show_alert=True)
+        return
     await callback.answer()
 
 

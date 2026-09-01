@@ -5,10 +5,12 @@ from app.bot.handlers.iphone_market_price import (
     _compact_listing_title,
     _history_keyboard,
     _history_text,
+    _html_entity_count,
     _listing_line,
     _result_keyboard,
     format_market_estimate,
     sort_market_report_rows,
+    unique_market_report_rows,
 )
 from app.db.avito_market_watchlist_queries import ShopPriceRange
 from app.integrations.avito.market_search import MarketListing
@@ -368,6 +370,7 @@ def test_listing_line_and_saved_report_drop_iphone_prefix():
                 "1",
                 "iPhone 11 Pro, 64 ГБ, 1 SIM",
                 3_000,
+                url="/moskva/telefony/case_1",
                 included=False,
                 rejection_reason="material_defect",
             ),
@@ -395,19 +398,20 @@ def test_listing_line_and_saved_report_drop_iphone_prefix():
         ),
     )
     text = format_market_estimate(estimate)
+    assert "Учтённые объявления" in text
+    assert "Отсеянные объявления" in text
     included_at = text.index("Учтённые объявления")
     rejected_at = text.index("Отсеянные объявления")
-    assert included_at < rejected_at
     included_block = text[included_at:rejected_at]
     rejected_block = text[rejected_at:]
     assert "7 990 ₽" in included_block
     assert "11 Pro, 64 ГБ, SIM + eSIM" in included_block
-    assert "3 000 ₽" not in included_block
+    assert "3 000 ₽" in rejected_block
     assert "Чехол для iPhone 11 Pro" in rejected_block
-    assert "11 Pro, 64 ГБ, 1 SIM" in rejected_block
-    assert "11 Pro Max, 64 ГБ, SIM + eSIM" in rejected_block
+    assert 'href="https://www.avito.ru/moskva/telefony/case_1"' in rejected_block
+    assert rejected_block.count("<a ") >= 1
+    assert "Отсеяно:" in text
     assert "iPhone 11 Pro, 64 ГБ" not in text
-    assert rejected_block.index("500 ₽") < rejected_block.index("3 000 ₽") < rejected_block.index("8 000 ₽")
     assert "Выдача Avito" not in text
     line = _listing_line(
         MarketListing("1", "iPhone 11 Pro, 64 ГБ, 1 SIM", 3_000),
@@ -481,3 +485,135 @@ def test_daily_history_block_in_report():
     assert "Динамика по дням" in text
     assert "8 000 ₽ · 7 200 ₽–8 900 ₽" in text
     assert "blockquote expandable" in text
+
+
+def test_unique_market_report_rows_hides_old_region_duplicate():
+    rows = unique_market_report_rows(
+        [
+            {
+                "id": 2,
+                "model": "iPhone 13 mini",
+                "memory_gb": 128,
+                "region": "Киров",
+                "median_rub": 20_000,
+                "fetched_at": datetime(2026, 8, 28, 22, 52),
+            },
+            {
+                "id": 57,
+                "model": "iPhone 13 mini",
+                "memory_gb": 128,
+                "region": "Россия",
+                "median_rub": 23_000,
+                "fetched_at": datetime(2026, 9, 1, 4, 15),
+            },
+            {
+                "id": 3,
+                "model": "iPhone 15 Pro Max",
+                "memory_gb": 256,
+                "region": "Киров",
+                "median_rub": 70_000,
+                "fetched_at": datetime(2026, 8, 28, 22, 54),
+            },
+        ]
+    )
+    ids = [row["id"] for row in rows]
+    assert 57 in ids
+    assert 2 not in ids
+    assert 3 in ids
+
+
+def test_long_report_stays_under_telegram_entity_budget():
+    query = parse_iphone_market_query("15 128")
+    listings = tuple(
+        MarketListing(
+            str(index),
+            "iPhone 15, 128 ГБ, eSIM",
+            50_000 + index * 100,
+            url=f"/moskva/telefony/iphone_{index}",
+            included=index < 32,
+            rejection_reason=None if index < 32 else "model",
+        )
+        for index in range(50)
+    )
+    estimate = MarketPriceEstimate(
+        query=query,
+        region="Россия",
+        total_count=50,
+        matched_count=32,
+        used_count=32,
+        outlier_count=0,
+        summary=PriceSummary(32, 52_000, 50_000, 54_000),
+        private_summary=None,
+        business_summary=None,
+        fetched_at=datetime(2026, 8, 31, 23, 33),
+        listings=listings,
+    )
+    text = format_market_estimate(estimate)
+    assert _html_entity_count(text) <= 50
+    assert "<b><a " not in text
+    assert "Отсеянные объявления" in text
+    assert "Учтённые объявления" in text
+    rejected_block = text[text.index("Отсеянные объявления") :]
+    included_block = text[text.index("Учтённые объявления") : text.index("Отсеянные объявления")]
+    assert included_block.count("<a ") == 32
+    assert rejected_block.count("<a ") > 0
+    assert included_block.count("<a ") + rejected_block.count("<a ") + text[: text.index("Учтённые")].count("<a ") <= 50
+
+
+def test_empty_included_puts_link_budget_into_rejected():
+    query = parse_iphone_market_query("11 256")
+    listings = tuple(
+        MarketListing(
+            str(index),
+            "iPhone 11 Pro, 256 ГБ, eSIM",
+            18_000 + index * 100,
+            url=f"/moskva/telefony/{index}",
+            included=False,
+            rejection_reason="model",
+        )
+        for index in range(12)
+    )
+    estimate = MarketPriceEstimate(
+        query=query,
+        region="Россия",
+        total_count=12,
+        matched_count=0,
+        used_count=0,
+        outlier_count=0,
+        summary=None,
+        private_summary=None,
+        business_summary=None,
+        fetched_at=datetime(2026, 9, 1, 10, 40),
+        listings=listings,
+    )
+    text = format_market_estimate(estimate)
+    assert "Учтённые объявления" not in text
+    assert "Отсеянные объявления" in text
+    assert "0 из 12" in text
+    rejected = text[text.index("Отсеянные объявления") :]
+    assert rejected.count("<a ") == 8
+    assert "другая модель" in rejected
+    assert "… и ещё 4" in rejected
+
+
+def test_failed_live_refresh_keeps_old_data_date_and_explains():
+    query = parse_iphone_market_query("14 pro max 512")
+    estimate = MarketPriceEstimate(
+        query=query,
+        region="Россия",
+        total_count=14,
+        matched_count=14,
+        used_count=14,
+        outlier_count=0,
+        summary=PriceSummary(14, 37_450, 35_000, 40_000),
+        private_summary=None,
+        business_summary=None,
+        fetched_at=datetime(2026, 8, 29, 0, 1, 17),
+        last_error="Avito не пустил запрос — сработала защита от роботов.",
+        last_error_at=datetime(2026, 9, 1, 10, 49, 12),
+    )
+    text = format_market_estimate(estimate)
+    assert "03:01" in text
+    assert "Живой запрос" in text
+    assert "01.09.26" in text
+    assert "не дал новую выборку" in text

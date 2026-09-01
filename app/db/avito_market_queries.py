@@ -436,6 +436,70 @@ def merge_harvest_into_snapshot(
         db.close()
 
 
+def refresh_snapshot_filters(snapshot_id: int) -> Optional[dict[str, Any]]:
+    """Пересчитать фильтры по сохранённым карточкам без запроса к Avito.
+
+    fetched_at / expires_at не трогаем: это не новый поиск.
+    """
+    from app.config.settings import AVITO_MARKET_MIN_SELLER_GROUP_SIZE
+    from app.utils.market_harvest import listings_from_audit
+    from app.utils.price_stats import analyze_market_listings
+
+    db = SessionLocal()
+    try:
+        row = (
+            db.query(AvitoMarketSnapshot)
+            .filter(AvitoMarketSnapshot.id == int(snapshot_id))
+            .first()
+        )
+        if row is None or row.status != "success" or not row.fetched_at:
+            return _snapshot_dict(row) if row else None
+        query = IphoneMarketQuery(model=str(row.model), memory_gb=int(row.memory_gb))
+        listings = listings_from_audit(row.listing_audit)
+        if not listings:
+            return _snapshot_dict(row)
+        analysis = analyze_market_listings(
+            listings,
+            query,
+            min_sample_size=AVITO_MARKET_MIN_SAMPLE_SIZE,
+            min_soft_sample_size=AVITO_MARKET_SOFT_SAMPLE_SIZE,
+            min_seller_group_size=AVITO_MARKET_MIN_SELLER_GROUP_SIZE,
+        )
+        new_median = analysis.summary.median_rub if analysis.summary else None
+        if (
+            analysis.used_count == int(row.used_count or 0)
+            and analysis.total_count == int(row.total_count or 0)
+            and new_median == row.median_rub
+        ):
+            return _snapshot_dict(row)
+        quality = classify_sample_quality(
+            analysis.used_count,
+            min_sample_size=AVITO_MARKET_MIN_SAMPLE_SIZE,
+            min_soft_sample_size=AVITO_MARKET_SOFT_SAMPLE_SIZE,
+        )
+        summary = analysis.summary
+        row.total_count = analysis.total_count
+        row.matched_count = analysis.matched_count
+        row.used_count = analysis.used_count
+        row.outlier_count = analysis.outlier_count
+        if summary:
+            row.median_rub = summary.median_rub
+            row.q25_rub = summary.q25_rub
+            row.q75_rub = summary.q75_rub
+            row.quote_quality = quality
+        row.private_summary = asdict(analysis.private_summary) if analysis.private_summary else None
+        row.business_summary = asdict(analysis.business_summary) if analysis.business_summary else None
+        row.listing_audit = _listing_audit_payload(analysis)
+        db.commit()
+        db.refresh(row)
+        return _snapshot_dict(row)
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
 def record_market_error(
     cache_key: str,
     query: IphoneMarketQuery,

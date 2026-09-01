@@ -159,7 +159,10 @@ async def _show_unavailable_confirm(
         return False
     await safe_edit_message(
         callback.message,
-        format_unavailable_confirm_text(product.get("name", "Без названия")),
+        format_unavailable_confirm_text(
+            product.get("name", "Без названия"),
+            product.get("avito_url"),
+        ),
         reply_markup=get_product_status_confirmation_keyboard(
             product_id,
             "unavailable",
@@ -167,6 +170,7 @@ async def _show_unavailable_confirm(
             mark_telegram_enabled=mark_telegram_enabled,
         ),
         parse_mode="HTML",
+        disable_link_preview=True,
     )
     if answer_text:
         await callback.answer(answer_text)

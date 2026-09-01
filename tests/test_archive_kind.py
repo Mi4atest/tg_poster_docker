@@ -40,6 +40,17 @@ def test_unavailable_confirm_text():
     assert "Красная" in text
     assert "iPhone 13 Pro 128Gb" in text
     assert "переключите" not in text
+    assert "СНИМИ С АВИТО" not in text
+
+
+def test_unavailable_confirm_avito_hint():
+    text = format_unavailable_confirm_text(
+        "iPhone 14 128Gb Blue 9298",
+        "https://www.avito.ru/item/123",
+    )
+    assert "СНИМИ С АВИТО ССЫЛКА НИЖЕ" in text
+    assert "https://www.avito.ru/item/123" in text
+    assert 'href="https://www.avito.ru/item/123"' in text
 
 
 def test_unavailable_confirm_escapes_html_in_name():

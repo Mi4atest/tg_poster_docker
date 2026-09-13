@@ -3,7 +3,12 @@ from typing import Optional
 
 import vk_api
 
-from app.config.settings import VK_ACCESS_TOKEN, VK_GROUP_ID, VK_MARKET_ACCESS_TOKEN
+from app.config.settings import (
+    VK_ACCESS_TOKEN,
+    VK_APP_ID,
+    VK_GROUP_ID,
+    VK_MARKET_ACCESS_TOKEN,
+)
 from app.services.settings_service import get_settings_service
 
 
@@ -74,6 +79,15 @@ def _get_integration_value(name: str) -> str:
         return ""
 
 
+def vk_app_id() -> str:
+    """ID своего приложения VK ID: настройки (БД) -> .env -> Appleshop Poster."""
+    return (
+        _get_integration_value("vk_app_id")
+        or str(VK_APP_ID or "").strip()
+        or "54604726"
+    )
+
+
 def get_market_vk_session(api_version: str = "5.199") -> vk_api.VkApi:
     return vk_api.VkApi(token=market_token(), api_version=api_version)
 
@@ -90,3 +104,19 @@ def vk_api_error_code(exc: BaseException) -> Optional[int]:
     if isinstance(err, dict) and err.get("error_code") is not None:
         return int(err["error_code"])
     return None
+
+
+def vk_user_error_detail(exc: BaseException) -> str:
+    """Короткий текст ошибки VK для дашборда (без токена)."""
+    code = vk_api_error_code(exc)
+    msg = str(exc)
+    low = msg.lower()
+    if code == 9 or "flood" in low:
+        return "ВК: слишком много запросов (flood control)"
+    if code == 5 and "another ip" in low:
+        return "ВК: токен привязан к другому IP (нужен «доступ в любое время»)"
+    if code == 5:
+        return "ВК: токен недействителен"
+    if code == 27:
+        return "ВК: нужен user-токен с правом market, не ключ сообщества"
+    return f"ВК: {msg[:160]}"

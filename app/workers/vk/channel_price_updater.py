@@ -15,6 +15,9 @@ from app.utils.vk_channel_price_formatter import (
     build_vk_channel_price,
 )
 from app.utils.vk_client import community_token, get_community_vk_session
+from app.utils.vk_flood_gate import blocked_detail as vk_flood_detail
+from app.utils.vk_flood_gate import flood_until as vk_flood_until
+from app.utils.vk_flood_gate import note_exception as note_vk_flood
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +32,9 @@ def _edit_message_sync(
     token = community_token()
     if not token:
         return False, "VK community token не задан"
+
+    if vk_flood_until():
+        return False, vk_flood_detail()
 
     if len(message) > VK_MESSAGE_MAX_LENGTH:
         return False, f"Текст длиннее лимита VK ({len(message)} > {VK_MESSAGE_MAX_LENGTH})"
@@ -51,6 +57,7 @@ def _edit_message_sync(
             return True, f"ok peer={peer_id} cmid={cmid}"
         return False, f"messages.edit вернул {result!r}"
     except ApiError as e:
+        note_vk_flood(e, "messages.edit")
         code = getattr(e, "code", None)
         # Fallback: без format_data, если канал/API не принимает разметку
         if format_data and code in (100, 920, None):

@@ -1,6 +1,7 @@
 """Повторы загрузки медиа на стену и в маркет ВК: попытки и паузы."""
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 # 6 попыток; между ними 5 пауз 5–15 с (для flood — чуть длиннее).
@@ -11,6 +12,8 @@ VK_MARKET_POST_TIMEOUT = (10, 30)
 VK_API_CALL_TIMEOUT = 25.0
 _BACKOFF_SECONDS = (5, 8, 11, 13, 15)
 _FLOOD_CODES = {6, 8, 9, 29}
+
+logger = logging.getLogger(__name__)
 
 
 def vk_upload_backoff_seconds(attempt: int, exc: Optional[BaseException] = None) -> float:
@@ -23,3 +26,8 @@ def vk_upload_backoff_seconds(attempt: int, exc: Optional[BaseException] = None)
         if code in _FLOOD_CODES or "flood" in message:
             delay = min(30.0, delay + 5.0)
     return delay
+
+
+def is_vk_flood_error(exc: BaseException) -> bool:
+    code = getattr(exc, "code", None)
+    return code in _FLOOD_CODES or "flood" in str(exc).lower()

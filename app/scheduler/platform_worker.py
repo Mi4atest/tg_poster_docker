@@ -58,6 +58,7 @@ class PlatformWorker:
         self.is_paused = False
         self.last_published_at: Optional[datetime] = None
         self.current_task: Optional[asyncio.Task] = None
+        self._vk_flood_logged = False
 
     def _is_effectively_paused(self) -> bool:
         global_paused = bool(self.orchestrator and self.orchestrator.global_pause)
@@ -143,6 +144,24 @@ class PlatformWorker:
             else:
                 error_msg = f"Failed to publish post {post_id} to {self.platform}"
                 logger.error(error_msg)
+                # #region agent log
+                if self.platform == "vk":
+                    try:
+                        from app.utils.vk_debug_log import vk_dbg, vk_token_debug_meta
+
+                        vk_dbg(
+                            "C",
+                            "platform_worker.py:publish_post_false",
+                            "VK queue publish returned False",
+                            {
+                                "post_id": post_id,
+                                "queue_item_id": queue_item_id,
+                                "token": vk_token_debug_meta(),
+                            },
+                        )
+                    except Exception:
+                        pass
+                # #endregion
                 self._handle_publish_failure(queue_item_id, post_id, error_msg)
 
             return success
@@ -150,6 +169,24 @@ class PlatformWorker:
         except Exception as e:
             error_msg = f"Error publishing post {post_id} to {self.platform}: {str(e) or type(e).__name__}"
             logger.error(error_msg)
+            # #region agent log
+            if self.platform == "vk":
+                try:
+                    from app.utils.vk_debug_log import vk_dbg, vk_exc_debug_meta, vk_token_debug_meta
+
+                    vk_dbg(
+                        "C",
+                        "platform_worker.py:publish_post",
+                        "VK queue publish exception",
+                        {
+                            "post_id": post_id,
+                            **vk_exc_debug_meta(e),
+                            "token": vk_token_debug_meta(),
+                        },
+                    )
+                except Exception:
+                    pass
+            # #endregion
             self._handle_publish_failure(queue_item_id, post_id, error_msg)
             return False
 
@@ -196,6 +233,20 @@ class PlatformWorker:
                 if self._is_effectively_paused():
                     await asyncio.sleep(1)
                     continue
+
+                if self.platform == "vk":
+                    from app.utils.vk_flood_gate import flood_until
+
+                    vk_until = flood_until()
+                    if vk_until:
+                        if not self._vk_flood_logged:
+                            logger.warning(
+                                "VK worker idle: flood cooldown until %s", vk_until.isoformat()
+                            )
+                            self._vk_flood_logged = True
+                        await asyncio.sleep(30)
+                        continue
+                    self._vk_flood_logged = False
 
                 try:
                     disabled_in_settings = not get_settings_service().is_platform_enabled(self.platform)

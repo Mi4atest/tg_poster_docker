@@ -163,21 +163,48 @@ def set_product_status(
         vk_sync = _sync_block()
         vk_product_id = row.get("vk_product_id")
         if sync_platforms and vk_product_id:
-            try:
-                from app.utils.vk_client import get_market_vk_session, resolved_vk_group_id_int
+            action = None
+            if status == "deleted":
+                action = "delete"
+            elif status == "unavailable":
+                action = "hide"
+            elif status == "active" and old_status in ("unavailable", "deleted"):
+                action = "show"
+            if action:
+                try:
+                    from app.utils.vk_market_ops import apply_or_enqueue
 
-                owner_id = -resolved_vk_group_id_int()
-                vk = get_market_vk_session().get_api()
-                if status == "deleted":
-                    vk.market.delete(owner_id=owner_id, item_id=vk_product_id)
-                elif status == "unavailable":
-                    vk.market.edit(owner_id=owner_id, item_id=vk_product_id, deleted=1)
-                elif status == "active" and old_status in ("unavailable", "deleted"):
-                    vk.market.edit(owner_id=owner_id, item_id=vk_product_id, deleted=0)
-                vk_sync = _sync_block("ok")
-            except Exception as e:
-                logger.error("Error updating product status in VK: %s", e)
-                vk_sync = _sync_block("error", str(e)[:200])
+                    ok, detail = apply_or_enqueue(
+                        product_id=int(product_id),
+                        vk_product_id=int(vk_product_id),
+                        action=action,
+                    )
+                    if ok:
+                        vk_sync = _sync_block("ok")
+                    else:
+                        vk_sync = _sync_block("pending" if "повтор сам" in detail else "error", detail)
+                except Exception as e:
+                    logger.error("Error updating product status in VK: %s", e)
+                    # #region agent log
+                    try:
+                        from app.utils.vk_debug_log import vk_dbg, vk_exc_debug_meta, vk_token_debug_meta
+
+                        vk_dbg(
+                            "B",
+                            "product_ops_service.py:set_product_status",
+                            "VK status sync failed",
+                            {
+                                "product_id": product_id,
+                                "status": status,
+                                **vk_exc_debug_meta(e),
+                                "token": vk_token_debug_meta(),
+                            },
+                            run_id="post-fix",
+                        )
+                    except Exception:
+                        pass
+                    # #endregion
+                    vk_sync = _sync_block("error", str(e)[:200])
 
         avito_sync = _sync_block()
         avito_item_id = row.get("avito_item_id")
@@ -334,6 +361,9 @@ def delete_product(product_id: int) -> bool:
                     item_id=row["vk_product_id"],
                 )
             except Exception as e:
+                from app.utils.vk_flood_gate import note_exception as note_vk_flood
+
+                note_vk_flood(e, "market.delete")
                 logger.error("Error deleting product from VK: %s", e)
         db.execute(text("DELETE FROM products WHERE id = :id"), {"id": product_id})
         db.commit()

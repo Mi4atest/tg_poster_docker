@@ -1,13 +1,14 @@
 """VK ID OAuth 2.1 (PKCE) → VK_MARKET_ACCESS_TOKEN. Legacy oauth.vk.ru для Web-приложений не работает."""
 import html
 import json
+import time
 from urllib.parse import urlencode
 
 import requests
 from fastapi import APIRouter, Query
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from app.config.settings import VK_APP_ID, VK_APP_SECRET
+from app.utils.vk_client import vk_app_id
 from app.utils.vk_pkce import generate_pkce, pop_pkce_verifier, save_pkce_state
 
 router = APIRouter()
@@ -15,6 +16,9 @@ router = APIRouter()
 REDIRECT_URI = "https://appleshop.ap43.ru/vk/oauth/callback"
 VKID_AUTHORIZE = "https://id.vk.ru/authorize"
 VKID_TOKEN = "https://id.vk.ru/oauth2/auth"
+# Права, которые нужны проекту. VK ID выдаст только разрешённые приложению —
+# фактический список смотрим в поле scope ответа на обмен кода.
+DEFAULT_SCOPE = "offline market wall photos stories groups"
 
 
 def _esc(value: object) -> str:
@@ -34,64 +38,111 @@ def _html(title: str, body: str, status: int = 200) -> HTMLResponse:
 
 
 def _exchange_vkid_code(code: str, device_id: str, state: str, verifier: str) -> dict:
+    payload = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "code_verifier": verifier,
+        "redirect_uri": REDIRECT_URI,
+        "client_id": vk_app_id(),
+        "device_id": device_id,
+        "state": state,
+    }
+    try:
+        from app.services.settings_service import get_settings_service
+
+        secret = str(get_settings_service().get_secret("vk_app_secret") or "").strip()
+        if secret:
+            payload["client_secret"] = secret
+    except Exception:
+        pass
     resp = requests.post(
         VKID_TOKEN,
-        data={
-            "grant_type": "authorization_code",
-            "code": code,
-            "code_verifier": verifier,
-            "redirect_uri": REDIRECT_URI,
-            "client_id": VK_APP_ID,
-            "device_id": device_id,
-            "state": state,
-        },
+        data=payload,
         headers={"Content-Type": "application/x-www-form-urlencoded"},
         timeout=30,
     )
     return resp.json()
 
 
+def _store_tokens(data: dict, device_id: str) -> str:
+    """Сохранить токены в секреты бота. Возвращает текст о том, что записано."""
+    from app.services.settings_service import get_settings_service
+
+    token = str(data.get("access_token") or "")
+    if not token:
+        return ""
+    service = get_settings_service()
+    service.set_secret("vk_access_token", token)
+    service.set_secret("vk_market_access_token", token)
+    saved = ["vk_access_token", "vk_market_access_token"]
+    refresh = str(data.get("refresh_token") or "")
+    if refresh:
+        service.set_secret("vk_refresh_token", refresh)
+        saved.append("vk_refresh_token")
+    expires_in = int(data.get("expires_in") or 0)
+    service.update(
+        {
+            "integrations": {
+                "vk_token_device_id": device_id,
+                "vk_token_expires_at": (
+                    int(time.time()) + expires_in if expires_in else 0
+                ),
+            }
+        }
+    )
+    try:
+        from app.services.price_sync_service import reset_vk_publisher
+
+        reset_vk_publisher()
+    except Exception:
+        pass
+    try:
+        from app.utils.vk_flood_gate import clear_flood
+
+        clear_flood("new VK ID token")
+    except Exception:
+        pass
+    return ", ".join(saved)
+
+
 @router.get("/vk/oauth/help", response_class=HTMLResponse)
 async def vk_oauth_help():
-    app_id = _esc(VK_APP_ID or "54604726")
+    app_id = _esc(vk_app_id() or "54604726")
     body = f"""
-<h1>Токен для VK Market (<code>VK_MARKET_ACCESS_TOKEN</code>)</h1>
-<p><b>Standalone на dev.vk.ru больше не создаётся</b> — приложения перенесены в
-<a href="https://id.vk.ru/about/business/go/docs/ru/vkid/latest/vk-id/connection/create-application">VK ID</a>.
-Старый <code>oauth.vk.ru</code> даёт <b>Security Error</b> — это нормально для Web-приложения.</p>
+<h1>Своё приложение VK ID — Appleshop Poster</h1>
+<p>ID приложения: <code>{app_id}</code>. Redirect URI:
+<code>{_esc(REDIRECT_URI)}</code>.</p>
+<p>Лимит 10 000 вызовов в месяц выдаётся этому приложению автоматически.
+Подтверждение профиля нужно не ради лимита, а чтобы в разделе «Доступы»
+появились пункты <b>товары</b> и <b>сообщества</b>.</p>
 
-<h2 class="err">Важно (проверено на сервере, май 2026)</h2>
-<ul>
-  <li><b>Ключ группы</b> (<code>vk1.a.*</code> из «Работа с API») → стена OK, <b>market.* — нет</b> (ошибка 27).</li>
-  <li><b>VK ID OAuth</b> (<code>vk2.a.*</code>) → <b>market.* — нет</b> (ошибки 1051/15).</li>
-  <li>Для цен и «недоступен» нужен <b>user token <code>vk1.a.*</code></b> с правом <b>market</b> (старый тип VK API).</li>
-</ul>
-
-<h2>Как получить vk1.a для маркета</h2>
+<h2>Официальный путь (без письма в поддержку)</h2>
+<p>Источник:
+<a href="https://id.vk.ru/about/faq/business/vkid/accesses/30049">FAQ VK ID: расширенные доступы</a>.</p>
 <ol>
-  <li>После разблокировки профиля — токен через проверенный способ с правом <b>market</b>
-      (не vkhost, если хотите избежать блокировок; либо напишите
-      <a href="mailto:devsupport@corp.vk.ru">devsupport@corp.vk.ru</a> — как серверу получить vk1.a для app {app_id}).</li>
-  <li>В <code>.env</code> одна строка, <b>без дубля</b>:
-    <code>VK_MARKET_ACCESS_TOKEN=vk1.a.XXXX</code> (не <code>VK_MARKET_ACCESS_TOKEN=VK_MARKET_ACCESS_TOKEN=...</code>).</li>
-  <li><code>VK_ACCESS_TOKEN</code> — отдельно ключ из группы.</li>
+  <li>Подтвердите профиль через VK Бизнес ID (резидент РФ).</li>
+  <li>В настройках приложения откройте «Доступы». Кроме ФИО / почты / телефона
+      должны появиться <b>товары</b> и <b>сообщества</b>.</li>
+  <li>Включите оба пункта — откроется окно обоснования. Это модерация
+      в кабинете, ответ обещают за 3 рабочих дня.</li>
+  <li>Когда доступы одобрят — снова
+      <a href="/vk/oauth/vkid/start">войдите через VK ID</a>.
+      Если в отчёте будет <code>market</code>, бот сам сохранит токен.</li>
 </ol>
-<p><a href="/vk/oauth/vkid/start">VK ID OAuth (даёт vk2.a — для маркета обычно не подходит)</a></p>
+<p>Письмо на <a href="mailto:devsupport@corp.vk.com">devsupport@corp.vk.com</a>
+имеет смысл только если профиль уже подтверждён, а пунктов «товары» /
+«сообщества» в кабинете всё равно нет.</p>
 
-<h2>Два токена в .env</h2>
-<ul>
-  <li><code>VK_ACCESS_TOKEN</code> — ключ сообщества (посты на стену).</li>
-  <li><code>VK_MARKET_ACCESS_TOKEN</code> — user <code>vk1.a.*</code> + market (цены, скрытие товара).</li>
-</ul>
-<p>Проверка: <code>docker-compose exec app python -m app.scripts.verify_vk_tokens</code></p>
+<p><a href="/vk/oauth/vkid/start"><b>Войти через VK ID и получить токен</b></a></p>
 """
-    return _html("VK Market token", body)
+    return _html("VK ID — своё приложение", body)
 
 
 @router.get("/vk/oauth/vkid/start")
-async def vk_oauth_vkid_start():
+async def vk_oauth_vkid_start(scope: str | None = Query(None)):
     """Старт VK ID OAuth с PKCE → id.vk.ru/authorize."""
-    if not VK_APP_ID or VK_APP_ID == "your_vk_app_id":
+    app_id = vk_app_id()
+    if not app_id:
         return RedirectResponse("/vk/oauth/help", status_code=302)
 
     verifier, challenge, state = generate_pkce()
@@ -99,12 +150,12 @@ async def vk_oauth_vkid_start():
 
     params = {
         "response_type": "code",
-        "client_id": VK_APP_ID,
+        "client_id": app_id,
         "redirect_uri": REDIRECT_URI,
         "state": state,
         "code_challenge": challenge,
         "code_challenge_method": "S256",
-        "scope": "vkid.personal_info",
+        "scope": (scope or DEFAULT_SCOPE).strip(),
     }
     url = f"{VKID_AUTHORIZE}?{urlencode(params)}"
     return RedirectResponse(url, status_code=302)
@@ -147,31 +198,49 @@ async def vk_oauth_callback(
             return _html("VK ID", f"<p class='err'>Ошибка запроса: {_esc(e)}</p>", 502)
 
         if "access_token" in data:
-            token = data["access_token"]
-            refresh = data.get("refresh_token", "")
-            vk2_warn = ""
-            if str(token).startswith("vk2.a."):
-                vk2_warn = (
-                    '<p class="err"><b>Внимание:</b> токен <code>vk2.a.*</code> (VK ID) '
-                    "<b>не работает</b> с <code>market.edit</code> / ценами в боте (ошибки 1051/15). "
-                    "Для VK Market нужен <b>vk1.a.*</b> user token с правом market — см. инструкцию ниже.</p>"
-                )
+            token = str(data["access_token"])
+            granted = str(data.get("scope") or "")
+            granted_set = set(granted.split())
+            needed = {"market", "wall", "photos", "stories", "groups", "offline"}
+            missing = sorted(needed - granted_set)
+            can_replace = "market" in granted_set
+            saved = _store_tokens(data, device_id) if can_replace else ""
+            keep_note = (
+                ""
+                if can_replace
+                else "<p class='err'>Токен в боте <b>не заменял</b>: у нового нет "
+                "права market, а текущий токен vk.com уже умеет менять цены. "
+                "Когда поддержка включит market — войдите ещё раз.</p>"
+            )
+            verdict = (
+                f'<p class="err"><b>VK не выдал права:</b> {_esc(", ".join(missing))}. '
+                "Их включают по заявке в "
+                "devsupport@corp.vk.com — подтверждать профиль бизнеса для "
+                "лимита 10 000 не нужно.</p>"
+                if missing
+                else '<p class="ok"><b>Все нужные права выданы, токен записан в бота.</b></p>'
+            )
+            probe = ""
+            try:
+                from app.utils.vk_token_check import check_vk_token
+
+                probe = check_vk_token(token)
+            except Exception as exc:
+                probe = f"Проверка не удалась: {exc}"
             body = f"""
 <h1 class="ok">Токен VK ID получен</h1>
-{vk2_warn}
-<p>Если токен <code>vk1.a.*</code> — в <code>.env</code> (только значение, без префикса имени переменной):</p>
-<pre>VK_MARKET_ACCESS_TOKEN={_esc(token)}</pre>
-<p>Затем: <code>docker-compose restart app</code> и
-<code>python -m app.scripts.verify_vk_tokens</code></p>
-<p>scope: {_esc(data.get('scope', ''))} | expires_in: {_esc(data.get('expires_in', ''))} | user_id: {_esc(data.get('user_id', ''))}</p>
-<p><a href="/vk/oauth/help">Как получить vk1.a для маркета</a></p>
+{verdict}
+<p><b>Выданные права:</b> <code>{_esc(granted or '—')}</code></p>
+<p>Тип токена: <code>{_esc(token[:6])}…</code> |
+expires_in: {_esc(data.get('expires_in', ''))} сек |
+user_id: {_esc(data.get('user_id', ''))}</p>
+{keep_note}
+<p>Сохранено в секреты бота: <code>{_esc(saved or 'не сохраняли — нет market')}</code>.</p>
+<p>{"Есть refresh_token — бот сможет продлевать сессию без повторного входа."
+    if data.get("refresh_token") else "refresh_token не выдан: когда токен истечёт, войдите ещё раз."}</p>
+<pre>{_esc(probe)}</pre>
+<p><a href="/vk/oauth/help">К инструкции</a></p>
 """
-            if refresh:
-                body += (
-                    "<p>Refresh token (сохраните отдельно для продления):<br>"
-                    f"<textarea readonly>{_esc(refresh)}</textarea></p>"
-                )
-            body += "<p><a href='/vk/oauth/help'>Инструкция</a></p>"
             return _html("VK — токен", body)
 
         return _html(

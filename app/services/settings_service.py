@@ -150,6 +150,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     },
     "integrations": {
         "vk_group_id": str(getattr(env_settings, "VK_GROUP_ID", "") or ""),
+        "vk_app_id": str(getattr(env_settings, "VK_APP_ID", "") or "") or "54604726",
         "instagram_graph_access_token": "",
         "instagram_graph_app_id": getattr(env_settings, "INSTAGRAM_GRAPH_APP_ID", "") or "",
         "instagram_graph_app_secret": getattr(env_settings, "INSTAGRAM_GRAPH_APP_SECRET", "") or "",

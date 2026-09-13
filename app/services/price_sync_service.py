@@ -83,6 +83,12 @@ def _get_vk_publisher():
     return _vk_publisher_singleton
 
 
+def reset_vk_publisher() -> None:
+    """Сбросить кэш сессии VK после смены токена в настройках."""
+    global _vk_publisher_singleton
+    _vk_publisher_singleton = None
+
+
 @dataclass
 class ChatDashboard:
     message_id: Optional[int] = None
@@ -301,13 +307,42 @@ class PriceSyncService:
 
         if product_dict.get("vk_product_id"):
             try:
-                publisher = _get_vk_publisher()
-                pr.vk = await publisher.update_product_price(
-                    int(product_dict["vk_product_id"]), job.price_value
+                from app.utils.vk_market_ops import apply_or_enqueue
+
+                ok, detail = await asyncio.to_thread(
+                    apply_or_enqueue,
+                    product_id=int(job.product_id),
+                    vk_product_id=int(product_dict["vk_product_id"]),
+                    action="price",
+                    payload={"price": int(job.price_value)},
                 )
+                pr.vk = ok
+                if not ok:
+                    pr.detail = detail
             except Exception as e:
                 logger.error("VK price sync failed product_id=%s: %s", job.product_id, e)
+                # #region agent log
+                try:
+                    from app.utils.vk_debug_log import vk_dbg, vk_exc_debug_meta, vk_token_debug_meta
+
+                    vk_dbg(
+                        "A",
+                        "price_sync_service.py:_process_price_job",
+                        "VK price sync failed",
+                        {
+                            "product_id": job.product_id,
+                            **vk_exc_debug_meta(e),
+                            "token": vk_token_debug_meta(),
+                        },
+                        run_id="post-fix",
+                    )
+                except Exception:
+                    pass
+                # #endregion
+                from app.utils.vk_client import vk_user_error_detail
+
                 pr.vk = False
+                pr.detail = vk_user_error_detail(e)
         else:
             pr.vk = None
 
@@ -373,20 +408,41 @@ class PriceSyncService:
 
         if product_dict.get("vk_product_id"):
             try:
-                from app.utils.vk_client import get_market_vk_session, resolved_vk_group_id_int
+                from app.utils.vk_market_ops import apply_or_enqueue
 
-                owner_id = -resolved_vk_group_id_int()
-                vk = get_market_vk_session().get_api()
-                await asyncio.to_thread(
-                    vk.market.edit,
-                    owner_id=owner_id,
-                    item_id=int(product_dict["vk_product_id"]),
-                    deleted=1,
+                ok, detail = await asyncio.to_thread(
+                    apply_or_enqueue,
+                    product_id=int(job.product_id),
+                    vk_product_id=int(product_dict["vk_product_id"]),
+                    action="hide",
                 )
-                pr.vk = True
+                pr.vk = ok
+                if not ok:
+                    pr.detail = detail
             except Exception as e:
                 logger.error("VK unavailable sync failed product_id=%s: %s", job.product_id, e)
+                # #region agent log
+                try:
+                    from app.utils.vk_debug_log import vk_dbg, vk_exc_debug_meta, vk_token_debug_meta
+
+                    vk_dbg(
+                        "B",
+                        "price_sync_service.py:_process_unavailable_job",
+                        "VK unavailable sync failed",
+                        {
+                            "product_id": job.product_id,
+                            **vk_exc_debug_meta(e),
+                            "token": vk_token_debug_meta(),
+                        },
+                        run_id="post-fix",
+                    )
+                except Exception:
+                    pass
+                # #endregion
+                from app.utils.vk_client import vk_user_error_detail
+
                 pr.vk = False
+                pr.detail = vk_user_error_detail(e)
         else:
             pr.vk = None
 

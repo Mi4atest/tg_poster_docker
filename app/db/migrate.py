@@ -158,6 +158,58 @@ def ensure_avito_feed_operations_table() -> bool:
         return False
 
 
+def ensure_vk_market_ops_table() -> bool:
+    """Отложенные hide/price в VK Market при flood."""
+    try:
+        inspector = inspect(engine)
+        if "vk_market_ops" in inspector.get_table_names():
+            return False
+        with engine.connect() as conn:
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE vk_market_ops (
+                        id SERIAL PRIMARY KEY,
+                        product_id INTEGER NOT NULL,
+                        vk_product_id INTEGER NOT NULL,
+                        action VARCHAR(16) NOT NULL,
+                        payload TEXT,
+                        status VARCHAR(32) NOT NULL DEFAULT 'pending',
+                        attempts INTEGER NOT NULL DEFAULT 0,
+                        next_retry_at TIMESTAMP,
+                        last_error TEXT,
+                        created_at TIMESTAMP,
+                        updated_at TIMESTAMP
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_vk_market_ops_status "
+                    "ON vk_market_ops (status)"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_vk_market_ops_product "
+                    "ON vk_market_ops (product_id)"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_vk_market_ops_retry "
+                    "ON vk_market_ops (next_retry_at)"
+                )
+            )
+            conn.commit()
+        logger.info("Таблица vk_market_ops создана")
+        return True
+    except Exception as e:
+        logger.error("Ошибка создания vk_market_ops: %s", e)
+        return False
+
+
 def ensure_avito_item_id_bigint() -> bool:
     """ID объявлений Авито > 2^31 — нужен BIGINT вместо INTEGER."""
     try:
@@ -709,6 +761,7 @@ def ensure_database_schema():
     ensure_post_vk_and_queue_columns_if_missing()
 
     ensure_avito_feed_operations_table()
+    ensure_vk_market_ops_table()
     ensure_avito_item_id_bigint()
 
     ensure_new_menu_constructor_columns()

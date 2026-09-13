@@ -28,6 +28,8 @@ from app.utils.vk_client import (
     get_market_vk_session,
     resolved_vk_group_id_int,
 )
+from app.utils.vk_flood_gate import note_exception as note_vk_flood
+from app.utils.vk_flood_gate import raise_if_blocked as raise_if_vk_flood_blocked
 
 from app.workers.vk.upload_retry import (
     VK_API_CALL_TIMEOUT,
@@ -207,10 +209,13 @@ class VKProductPublisher:
     def _is_retryable_upload_error(exc: BaseException) -> bool:
         code = getattr(exc, "code", None)
         message = str(exc).lower()
+        # Flood (9) не повторяем: повторы продлевают окно, работает стоп-кран.
+        if code == 9 or "flood control" in message:
+            return False
         return (
             isinstance(exc, requests.RequestException)
             or isinstance(exc, TimeoutError)
-            or code in {6, 8, 9, 10, 29}
+            or code in {6, 8, 10, 29}
             or (code == 100 and "photo is undefined" in message)
             or "timeout" in message
             or "timed out" in message
@@ -532,6 +537,7 @@ class VKProductPublisher:
                             uploaded = True
                             break
                         except Exception as exc:
+                            note_vk_flood(exc, "market photo upload")
                             if attempt >= VK_MARKET_UPLOAD_ATTEMPTS or not self._is_retryable_upload_error(exc):
                                 raise
                             delay = vk_upload_backoff_seconds(attempt, exc)
@@ -616,6 +622,7 @@ class VKProductPublisher:
                     )
                     return video_id
                 except Exception as exc:
+                    note_vk_flood(exc, "market video upload")
                     if attempt >= VK_MARKET_UPLOAD_ATTEMPTS or not self._is_retryable_upload_error(exc):
                         raise
                     delay = vk_upload_backoff_seconds(attempt, exc)
@@ -737,6 +744,19 @@ class VKProductPublisher:
             return result
         except Exception as e:
             logger.error(f"Error publishing product to VK Market: {str(e)}")
+            # #region agent log
+            try:
+                from app.utils.vk_debug_log import vk_dbg, vk_exc_debug_meta, vk_token_debug_meta
+
+                vk_dbg(
+                    "B",
+                    "product_publisher.py:publish_product",
+                    "VK market.add/publish failed",
+                    {**vk_exc_debug_meta(e), "token": vk_token_debug_meta()},
+                )
+            except Exception:
+                pass
+            # #endregion
             return None
 
     async def update_product_price(self, vk_product_id: int, price: int):
@@ -750,26 +770,47 @@ class VKProductPublisher:
         Returns:
             True если успешно, False в противном случае
         """
+        raise_if_vk_flood_blocked("market.edit price")
         try:
             await self._wait_for_api_interval()
 
-            # Обновляем цену через market.edit
-            self.vk.market.edit(
-                owner_id=self.owner_id,
-                item_id=vk_product_id,
-                price=price
+            await asyncio.to_thread(
+                lambda: self.vk.market.edit(
+                    owner_id=self.owner_id,
+                    item_id=vk_product_id,
+                    price=price,
+                )
             )
 
             logger.info(f"Product {vk_product_id} price updated to {price}")
             return True
         except Exception as e:
+            note_vk_flood(e, "market.edit price")
             if getattr(e, "code", None) == 27 and not VK_MARKET_ACCESS_TOKEN:
                 logger.error(
                     "market.edit unavailable with community token (error 27). "
                     "Set VK_MARKET_ACCESS_TOKEN to official user OAuth token (market scope)."
                 )
             logger.error(f"Error updating product price in VK Market: {str(e)}")
-            return False
+            # #region agent log
+            try:
+                from app.utils.vk_debug_log import vk_dbg, vk_exc_debug_meta, vk_token_debug_meta
+
+                vk_dbg(
+                    "A",
+                    "product_publisher.py:update_product_price",
+                    "VK market.edit price failed",
+                    {
+                        "vk_product_id": vk_product_id,
+                        **vk_exc_debug_meta(e),
+                        "token": vk_token_debug_meta(),
+                    },
+                    run_id="post-fix",
+                )
+            except Exception:
+                pass
+            # #endregion
+            raise
 
     async def publish_product_to_vk(self, post_id: str) -> bool:
         """
@@ -781,6 +822,7 @@ class VKProductPublisher:
         Returns:
             True если успешно, False иначе
         """
+        raise_if_vk_flood_blocked("market publish")
         try:
             from app.services.settings_service import get_settings_service
 

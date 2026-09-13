@@ -364,6 +364,8 @@ def get_integration_platform_keyboard(platform: str) -> InlineKeyboardMarkup:
         buttons = [
             [InlineKeyboardButton(text="Токен VK", callback_data="settings_edit_integration_vk_access_token")],
             [InlineKeyboardButton(text="ID группы VK", callback_data="settings_edit_integration_vk_group_id")],
+            [InlineKeyboardButton(text="ID приложения VK", callback_data="settings_edit_integration_vk_app_id")],
+            [InlineKeyboardButton(text="Защищённый ключ VK", callback_data="settings_edit_integration_vk_app_secret")],
         ]
     elif platform == "telegram":
         buttons = [

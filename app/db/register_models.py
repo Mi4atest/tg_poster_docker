@@ -21,3 +21,4 @@ from app.api.models.avito_market_request_log import AvitoMarketRequestLog  # noq
 from app.api.models.avito_market_watchlist_item import AvitoMarketWatchlistItem  # noqa: F401
 from app.api.models.evening_report import EveningReportRecord  # noqa: F401
 from app.api.models.shop_note import ShopNote  # noqa: F401
+from app.api.models.vk_market_operation import VkMarketOperation  # noqa: F401

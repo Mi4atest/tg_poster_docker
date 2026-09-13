@@ -265,7 +265,11 @@ def _build_integration_platform_text(platform: str) -> str:
         return (
             "🔐 VK интеграция\n\n"
             f"Токен: {'задан' if service.get_secret('vk_access_token') else 'не задан'}\n"
-            f"ID группы (куда постим): {integrations.get('vk_group_id') or env_settings.VK_GROUP_ID or 'не задан'}"
+            f"ID группы (куда постим): {integrations.get('vk_group_id') or env_settings.VK_GROUP_ID or 'не задан'}\n"
+            f"ID приложения: {integrations.get('vk_app_id') or env_settings.VK_APP_ID or '54604726'}\n"
+            f"Защищённый ключ: {'задан' if service.get_secret('vk_app_secret') else 'не задан'}\n\n"
+            "Получить токен своего приложения:\n"
+            "https://appleshop.ap43.ru/vk/oauth/vkid/start"
         )
     if platform == "telegram":
         return (
@@ -877,6 +881,22 @@ async def save_custom_interval(message: Message, state: FSMContext):
     await message.answer(f"✅ Интервал для {platform.upper()} сохранен: {minutes} мин.")
 
 
+def _reset_vk_session_state() -> None:
+    """Новый токен: пересоздать сессию VK и снять стоп-кран после flood."""
+    try:
+        from app.services.price_sync_service import reset_vk_publisher
+
+        reset_vk_publisher()
+    except Exception:
+        pass
+    try:
+        from app.utils.vk_flood_gate import clear_flood
+
+        clear_flood("token changed")
+    except Exception:
+        pass
+
+
 @router.message(SettingsState.waiting_for_integration_value)
 async def save_integration_value(message: Message, state: FSMContext):
     data = await state.get_data()
@@ -901,6 +921,9 @@ async def save_integration_value(message: Message, state: FSMContext):
         # Одно поле «Токен VK» должно покрывать и стену, и market.edit.
         if field == "vk_access_token" and raw:
             service.set_secret("vk_market_access_token", raw)
+            _reset_vk_session_state()
+        elif field == "vk_market_access_token" and raw:
+            _reset_vk_session_state()
         # Убираем устаревшую plaintext-копию токена из integrations —
         # иначе token_manager мог бы читать старый invalid token вместо secret.
         if field == "instagram_graph_access_token":
@@ -975,6 +998,20 @@ async def save_integration_value(message: Message, state: FSMContext):
         await message.answer("✅ Client Secret сохранён. Экран «Авито» выше обновлён (секрет в чат не повторяем).")
     elif field in ("spfa_api_key", "avito_market_proxy", "mobileproxy_api_token"):
         await message.answer("✅ Секрет сохранён. Экран «Оценка рынка» обновлён.")
+    elif field in ("vk_access_token", "vk_market_access_token") and raw:
+        note = await message.answer("🔍 Токен сохранён, проверяю права и вызовы VK…")
+        try:
+            import asyncio
+
+            from app.utils.vk_token_check import check_vk_token
+
+            report = await asyncio.to_thread(check_vk_token, raw)
+        except Exception as exc:
+            report = f"❌ Проверка не удалась: {str(exc)[:200]}"
+        try:
+            await note.edit_text(report, parse_mode="HTML")
+        except TelegramBadRequest:
+            await message.answer(report, parse_mode="HTML")
     else:
         await message.answer("✅ Поле интеграции обновлено. Экран выше обновлён, если сообщение ещё доступно.")
 

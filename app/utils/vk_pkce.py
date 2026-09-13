@@ -10,7 +10,21 @@ import time
 from pathlib import Path
 from typing import Optional, Tuple
 
-_PKCE_DIR = Path(__file__).resolve().parent.parent.parent / ".cursor" / "vk_pkce"
+def _pkce_dir() -> Path:
+    """Каталог сессий PKCE: media (rw в контейнере), иначе /tmp."""
+    try:
+        from app.config.settings import MEDIA_DIR
+
+        path = Path(MEDIA_DIR) / ".vk_pkce"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+    except OSError:
+        path = Path("/tmp/vk_pkce")
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+
+_PKCE_DIR = _pkce_dir()
 
 # Только безопасные имена файлов (как у secrets.token_urlsafe).
 _STATE_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")

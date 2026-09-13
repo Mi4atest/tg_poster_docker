@@ -14,6 +14,8 @@ from app.config.settings import (
     VK_WALL_ATTACH_MARKET,
 )
 from app.utils.vk_client import get_community_vk_session, resolved_vk_group_id_int
+from app.utils.vk_flood_gate import note_exception as note_vk_flood
+from app.utils.vk_flood_gate import raise_if_blocked as raise_if_vk_flood_blocked
 from app.db.database import SessionLocal
 from app.db.post_queries import (
     fetch_post,
@@ -174,9 +176,12 @@ class VKPublisher:
     def _is_retryable_upload_error(exc: BaseException) -> bool:
         code = getattr(exc, "code", None)
         message = str(exc).lower()
+        # Flood (9) не повторяем: повторы продлевают окно, работает стоп-кран.
+        if code == 9 or "flood control" in message:
+            return False
         return (
             isinstance(exc, requests.RequestException)
-            or code in {6, 8, 9, 10, 29}
+            or code in {6, 8, 10, 29}
             or (code == 100 and "photo is undefined" in message)
             or "timeout" in message
             or "temporar" in message
@@ -233,6 +238,7 @@ class VKPublisher:
             try:
                 return await asyncio.to_thread(self._upload_photo_sync, temp_file)
             except Exception as exc:
+                note_vk_flood(exc, "wall photo upload")
                 if attempt >= attempts or not self._is_retryable_upload_error(exc):
                     raise
                 delay = vk_upload_backoff_seconds(attempt, exc)
@@ -266,6 +272,7 @@ class VKPublisher:
                     self._upload_video_sync, temp_file, name, description
                 )
             except Exception as exc:
+                note_vk_flood(exc, "wall video upload")
                 if attempt >= attempts or not self._is_retryable_upload_error(exc):
                     raise
                 delay = vk_upload_backoff_seconds(attempt, exc)
@@ -288,6 +295,7 @@ class VKPublisher:
 
     async def publish_post(self, post_id, signature_enabled: bool = True):
         """Publish a post to VK."""
+        raise_if_vk_flood_blocked("wall.post")
         db = SessionLocal()
         try:
 
@@ -531,6 +539,23 @@ class VKPublisher:
             return True
         except Exception as e:
             logger.error(f"Error publishing post {post_id} to VK: {str(e)}")
+            # #region agent log
+            try:
+                from app.utils.vk_debug_log import vk_dbg, vk_exc_debug_meta, vk_token_debug_meta
+
+                vk_dbg(
+                    "C",
+                    "publisher.py:publish_post",
+                    "VK wall publish failed",
+                    {
+                        "post_id": post_id,
+                        **vk_exc_debug_meta(e),
+                        "token": vk_token_debug_meta(),
+                    },
+                )
+            except Exception:
+                pass
+            # #endregion
             try:
                 db.rollback()
             except Exception:

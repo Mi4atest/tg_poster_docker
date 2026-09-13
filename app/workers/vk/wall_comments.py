@@ -8,6 +8,7 @@ import logging
 from typing import List, Optional, Tuple
 
 from app.utils.vk_client import get_community_vk_session, resolved_vk_group_id_int
+from app.utils.vk_flood_gate import raise_if_blocked as raise_if_vk_flood_blocked
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,7 @@ class VKWallCommentClient:
 
     def create_unavailable_comment(self, owner_id: int, post_id: int) -> bool:
         """Оставить комментарий «неактуально» от лица группы (идемпотентно)."""
+        raise_if_vk_flood_blocked("wall.createComment")
         if self._find_group_unavailable_comment_ids(owner_id, post_id):
             logger.info(
                 "VK post %s_%s already has group #неактуально comment", owner_id, post_id
@@ -84,6 +86,7 @@ class VKWallCommentClient:
 
     def remove_unavailable_comments(self, owner_id: int, post_id: int) -> bool:
         """Удалить комментарии «неактуально» от лица группы под постом."""
+        raise_if_vk_flood_blocked("wall.deleteComment")
         ids = self._find_group_unavailable_comment_ids(owner_id, post_id)
         if not ids:
             logger.info("VK post %s_%s: no #неактуально comment to remove", owner_id, post_id)

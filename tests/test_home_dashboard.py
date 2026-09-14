@@ -102,6 +102,12 @@ def test_main_keyboard_notes_buttons():
     assert kb1.inline_keyboard[1][0].text.startswith("🆕")
 
 
+def test_main_keyboard_readonly_has_no_notes():
+    kb = get_main_keyboard(notes_count=2, readonly=True)
+    labels = [b.text for row in kb.inline_keyboard for b in row]
+    assert labels == ["📦 Товары"]
+
+
 def test_msk_month_bounds_august():
     when = datetime(2026, 8, 27, 1, 0, tzinfo=timezone.utc)
     start, end, name = msk_month_bounds_naive_utc(when)

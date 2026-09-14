@@ -573,7 +573,12 @@ async def back_to_main_menu(callback: CallbackQuery, state: FSMContext):
             ud["in_archive"] = False
             ud.pop("archive_state", None)
 
-    await show_home(callback.message, callback.bot, edit=True)
+    await show_home(
+        callback.message,
+        callback.bot,
+        edit=True,
+        user_id=callback.from_user.id if callback.from_user else None,
+    )
     await callback.answer()
 
 

@@ -20,6 +20,10 @@ ADMIN_USER_IDS: List[int] = (
     if _admin_ids_raw
     else list(ALLOWED_USER_IDS)
 )
+# Справочная роль: витрина товаров + сводка + Avito market, без мутаций.
+VIEWER_USER_IDS: List[int] = [
+    int(user_id) for user_id in os.getenv("VIEWER_USER_IDS", "").split(",") if user_id
+]
 
 # VK API settings
 VK_APP_ID = os.getenv("VK_APP_ID")

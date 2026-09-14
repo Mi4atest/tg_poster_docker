@@ -382,28 +382,31 @@ def get_new_product_detail_keyboard(
     product_id: int,
     status: str = "active",
     availability_status: Optional[str] = None,
-    back_data: str = "new_products_menu"
+    back_data: str = "new_products_menu",
+    *,
+    readonly: bool = False,
 ) -> InlineKeyboardMarkup:
     """Карточка нового товара: тумблер наличия, цена, Авито, «Ещё»."""
     buttons = []
-    avail_text = "🟢 В наличии" if availability_status == "available" else "🔴 На заказ"
-    buttons.append([
-        InlineKeyboardButton(text=avail_text, callback_data=f"new_product_toggle_avail_{product_id}")
-    ])
-    buttons.append([
-        ikb(
-            "💰 Изменить цену",
-            f"new_product_price_{product_id}",
-            style="primary",
-        )
-    ])
-    buttons.append([
-        InlineKeyboardButton(text="🛒 Авито (ссылка / id)", callback_data=f"new_product_avito_{product_id}")
-    ])
-    if status == "active":
+    if not readonly:
+        avail_text = "🟢 В наличии" if availability_status == "available" else "🔴 На заказ"
         buttons.append([
-            InlineKeyboardButton(text="⋯ Ещё", callback_data=f"new_product_more_{product_id}")
+            InlineKeyboardButton(text=avail_text, callback_data=f"new_product_toggle_avail_{product_id}")
         ])
+        buttons.append([
+            ikb(
+                "💰 Изменить цену",
+                f"new_product_price_{product_id}",
+                style="primary",
+            )
+        ])
+        buttons.append([
+            InlineKeyboardButton(text="🛒 Авито (ссылка / id)", callback_data=f"new_product_avito_{product_id}")
+        ])
+        if status == "active":
+            buttons.append([
+                InlineKeyboardButton(text="⋯ Ещё", callback_data=f"new_product_more_{product_id}")
+            ])
     buttons.append([
         InlineKeyboardButton(text="⬅️ Назад к списку", callback_data=back_data)
     ])

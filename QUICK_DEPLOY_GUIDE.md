@@ -14,6 +14,7 @@ bash <(wget -qO- --no-hsts --inet4-only https://raw.githubusercontent.com/Mi4ate
 3. При первом запуске запустит мастер `.env` — спросит только:
    - `TELEGRAM_BOT_TOKEN` (токен бота управления),
    - `ALLOWED_USER_IDS` (кому доступен бот),
+   - опционально позже в `.env`: `ADMIN_USER_IDS`, `VIEWER_USER_IDS` (директор / витрина),
    - а `MASTER_KEY` и пароль БД сгенерирует сам.
 4. Соберёт и запустит контейнеры. **Схема БД и миграции применяются автоматически** в `entrypoint` контейнера (ждёт БД → `init_db` → `alembic upgrade head`).
 5. Если есть бэкап в `backups/`, предложит восстановление.

@@ -13,6 +13,8 @@ def get_main_keyboard(
     queue_count: int = 0,
     drafts_count: int = 0,
     notes_count: int = 0,
+    *,
+    readonly: bool = False,
 ) -> InlineKeyboardMarkup:
     """Create the main keyboard for the bot.
     
@@ -20,7 +22,12 @@ def get_main_keyboard(
         queue_count: Количество постов в очереди (для динамического отображения)
         drafts_count: Количество черновиков; кнопка показывается только при count > 0
         notes_count: Активные напоминалки; ✅ только если есть хотя бы одна
+        readonly: Директор / витрина — только «Товары»
     """
+    if readonly:
+        return InlineKeyboardMarkup(
+            inline_keyboard=[[ikb("📦 Товары", "products_menu")]],
+        )
     note_row = [ikb("📌", "note_add")]
     if notes_count > 0:
         note_row.append(ikb("✅", "note_done"))

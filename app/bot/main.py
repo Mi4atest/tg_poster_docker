@@ -23,6 +23,7 @@ from app.bot.handlers import (
 )
 from app.bot.middlewares.auth import AuthMiddleware
 from app.bot.middlewares.album import AlbumMiddleware
+from app.bot.middlewares.viewer_guard import ViewerGuardMiddleware
 from app.scheduler.orchestrator import PublicationOrchestrator
 from app.services.settings_service import get_settings_service
 from app.services.price_sync_service import get_price_sync_service
@@ -43,6 +44,8 @@ bot.vk_market_enabled = True  # По умолчанию включено
 # Register middlewares
 dp.message.middleware(AuthMiddleware())
 dp.callback_query.middleware(AuthMiddleware())
+dp.message.middleware(ViewerGuardMiddleware())
+dp.callback_query.middleware(ViewerGuardMiddleware())
 # Album middleware buffers media-group messages so handlers receive the whole
 # album sorted by message_id (preserves photo order without "send ungrouped").
 dp.message.middleware(AlbumMiddleware())

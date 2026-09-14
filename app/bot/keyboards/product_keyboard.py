@@ -8,6 +8,7 @@ def get_products_menu_keyboard(
     *,
     avito_market_enabled: Optional[bool] = None,
     avito_unlinked_count: int = 0,
+    readonly: bool = False,
 ) -> InlineKeyboardMarkup:
     """Создает клавиатуру главного меню товаров."""
     if avito_market_enabled is None:
@@ -25,19 +26,23 @@ def get_products_menu_keyboard(
         )
     extra = [
         [InlineKeyboardButton(text="📁 Архив товаров", callback_data="products_archive")],
-        [InlineKeyboardButton(text="🔄 Обновление постов", callback_data="sync_telegram_links")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main")],
     ]
-    if int(avito_unlinked_count or 0) > 0:
-        extra.insert(
-            0,
-            [
-                InlineKeyboardButton(
-                    text=f"🛒 Авито без ссылки ({int(avito_unlinked_count)})",
-                    callback_data="avito_match_queue",
-                )
-            ],
+    if not readonly:
+        extra.append(
+            [InlineKeyboardButton(text="🔄 Обновление постов", callback_data="sync_telegram_links")]
         )
+        if int(avito_unlinked_count or 0) > 0:
+            extra.insert(
+                0,
+                [
+                    InlineKeyboardButton(
+                        text=f"🛒 Авито без ссылки ({int(avito_unlinked_count)})",
+                        callback_data="avito_match_queue",
+                    )
+                ],
+            )
+    if not readonly:
+        extra.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main")])
     buttons.extend(extra)
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -187,51 +192,53 @@ def get_product_detail_keyboard(
     product_id: int,
     status: str = "active",
     back_data: str = "products_list",
+    *,
+    readonly: bool = False,
 ) -> InlineKeyboardMarkup:
     """Создает клавиатуру для детальной информации о товаре."""
     buttons = []
-    
-    # Кнопки изменения статуса
-    if status == "active":
-        buttons.append([
-            ikb(
-                "🚫 Товар недоступен",
-                f"product_unavailable_{product_id}",
-                style="danger",
-            )
-        ])
-    elif status == "unavailable":
-        buttons.append([
-            ikb(
-                "✅ Восстановить товар",
-                f"product_restore_{product_id}",
-                style="success",
-            )
-        ])
-    
-    # Кнопка удаления
-    buttons.append([
-        InlineKeyboardButton(
-            text="🗑️ Удалить товар",
-            callback_data=f"product_delete_{product_id}"
-        )
-    ])
-    
-    # Кнопка изменения цены
-    buttons.append([
-        ikb(
-            "💰 Изменить цену",
-            f"product_price_{product_id}",
-            style="primary",
-        )
-    ])
+    if not readonly:
+        # Кнопки изменения статуса
+        if status == "active":
+            buttons.append([
+                ikb(
+                    "🚫 Товар недоступен",
+                    f"product_unavailable_{product_id}",
+                    style="danger",
+                )
+            ])
+        elif status == "unavailable":
+            buttons.append([
+                ikb(
+                    "✅ Восстановить товар",
+                    f"product_restore_{product_id}",
+                    style="success",
+                )
+            ])
 
-    buttons.append([
-        InlineKeyboardButton(
-            text="🛒 Авито (ссылка / id)",
-            callback_data=f"product_avito_link_{product_id}"
-        )
-    ])
+        # Кнопка удаления
+        buttons.append([
+            InlineKeyboardButton(
+                text="🗑️ Удалить товар",
+                callback_data=f"product_delete_{product_id}"
+            )
+        ])
+
+        # Кнопка изменения цены
+        buttons.append([
+            ikb(
+                "💰 Изменить цену",
+                f"product_price_{product_id}",
+                style="primary",
+            )
+        ])
+
+        buttons.append([
+            InlineKeyboardButton(
+                text="🛒 Авито (ссылка / id)",
+                callback_data=f"product_avito_link_{product_id}"
+            )
+        ])
 
     buttons.append([
         InlineKeyboardButton(text="⬅️ Назад к списку", callback_data=back_data)

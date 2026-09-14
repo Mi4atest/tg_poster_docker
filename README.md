@@ -60,6 +60,8 @@ bash scripts/logs.sh app     # логи приложения (db / nginx — д�
 
 - `TELEGRAM_BOT_TOKEN` - токен бота управления
 - `ALLOWED_USER_IDS` - кому разрешён доступ к боту
+- `ADMIN_USER_IDS` - кто может менять секреты и обновлять проект с GitHub
+- `VIEWER_USER_IDS` - директор / витрина: сводка, товары и Avito market без мутаций
 - `MASTER_KEY` - ключ шифрования секретов в БД (генерируется один раз)
 - `DB_USER`, `DB_PASSWORD`, `DB_NAME`, `DATABASE_URL` - доступ к БД (используются docker-compose и приложением)
 - токены площадок VK / Instagram / Max — пока читаются из `.env`, но их можно

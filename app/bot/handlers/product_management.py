@@ -44,6 +44,7 @@ from app.utils.price_change import (
     format_price_change_html_lines,
     price_string_to_int_rub,
 )
+from app.bot.utils.admin_auth import is_viewer_user
 from app.bot.utils.button_styles import ikb
 from app.utils.archive_kind import (
     ARCHIVE_KIND_SALE,
@@ -94,10 +95,22 @@ def _filter_used_products_only(products: list[dict]) -> list[dict]:
     ]
 
 
-async def products_menu_markup():
+def _product_card_keyboard(product_id, status, back_data, user_id=None):
+    return get_product_detail_keyboard(
+        product_id,
+        status,
+        back_data=back_data,
+        readonly=is_viewer_user(user_id),
+    )
+
+
+async def products_menu_markup(*, user_id: Optional[int] = None):
     """Клавиатура меню товаров со счётчиком б/у без ссылки Авито."""
     from app.db.database import SessionLocal, run_db
     from app.db.product_queries import count_unlinked_used_avito_products
+
+    if is_viewer_user(user_id):
+        return get_products_menu_keyboard(readonly=True, avito_unlinked_count=0)
 
     def _count():
         db = SessionLocal()
@@ -810,8 +823,19 @@ async def update_product_avito_link_api(product_id: int, avito_link_or_id: str):
 @router.callback_query(F.data == "products_menu")
 async def products_menu(callback: CallbackQuery):
     """Показать меню товаров."""
+    uid = callback.from_user.id if callback.from_user else None
+    if is_viewer_user(uid):
+        from app.bot.utils.main_menu import show_home
+
+        await show_home(callback.message, callback.bot, edit=True, user_id=uid)
+        await callback.answer()
+        return
     text = "📦 Управление товарами\n\nВыберите действие:"
-    await safe_edit_message(callback.message, text, reply_markup=await products_menu_markup())
+    await safe_edit_message(
+        callback.message,
+        text,
+        reply_markup=await products_menu_markup(user_id=uid),
+    )
     await callback.answer()
 
 
@@ -842,7 +866,7 @@ async def sync_telegram_links(callback: CallbackQuery):
                 f"Ссылки синхронизированы ({updated_products} обновлено).\n"
                 "Обновляю список и новинки в канале…"
             ),
-            reply_markup=await products_menu_markup(),
+            reply_markup=await products_menu_markup(user_id=callback.from_user.id),
         )
         channel_ok = await update_used_products_list_in_channel(callback.bot)
         max_ok = False
@@ -876,7 +900,11 @@ async def sync_telegram_links(callback: CallbackQuery):
     except Exception as e:
         logger.exception("sync_telegram_links failed")
         text = f"🔄 Обновление постов\n\n❌ Ошибка: {e}"
-    await safe_edit_message(callback.message, text, reply_markup=await products_menu_markup())
+    await safe_edit_message(
+        callback.message,
+        text,
+        reply_markup=await products_menu_markup(user_id=callback.from_user.id),
+    )
 
 
 @router.callback_query(F.data == "products_list")
@@ -890,7 +918,11 @@ async def products_list(callback: CallbackQuery, state: FSMContext):
     total = len(products)
     if not products:
         text = "📦 Список товаров пуст."
-        await safe_edit_message(callback.message, text, reply_markup=await products_menu_markup())
+        await safe_edit_message(
+            callback.message,
+            text,
+            reply_markup=await products_menu_markup(user_id=callback.from_user.id),
+        )
         await callback.answer("Список товаров пуст")
         return
     
@@ -1151,7 +1183,9 @@ async def product_detail(callback: CallbackQuery, state: FSMContext):
         await safe_edit_message(
             callback.message,
             text,
-            reply_markup=get_product_detail_keyboard(product_id, status, back_data=back_data),
+            reply_markup=_product_card_keyboard(
+                product_id, status, back_data, callback.from_user.id
+            ),
             parse_mode="HTML"
         )
     except Exception:
@@ -1353,7 +1387,9 @@ async def _return_to_used_product_detail(
     await safe_edit_message(
         callback.message,
         text,
-        reply_markup=get_product_detail_keyboard(product_id, status, back_data=back_data),
+        reply_markup=_product_card_keyboard(
+                product_id, status, back_data, callback.from_user.id
+            ),
         parse_mode="HTML",
     )
 
@@ -1470,11 +1506,11 @@ async def _after_product_price_updated(
     """Карточка товара и обновление списка б/у в канале после смены цены."""
     status = updated_product.get("status", "active")
     text = await build_product_card_html(updated_product)
-    from app.bot.keyboards.product_keyboard import get_product_detail_keyboard
-
     await message.answer(
         text,
-        reply_markup=get_product_detail_keyboard(product_id, status, back_data=back_data),
+        reply_markup=_product_card_keyboard(
+            product_id, status, back_data, message.from_user.id if message.from_user else None
+        ),
         parse_mode="HTML",
     )
 
@@ -1774,7 +1810,7 @@ async def _finish_avito_match_queue(callback: CallbackQuery, state: FSMContext) 
     await safe_edit_message(
         callback.message,
         "📦 Управление товарами\n\nВыберите действие:",
-        reply_markup=await products_menu_markup(),
+        reply_markup=await products_menu_markup(user_id=callback.from_user.id),
     )
 
 
@@ -1802,7 +1838,7 @@ async def avito_match_queue_start(callback: CallbackQuery, state: FSMContext):
         await safe_edit_message(
             callback.message,
             "📦 Управление товарами\n\nНет б/у без ссылки Авито.",
-            reply_markup=await products_menu_markup(),
+            reply_markup=await products_menu_markup(user_id=callback.from_user.id),
         )
         return
     await state.update_data(
@@ -1817,7 +1853,7 @@ async def avito_match_queue_start(callback: CallbackQuery, state: FSMContext):
         await safe_edit_message(
             callback.message,
             "📦 Управление товарами\n\nВыберите действие:",
-            reply_markup=await products_menu_markup(),
+            reply_markup=await products_menu_markup(user_id=callback.from_user.id),
         )
         return
     await _show_avito_match_for_product(
@@ -1986,7 +2022,9 @@ async def product_avito_link_process(message: Message, state: FSMContext):
             await state.set_state(None)
             await message.answer(
                 "📦 Управление товарами\n\nВыберите действие:",
-                reply_markup=await products_menu_markup(),
+                reply_markup=await products_menu_markup(
+                    user_id=message.from_user.id if message.from_user else None
+                ),
             )
         return
     back_data = await _clear_state_keep_products_back(state)
@@ -2000,7 +2038,9 @@ async def product_avito_link_process(message: Message, state: FSMContext):
         text += f"\n🔗 <a href='{result['vk_product_link']}'>ВК</a>"
     await message.answer(
         text,
-        reply_markup=get_product_detail_keyboard(product_id, status, back_data=back_data),
+        reply_markup=_product_card_keyboard(
+            product_id, status, back_data, message.from_user.id if message.from_user else None
+        ),
         parse_mode="HTML",
     )
 
@@ -2094,8 +2134,8 @@ async def product_confirm_action(callback: CallbackQuery, state: FSMContext):
             await safe_edit_message(
                 callback.message,
                 text,
-                reply_markup=get_product_detail_keyboard(
-                    product_id, status, back_data=back_data
+                reply_markup=_product_card_keyboard(
+                    product_id, status, back_data, callback.from_user.id
                 ),
                 parse_mode="HTML",
             )
@@ -2114,7 +2154,7 @@ async def product_confirm_action(callback: CallbackQuery, state: FSMContext):
             await safe_edit_message(
                 callback.message,
                 text,
-                reply_markup=await products_menu_markup()
+                reply_markup=await products_menu_markup(user_id=callback.from_user.id)
             )
             try:
                 from app.bot.utils.used_products_lists import refresh_used_products_catalogs
@@ -2245,6 +2285,7 @@ async def _render_product_search(
     act_page: Optional[int] = None,
     arc_page: Optional[int] = None,
     archive_expanded: Optional[bool] = None,
+    user_id: Optional[int] = None,
 ):
     """Отрисовать результаты поиска товаров.
 
@@ -2259,7 +2300,7 @@ async def _render_product_search(
         await safe_edit_message(
             message,
             "🔍 Введите название товара для поиска:",
-            reply_markup=await products_menu_markup(),
+            reply_markup=await products_menu_markup(user_id=user_id),
         )
         return
 
@@ -2280,7 +2321,7 @@ async def _render_product_search(
         await safe_edit_message(
             message,
             f"🔍 По запросу «{query}» ничего не найдено.",
-            reply_markup=await products_menu_markup(),
+            reply_markup=await products_menu_markup(user_id=user_id),
         )
         await state.update_data(products_back="products_list")
         return
@@ -2357,7 +2398,9 @@ async def products_search_process(message: Message, state: FSMContext):
     )
 
     sent = await message.answer("🔍 Ищу товары…")
-    await _render_product_search(sent, state)
+    await _render_product_search(
+        sent, state, user_id=message.from_user.id if message.from_user else None
+    )
 
 
 @router.callback_query(F.data.startswith("psearch_act_"))
@@ -2368,7 +2411,9 @@ async def products_search_active_page(callback: CallbackQuery, state: FSMContext
     except ValueError:
         await callback.answer("Ошибка пагинации")
         return
-    await _render_product_search(callback.message, state, act_page=page)
+    await _render_product_search(
+        callback.message, state, act_page=page, user_id=callback.from_user.id
+    )
     await callback.answer()
 
 
@@ -2380,32 +2425,59 @@ async def products_search_archive_page(callback: CallbackQuery, state: FSMContex
     except ValueError:
         await callback.answer("Ошибка пагинации")
         return
-    await _render_product_search(callback.message, state, arc_page=page, archive_expanded=True)
+    await _render_product_search(
+        callback.message,
+        state,
+        arc_page=page,
+        archive_expanded=True,
+        user_id=callback.from_user.id,
+    )
     await callback.answer()
 
 
 @router.callback_query(F.data == "psearch_collapse")
 async def products_search_collapse_archive(callback: CallbackQuery, state: FSMContext):
     """Свернуть архивный блок в результатах поиска."""
-    await _render_product_search(callback.message, state, arc_page=0, archive_expanded=False)
+    await _render_product_search(
+        callback.message,
+        state,
+        arc_page=0,
+        archive_expanded=False,
+        user_id=callback.from_user.id,
+    )
     await callback.answer()
 
 
 @router.callback_query(F.data == "psearch_back")
 async def products_search_back(callback: CallbackQuery, state: FSMContext):
     """Вернуться к результатам поиска (например, из карточки товара)."""
-    await _render_product_search(callback.message, state)
+    await _render_product_search(callback.message, state, user_id=callback.from_user.id)
     await callback.answer()
 
 
 @router.callback_query(F.data == "products_archive")
 async def products_archive(callback: CallbackQuery, state: FSMContext, year=None, month=None, day=None):
     """Показать архив товаров с навигацией по датам."""
-    await show_archived_products(callback.message, year=year, month=month, day=day, state=state)
+    await show_archived_products(
+        callback.message,
+        year=year,
+        month=month,
+        day=day,
+        state=state,
+        user_id=callback.from_user.id,
+    )
     await callback.answer()
 
 
-async def show_archived_products(message, year=None, month=None, day=None, state: Optional[FSMContext] = None):
+async def show_archived_products(
+    message,
+    year=None,
+    month=None,
+    day=None,
+    state: Optional[FSMContext] = None,
+    *,
+    user_id: Optional[int] = None,
+):
     """Показать архив товаров с группировкой по датам архивации."""
     import asyncio
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -2420,7 +2492,8 @@ async def show_archived_products(message, year=None, month=None, day=None, state
     )
 
     products, total = await get_all_products_api(status_filter="unavailable")
-    
+    readonly = is_viewer_user(user_id)
+
     stale_badge_count = 0
     if year is None:
         try:
@@ -2430,11 +2503,13 @@ async def show_archived_products(message, year=None, month=None, day=None, state
 
     if not products:
         if year is None:
-            buttons = [
-                [ikb("📊 Вечерний отчет", "evening_report_start")],
+            buttons = []
+            if not readonly:
+                buttons.append([ikb("📊 Вечерний отчет", "evening_report_start")])
+            buttons.extend([
                 [ikb(stale_button_label(stale_badge_count), "price_stale_list")],
                 [InlineKeyboardButton(text="⬅️ Назад в меню товаров", callback_data="products_menu")],
-            ]
+            ])
             await safe_edit_message(
                 message,
                 "📁 Архив товаров пуст.",
@@ -2442,7 +2517,9 @@ async def show_archived_products(message, year=None, month=None, day=None, state
             )
             return
         text = "📁 Архив товаров пуст."
-        await safe_edit_message(message, text, reply_markup=await products_menu_markup())
+        await safe_edit_message(
+            message, text, reply_markup=await products_menu_markup(user_id=user_id)
+        )
         return
     
     # Группируем товары по дате архивации
@@ -2495,21 +2572,22 @@ async def show_archived_products(message, year=None, month=None, day=None, state
     report_months: set[int] = set()
     report_days: set[int] = set()
     try:
-        if year is None:
-            report_years = await asyncio.wait_for(
-                asyncio.to_thread(get_saved_report_years),
-                timeout=ARCHIVE_DB_TIMEOUT_SEC,
-            )
-        elif month is None:
-            report_months = await asyncio.wait_for(
-                asyncio.to_thread(get_saved_report_months_for_year, year),
-                timeout=ARCHIVE_DB_TIMEOUT_SEC,
-            )
-        elif day is None:
-            report_days = await asyncio.wait_for(
-                asyncio.to_thread(get_saved_report_days_for_month, year, month),
-                timeout=ARCHIVE_DB_TIMEOUT_SEC,
-            )
+        if not readonly:
+            if year is None:
+                report_years = await asyncio.wait_for(
+                    asyncio.to_thread(get_saved_report_years),
+                    timeout=ARCHIVE_DB_TIMEOUT_SEC,
+                )
+            elif month is None:
+                report_months = await asyncio.wait_for(
+                    asyncio.to_thread(get_saved_report_months_for_year, year),
+                    timeout=ARCHIVE_DB_TIMEOUT_SEC,
+                )
+            elif day is None:
+                report_days = await asyncio.wait_for(
+                    asyncio.to_thread(get_saved_report_days_for_month, year, month),
+                    timeout=ARCHIVE_DB_TIMEOUT_SEC,
+                )
     except asyncio.TimeoutError:
         logger.warning(
             "evening_report calendar load timed out (year=%s month=%s day=%s)",
@@ -2618,20 +2696,21 @@ async def show_archived_products(message, year=None, month=None, day=None, state
         response_text = f"📁 Архив товаров за {day} {month_name} {year} года:\n\n"
 
         report_date = date_cls(year, month, day)
-        try:
-            report_text_saved = await asyncio.wait_for(
-                asyncio.to_thread(get_report_text_by_date, report_date),
-                timeout=ARCHIVE_DB_TIMEOUT_SEC,
-            )
-        except asyncio.TimeoutError:
-            report_text_saved = None
-            logger.warning("evening_report text load timed out for %s", report_date)
-        er_cb = evening_report_date_callback(year, month, day)
-        if report_text_saved:
-            response_text += f"📊 Вечерний отчёт:\n{report_text_saved}\n\n"
-            buttons.append([ikb("📊 Открыть отчёт", er_cb)])
-        else:
-            buttons.append([ikb("📊 Создать отчёт за этот день", er_cb)])
+        if not readonly:
+            try:
+                report_text_saved = await asyncio.wait_for(
+                    asyncio.to_thread(get_report_text_by_date, report_date),
+                    timeout=ARCHIVE_DB_TIMEOUT_SEC,
+                )
+            except asyncio.TimeoutError:
+                report_text_saved = None
+                logger.warning("evening_report text load timed out for %s", report_date)
+            er_cb = evening_report_date_callback(year, month, day)
+            if report_text_saved:
+                response_text += f"📊 Вечерний отчёт:\n{report_text_saved}\n\n"
+                buttons.append([ikb("📊 Открыть отчёт", er_cb)])
+            else:
+                buttons.append([ikb("📊 Создать отчёт за этот день", er_cb)])
 
         day_products = products_by_date.get(year, {}).get(month, {}).get(day, [])
         for i, product in enumerate(day_products, 1):
@@ -2647,9 +2726,10 @@ async def show_archived_products(message, year=None, month=None, day=None, state
             callback_data=f"products_archive_month_{year}_{month}"
         )])
     
-    # Кнопка "Вечерний отчет" (только на корневом уровне архива)
+    # Кнопка "Вечерний отчет" (только на корневом уровне архива, не для viewer)
     if year is None:
-        buttons.append([ikb("📊 Вечерний отчет", "evening_report_start")])
+        if not readonly:
+            buttons.append([ikb("📊 Вечерний отчет", "evening_report_start")])
         buttons.append([ikb(stale_button_label(stale_badge_count), "price_stale_list")])
     
     # Кнопка назад в меню товаров
@@ -2765,7 +2845,9 @@ async def products_archive_year(callback: CallbackQuery, state: FSMContext):
     except ValueError:
         await callback.answer("Ошибка")
         return
-    await show_archived_products(callback.message, year=year, state=state)
+    await show_archived_products(
+        callback.message, year=year, state=state, user_id=callback.from_user.id
+    )
     await callback.answer()
 
 
@@ -2779,7 +2861,9 @@ async def products_archive_month(callback: CallbackQuery, state: FSMContext):
     except (ValueError, IndexError):
         await callback.answer("Ошибка")
         return
-    await show_archived_products(callback.message, year=year, month=month, state=state)
+    await show_archived_products(
+        callback.message, year=year, month=month, state=state, user_id=callback.from_user.id
+    )
     await callback.answer()
 
 
@@ -2794,7 +2878,14 @@ async def products_archive_day(callback: CallbackQuery, state: FSMContext):
     except (ValueError, IndexError):
         await callback.answer("Ошибка")
         return
-    await show_archived_products(callback.message, year=year, month=month, day=day, state=state)
+    await show_archived_products(
+        callback.message,
+        year=year,
+        month=month,
+        day=day,
+        state=state,
+        user_id=callback.from_user.id,
+    )
     await callback.answer()
 
 
@@ -2912,8 +3003,8 @@ async def process_product_unavailable(
         await safe_edit_message(
             callback.message,
             text,
-            reply_markup=get_product_detail_keyboard(
-                product_id, status, back_data=back_data
+            reply_markup=_product_card_keyboard(
+                product_id, status, back_data, callback.from_user.id
             ),
             parse_mode="HTML",
         )

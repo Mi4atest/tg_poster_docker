@@ -13,6 +13,7 @@ import re
 from html import escape
 from typing import Optional, Dict, List, Any
 
+from app.bot.utils.admin_auth import is_viewer_user
 from app.bot.keyboards.product_keyboard import get_products_menu_keyboard
 from app.bot.keyboards.new_products_keyboard import (
     NEW_CATEGORIES,
@@ -684,7 +685,17 @@ async def _send_html_nav_message(callback: CallbackQuery, text: str, keyboard) -
     await callback.bot.send_message(chat_id=chat_id, text=parts[-1], reply_markup=keyboard, **send_opts)
 
 
-def _build_root_new_products_keyboard(db) -> "InlineKeyboardMarkup":
+def _new_product_card_keyboard(product_id, status, availability_status, back_data, user_id=None):
+    return get_new_product_detail_keyboard(
+        product_id,
+        status=status,
+        availability_status=availability_status,
+        back_data=back_data,
+        readonly=is_viewer_user(user_id),
+    )
+
+
+def _build_root_new_products_keyboard(db, *, readonly: bool = False) -> "InlineKeyboardMarkup":
     from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
     nodes = mcs.get_merged_menu_nodes(db, "root", editor=False)
@@ -717,21 +728,22 @@ def _build_root_new_products_keyboard(db) -> "InlineKeyboardMarkup":
             lab = "iPhone"
         txt = f"{em}{lab} ({n.count})" if em else f"{lab} ({n.count})"
         rows.append([InlineKeyboardButton(text=txt, callback_data=cb)])
-    rows.append(
-        [InlineKeyboardButton(text="⚡ Пакетное обновление цен", callback_data="bulk_price_start")]
-    )
-    rows.append(
-        [
-            InlineKeyboardButton(
-                text="📄 Прайс A4 (PDF)",
-                callback_data="iphone_print_price_pdf",
-            ),
-            InlineKeyboardButton(
-                text="🏷️ Ценники A4 (PDF)",
-                callback_data="price_tags_select",
-            ),
-        ]
-    )
+    if not readonly:
+        rows.append(
+            [InlineKeyboardButton(text="⚡ Пакетное обновление цен", callback_data="bulk_price_start")]
+        )
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="📄 Прайс A4 (PDF)",
+                    callback_data="iphone_print_price_pdf",
+                ),
+                InlineKeyboardButton(
+                    text="🏷️ Ценники A4 (PDF)",
+                    callback_data="price_tags_select",
+                ),
+            ]
+        )
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="products_menu")])
     rows.append(
         [InlineKeyboardButton(text="🏠 Вернуться в главное меню", callback_data="back_to_main")]
@@ -747,6 +759,8 @@ async def new_products_menu(callback: CallbackQuery):
     except Exception:
         pass
     try:
+        readonly = is_viewer_user(callback.from_user.id if callback.from_user else None)
+
         def _build():
             text = "🆕 Список новых товаров\n\n"
             all_available = _fetch_available_products_for_menu()
@@ -756,7 +770,7 @@ async def new_products_menu(callback: CallbackQuery):
                 text += "\n\n"
             text += "Выберите категорию:"
             with SessionLocal() as db:
-                kb = _build_root_new_products_keyboard(db)
+                kb = _build_root_new_products_keyboard(db, readonly=readonly)
             return text, kb
 
         text, kb = await run_db(_build)
@@ -869,11 +883,12 @@ async def _show_new_product_card(
     await safe_edit_message(
         callback.message,
         text,
-        reply_markup=get_new_product_detail_keyboard(
+        reply_markup=_new_product_card_keyboard(
             product_id,
-            status=product.get("status", "active"),
-            availability_status=av,
-            back_data=back_data,
+            product.get("status", "active"),
+            av,
+            back_data,
+            callback.from_user.id if callback.from_user else None,
         ),
         parse_mode="HTML",
         disable_link_preview=True,
@@ -1328,7 +1343,12 @@ async def new_products_category(callback: CallbackQuery, state: FSMContext):
 
         if cat_total <= 0:
             with SessionLocal() as db:
-                kb = _build_root_new_products_keyboard(db)
+                kb = _build_root_new_products_keyboard(
+                    db,
+                    readonly=is_viewer_user(
+                        callback.from_user.id if callback.from_user else None
+                    ),
+                )
             return "empty", f"🆕 Категория «{cat}»\n\nТовары не найдены.", kb
 
         if cat.lower() == "airpods":
@@ -2123,11 +2143,12 @@ async def new_product_payment(callback: CallbackQuery, state: FSMContext):
     await safe_edit_message(
         callback.message,
         text,
-        reply_markup=get_new_product_detail_keyboard(
+        reply_markup=_new_product_card_keyboard(
             product_id,
-            status=product.get("status", "active"),
-            availability_status=product.get("availability_status"),
-            back_data=back_data,
+            product.get("status", "active"),
+            product.get("availability_status"),
+            back_data,
+            callback.from_user.id if callback.from_user else None,
         ),
         parse_mode="HTML",
     )
@@ -2217,11 +2238,12 @@ async def new_product_unavailable(callback: CallbackQuery, state: FSMContext):
     await safe_edit_message(
         callback.message,
         text,
-        reply_markup=get_new_product_detail_keyboard(
+        reply_markup=_new_product_card_keyboard(
             product_id,
-            status="unavailable",
-            availability_status=product.get("availability_status"),
-            back_data=back_data,
+            "unavailable",
+            product.get("availability_status"),
+            back_data,
+            callback.from_user.id if callback.from_user else None,
         ),
         parse_mode="HTML",
     )
@@ -2267,11 +2289,12 @@ async def _after_new_product_price_updated(
     text = f"📦 <b>{product.get('name', 'Без названия')}</b>\n\n💵 Цена: {price_display}"
     await message.answer(
         text,
-        reply_markup=get_new_product_detail_keyboard(
+        reply_markup=_new_product_card_keyboard(
             product_id,
-            status=product.get("status", "active"),
-            availability_status=product.get("availability_status"),
-            back_data=back_data,
+            product.get("status", "active"),
+            product.get("availability_status"),
+            back_data,
+            callback.from_user.id if callback.from_user else None,
         ),
         parse_mode="HTML",
     )
@@ -2403,11 +2426,12 @@ async def _return_to_new_product_detail(
     await safe_edit_message(
         callback.message,
         text,
-        reply_markup=get_new_product_detail_keyboard(
+        reply_markup=_new_product_card_keyboard(
             product_id,
-            status=product.get("status", "active"),
-            availability_status=product.get("availability_status"),
-            back_data=back_data,
+            product.get("status", "active"),
+            product.get("availability_status"),
+            back_data,
+            callback.from_user.id if callback.from_user else None,
         ),
         parse_mode="HTML",
     )
@@ -2511,11 +2535,12 @@ async def new_product_avito_apply(message: Message, state: FSMContext):
             text += f"\n🛒 <a href=\"{product['avito_url']}\">Ссылка на Авито</a>"
         await message.answer(
             text,
-            reply_markup=get_new_product_detail_keyboard(
+            reply_markup=_new_product_card_keyboard(
                 product_id,
-                status=product.get("status", "active"),
-                availability_status=av,
-                back_data=back_data,
+                product.get("status", "active"),
+                av,
+                back_data,
+                message.from_user.id if message.from_user else None,
             ),
             parse_mode="HTML",
         )

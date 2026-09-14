@@ -33,6 +33,10 @@ class ShopNoteCreate(StatesGroup):
     waiting_for_category = State()
 
 
+def _home_user_id(callback: CallbackQuery) -> int | None:
+    return callback.from_user.id if callback.from_user else None
+
+
 @router.callback_query(F.data == "note_add")
 async def note_add_start(callback: CallbackQuery, state: FSMContext):
     try:
@@ -58,7 +62,9 @@ async def note_add_start(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "note_add_cancel")
 async def note_add_cancel(callback: CallbackQuery, state: FSMContext):
     await state.clear()
-    await show_home(callback.message, callback.bot, edit=True)
+    await show_home(
+        callback.message, callback.bot, edit=True, user_id=_home_user_id(callback)
+    )
     await callback.answer()
 
 
@@ -83,7 +89,9 @@ async def note_add_category(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     if not body:
         await callback.answer("Нет текста", show_alert=True)
-        await show_home(callback.message, callback.bot, edit=True)
+        await show_home(
+            callback.message, callback.bot, edit=True, user_id=_home_user_id(callback)
+        )
         return
     raw = callback.data.replace("note_cat_", "", 1)
     category = None if raw == "none" else raw
@@ -94,14 +102,20 @@ async def note_add_category(callback: CallbackQuery, state: FSMContext):
             f"Сначала снимите одну — максимум {MAX_ACTIVE_NOTES} напоминаний.",
             show_alert=True,
         )
-        await show_home(callback.message, callback.bot, edit=True)
+        await show_home(
+            callback.message, callback.bot, edit=True, user_id=_home_user_id(callback)
+        )
         return
     except Exception:
         logger.exception("create_note failed")
         await callback.answer("Не удалось сохранить", show_alert=True)
-        await show_home(callback.message, callback.bot, edit=True)
+        await show_home(
+            callback.message, callback.bot, edit=True, user_id=_home_user_id(callback)
+        )
         return
-    await show_home(callback.message, callback.bot, edit=True)
+    await show_home(
+        callback.message, callback.bot, edit=True, user_id=_home_user_id(callback)
+    )
     await callback.answer("Добавлено")
 
 
@@ -116,11 +130,15 @@ async def note_done_entry(callback: CallbackQuery, state: FSMContext):
         return
     if not notes:
         await callback.answer("Нет активных напоминаний")
-        await show_home(callback.message, callback.bot, edit=True)
+        await show_home(
+            callback.message, callback.bot, edit=True, user_id=_home_user_id(callback)
+        )
         return
     if len(notes) == 1:
         await run_db(mark_note_done, int(notes[0]["id"]))
-        await show_home(callback.message, callback.bot, edit=True)
+        await show_home(
+            callback.message, callback.bot, edit=True, user_id=_home_user_id(callback)
+        )
         await callback.answer("Готово")
         return
     await callback.message.edit_text(
@@ -133,7 +151,9 @@ async def note_done_entry(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "note_done_cancel")
 async def note_done_cancel(callback: CallbackQuery, state: FSMContext):
     await state.clear()
-    await show_home(callback.message, callback.bot, edit=True)
+    await show_home(
+        callback.message, callback.bot, edit=True, user_id=_home_user_id(callback)
+    )
     await callback.answer()
 
 
@@ -154,5 +174,7 @@ async def note_done_one(callback: CallbackQuery, state: FSMContext):
         logger.exception("mark_note_done failed")
         await callback.answer("Не удалось снять", show_alert=True)
         return
-    await show_home(callback.message, callback.bot, edit=True)
+    await show_home(
+        callback.message, callback.bot, edit=True, user_id=_home_user_id(callback)
+    )
     await callback.answer("Готово")

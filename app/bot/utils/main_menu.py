@@ -31,8 +31,12 @@ async def get_drafts_count() -> int:
     return await get_pending_count_api()
 
 
-async def build_main_keyboard(bot, notes_count: int = 0):
+async def build_main_keyboard(bot, notes_count: int = 0, *, readonly: bool = False):
     """Главное меню с актуальными счётчиками очереди, черновиков и заметок."""
+    if readonly:
+        from app.bot.keyboards.product_keyboard import get_products_menu_keyboard
+
+        return get_products_menu_keyboard(readonly=True, avito_unlinked_count=0)
     queue_count = get_queue_count(bot)
     drafts_count = await get_drafts_count()
     return get_main_keyboard(
@@ -42,17 +46,20 @@ async def build_main_keyboard(bot, notes_count: int = 0):
     )
 
 
-async def build_home_screen(bot) -> tuple[str, object]:
+async def build_home_screen(bot, user_id: int | None = None) -> tuple[str, object]:
     """Текст + клавиатура главного экрана."""
+    from app.bot.utils.admin_auth import is_viewer_user
     from app.db.database import run_db
     from app.db.monthly_sales_queries import load_current_month_archived
     from app.services.shop_notes_service import list_active_notes
 
+    readonly = is_viewer_user(user_id)
     notes: list = []
-    try:
-        notes = await run_db(list_active_notes)
-    except Exception:
-        logger.exception("home: failed to load shop notes")
+    if not readonly:
+        try:
+            notes = await run_db(list_active_notes)
+        except Exception:
+            logger.exception("home: failed to load shop notes")
 
     products: list = []
     month_name = "Месяц"
@@ -63,13 +70,15 @@ async def build_home_screen(bot) -> tuple[str, object]:
 
     sales_html = format_monthly_sales_html(products, month_name)
     text = format_home_html(notes, sales_html)
-    keyboard = await build_main_keyboard(bot, notes_count=len(notes))
+    keyboard = await build_main_keyboard(bot, notes_count=len(notes), readonly=readonly)
     return text, keyboard
 
 
-async def show_home(target, bot, *, edit: bool = True) -> None:
+async def show_home(target, bot, *, edit: bool = True, user_id: int | None = None) -> None:
     """Показать главный экран (edit сообщения или новое)."""
-    text, keyboard = await build_home_screen(bot)
+    if user_id is None:
+        user_id = getattr(getattr(target, "from_user", None), "id", None)
+    text, keyboard = await build_home_screen(bot, user_id=user_id)
     kwargs = {
         "parse_mode": "HTML",
         "reply_markup": keyboard,

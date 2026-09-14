@@ -16,7 +16,12 @@ router = Router()
 async def cmd_start(message: Message, state: FSMContext):
     """Handle the /start command."""
     await state.clear()
-    await show_home(message, message.bot, edit=False)
+    await show_home(
+        message,
+        message.bot,
+        edit=False,
+        user_id=message.from_user.id if message.from_user else None,
+    )
 
 @router.callback_query(F.data == "create_post")
 async def create_post_callback(callback: CallbackQuery, state: FSMContext):
@@ -141,5 +146,10 @@ async def back_to_main_callback(callback: CallbackQuery, state: FSMContext):
         if isinstance(ud, dict):
             ud["in_archive"] = False
             ud.pop("archive_state", None)
-    await show_home(callback.message, callback.bot, edit=True)
+    await show_home(
+        callback.message,
+        callback.bot,
+        edit=True,
+        user_id=callback.from_user.id if callback.from_user else None,
+    )
     await callback.answer()

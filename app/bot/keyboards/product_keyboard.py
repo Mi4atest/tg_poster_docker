@@ -9,6 +9,7 @@ def get_products_menu_keyboard(
     avito_market_enabled: Optional[bool] = None,
     avito_unlinked_count: int = 0,
     readonly: bool = False,
+    stale_badge_count: Optional[int] = None,
 ) -> InlineKeyboardMarkup:
     """Создает клавиатуру главного меню товаров."""
     if avito_market_enabled is None:
@@ -24,9 +25,19 @@ def get_products_menu_keyboard(
         buttons.append(
             [InlineKeyboardButton(text="📊 Оценка рынка Avito", callback_data="avito_market_start")]
         )
-    extra = [
-        [InlineKeyboardButton(text="📁 Архив товаров", callback_data="products_archive")],
-    ]
+    extra = []
+    if readonly and stale_badge_count is not None:
+        extra.append(
+            [
+                InlineKeyboardButton(
+                    text=f"🕰 Застой ({int(stale_badge_count)})",
+                    callback_data="price_stale_list",
+                )
+            ]
+        )
+    extra.append(
+        [InlineKeyboardButton(text="📁 Архив товаров", callback_data="products_archive")]
+    )
     if not readonly:
         extra.append(
             [InlineKeyboardButton(text="🔄 Обновление постов", callback_data="sync_telegram_links")]
@@ -708,6 +719,8 @@ def get_stale_price_list_keyboard(
     per_page: int = STALE_PRICE_PER_PAGE,
     *,
     sort_mode: str = "price",
+    back_callback: str = "products_archive",
+    back_label: str = "⬅️ Назад в архив",
 ) -> InlineKeyboardMarkup:
     """Пагинированные кнопки застоявшихся б/у-товаров.
 
@@ -763,7 +776,7 @@ def get_stale_price_list_keyboard(
         buttons.append(nav_buttons)
 
     buttons.append([
-        InlineKeyboardButton(text="⬅️ Назад в архив", callback_data="products_archive"),
+        InlineKeyboardButton(text=back_label, callback_data=back_callback),
     ])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 

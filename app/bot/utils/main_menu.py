@@ -31,12 +31,14 @@ async def get_drafts_count() -> int:
     return await get_pending_count_api()
 
 
-async def build_main_keyboard(bot, notes_count: int = 0, *, readonly: bool = False):
+async def build_main_keyboard(
+    bot, notes_count: int = 0, *, readonly: bool = False, user_id: int | None = None
+):
     """Главное меню с актуальными счётчиками очереди, черновиков и заметок."""
     if readonly:
-        from app.bot.keyboards.product_keyboard import get_products_menu_keyboard
+        from app.bot.handlers.product_management import products_menu_markup
 
-        return get_products_menu_keyboard(readonly=True, avito_unlinked_count=0)
+        return await products_menu_markup(user_id=user_id)
     queue_count = get_queue_count(bot)
     drafts_count = await get_drafts_count()
     return get_main_keyboard(
@@ -70,7 +72,9 @@ async def build_home_screen(bot, user_id: int | None = None) -> tuple[str, objec
 
     sales_html = format_monthly_sales_html(products, month_name)
     text = format_home_html(notes, sales_html)
-    keyboard = await build_main_keyboard(bot, notes_count=len(notes), readonly=readonly)
+    keyboard = await build_main_keyboard(
+        bot, notes_count=len(notes), readonly=readonly, user_id=user_id
+    )
     return text, keyboard
 
 

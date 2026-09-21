@@ -110,7 +110,16 @@ async def products_menu_markup(*, user_id: Optional[int] = None):
     from app.db.product_queries import count_unlinked_used_avito_products
 
     if is_viewer_user(user_id):
-        return get_products_menu_keyboard(readonly=True, avito_unlinked_count=0)
+        stale_badge = 0
+        try:
+            _, stale_badge = await _fetch_stale_price_data()
+        except Exception:
+            logger.exception("Failed to count stale used products for viewer menu")
+        return get_products_menu_keyboard(
+            readonly=True,
+            avito_unlinked_count=0,
+            stale_badge_count=stale_badge,
+        )
 
     def _count():
         db = SessionLocal()
@@ -2228,6 +2237,12 @@ async def _send_long_html_message(message, text: str, reply_markup, *, bot, chat
     )
 
 
+def _stale_back_for_user(user_id: Optional[int]) -> tuple[str, str]:
+    if is_viewer_user(user_id):
+        return "products_menu", "⬅️ Назад"
+    return "products_archive", "⬅️ Назад в архив"
+
+
 async def _render_price_stale_list(
     message,
     state: FSMContext,
@@ -2236,6 +2251,7 @@ async def _render_price_stale_list(
     sort_mode: Optional[str] = None,
     bot=None,
     chat_id: Optional[int] = None,
+    user_id: Optional[int] = None,
 ) -> None:
     """Экран «Застой по цене»: текстовый рейтинг + пагинированные кнопки."""
     data = await state.get_data()
@@ -2251,13 +2267,14 @@ async def _render_price_stale_list(
         stale_sort_mode=sort_mode,
     )
 
+    back_cb, back_label = _stale_back_for_user(user_id)
     if not products:
         await safe_edit_message(
             message,
             "🕰 <b>Застой по цене (б/у)</b>\n\nНет активных б/у товаров.",
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[
-                    [InlineKeyboardButton(text="⬅️ Назад в архив", callback_data="products_archive")]
+                    [InlineKeyboardButton(text=back_label, callback_data=back_cb)]
                 ]
             ),
             parse_mode="HTML",
@@ -2272,7 +2289,13 @@ async def _render_price_stale_list(
     text = format_stale_list_text(
         products, badge_count, STALE_BADGE_MIN_DAYS, sort_mode=sort_mode
     )
-    keyboard = get_stale_price_list_keyboard(products, page=page, sort_mode=sort_mode)
+    keyboard = get_stale_price_list_keyboard(
+        products,
+        page=page,
+        sort_mode=sort_mode,
+        back_callback=back_cb,
+        back_label=back_label,
+    )
     _bot = bot or message.bot
     _chat_id = chat_id or message.chat.id
     await _send_long_html_message(message, text, keyboard, bot=_bot, chat_id=_chat_id)
@@ -2506,10 +2529,11 @@ async def show_archived_products(
             buttons = []
             if not readonly:
                 buttons.append([ikb("📊 Вечерний отчет", "evening_report_start")])
-            buttons.extend([
-                [ikb(stale_button_label(stale_badge_count), "price_stale_list")],
-                [InlineKeyboardButton(text="⬅️ Назад в меню товаров", callback_data="products_menu")],
-            ])
+            if not readonly:
+                buttons.append([ikb(stale_button_label(stale_badge_count), "price_stale_list")])
+            buttons.append(
+                [InlineKeyboardButton(text="⬅️ Назад в меню товаров", callback_data="products_menu")]
+            )
             await safe_edit_message(
                 message,
                 "📁 Архив товаров пуст.",
@@ -2730,7 +2754,7 @@ async def show_archived_products(
     if year is None:
         if not readonly:
             buttons.append([ikb("📊 Вечерний отчет", "evening_report_start")])
-        buttons.append([ikb(stale_button_label(stale_badge_count), "price_stale_list")])
+            buttons.append([ikb(stale_button_label(stale_badge_count), "price_stale_list")])
     
     # Кнопка назад в меню товаров
     buttons.append([InlineKeyboardButton(
@@ -2759,6 +2783,7 @@ async def price_stale_list(callback: CallbackQuery, state: FSMContext):
         sort_mode=sort_mode,
         bot=callback.bot,
         chat_id=callback.message.chat.id,
+        user_id=callback.from_user.id if callback.from_user else None,
     )
     await callback.answer()
 
@@ -2780,6 +2805,7 @@ async def price_stale_page(callback: CallbackQuery, state: FSMContext):
         sort_mode=sort_mode,
         bot=callback.bot,
         chat_id=callback.message.chat.id,
+        user_id=callback.from_user.id if callback.from_user else None,
     )
     await callback.answer()
 
@@ -2794,6 +2820,7 @@ async def price_stale_sort_price(callback: CallbackQuery, state: FSMContext):
         sort_mode=STALE_SORT_PRICE,
         bot=callback.bot,
         chat_id=callback.message.chat.id,
+        user_id=callback.from_user.id if callback.from_user else None,
     )
     await callback.answer()
 
@@ -2808,6 +2835,7 @@ async def price_stale_sort_sale(callback: CallbackQuery, state: FSMContext):
         sort_mode=STALE_SORT_SALE,
         bot=callback.bot,
         chat_id=callback.message.chat.id,
+        user_id=callback.from_user.id if callback.from_user else None,
     )
     await callback.answer()
 

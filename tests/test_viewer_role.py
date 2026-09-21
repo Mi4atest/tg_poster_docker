@@ -47,6 +47,20 @@ class ViewerKeyboardTest(unittest.TestCase):
         self.assertNotIn("sync_telegram_links", cbs)
         self.assertNotIn("avito_match_queue", cbs)
         self.assertNotIn("back_to_main", cbs)
+        self.assertNotIn("price_stale_list", cbs)
+
+    def test_products_menu_readonly_puts_stale_before_archive(self):
+        kb = get_products_menu_keyboard(
+            avito_market_enabled=True,
+            readonly=True,
+            stale_badge_count=4,
+        )
+        cbs = _callbacks(kb)
+        labels = _labels(kb)
+        self.assertIn("price_stale_list", cbs)
+        self.assertIn("🕰 Застой (4)", labels)
+        self.assertLess(cbs.index("price_stale_list"), cbs.index("products_archive"))
+        self.assertGreater(cbs.index("price_stale_list"), cbs.index("avito_market_start"))
         self.assertTrue(all("Авито без ссылки" not in text for text in labels))
         self.assertTrue(all("Обновление постов" not in text for text in labels))
         self.assertTrue(all("Назад" not in text for text in labels))

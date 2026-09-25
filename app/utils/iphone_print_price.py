@@ -35,6 +35,8 @@ _EXTRA_PRINT_COLORS: Dict[str, str] = {
     "Mist Blue": "Mist Blue",
     "Sky Blue": "Sky Blue",
     "Deep Blue": "Deep Blue",
+    "Glacier": "Glacier",
+    "Burgundy": "Burgundy",
     "Ultramarine": "Ultramarine",
     "Lavender": "Lavender",
     "Lavander": "Lavender",
@@ -75,6 +77,16 @@ _MODEL_COLOR_PRINT_ALIASES: Dict[str, Dict[str, str]] = {
     "17 Pro Max": {
         "Blue": "Deep Blue",
         "Orange": "Cosmic Orange",
+    },
+    "18 Pro": {
+        "White": "Silver",
+        "Blue": "Glacier",
+        "Red": "Burgundy",
+    },
+    "18 Pro Max": {
+        "White": "Silver",
+        "Blue": "Glacier",
+        "Red": "Burgundy",
     },
 }
 
@@ -199,7 +211,7 @@ def print_storage_label(name: str, sort_model: str) -> str:
         ver = get_iphone_version_from_model(model) or ""
 
     # 17 / Air / 17E: без маркера = Sim+eSim
-    needs_default = ver == "17" or sort_model in ("Air", "17E")
+    needs_default = ver in ("17", "18") or sort_model in ("Air", "17E")
     if st == "esim":
         return "eSim"
     if st == "1+1":

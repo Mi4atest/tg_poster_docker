@@ -135,6 +135,29 @@ def test_parse_label_airpods_pro2():
     assert p.model == "AirPods Pro 2"
 
 
+def test_parse_label_airpods_5_and_wcc():
+    plain = parse_label("AirPods 5")
+    wcc = parse_label("AirPods 5 WCC")
+    assert plain.model == "AirPods 5"
+    assert wcc.model == "AirPods 5 WCC"
+    assert plain.model != wcc.model
+
+
+def test_parse_label_iphone_18_pro():
+    p = parse_label("18 Pro 256GB ⚪️ eSim")
+    assert p.category == "iphone"
+    assert p.model == "18 Pro"
+    assert p.memory == "256"
+    assert p.color == "⚪️"
+    assert p.storage == "esim"
+
+    pro_max = parse_label("18 Pro Max 512GB 🔴 Sim+eSim")
+    assert pro_max.model == "18 Pro Max"
+    assert pro_max.memory == "512"
+    assert pro_max.color == "🔴"
+    assert pro_max.storage == "1+1"
+
+
 def test_parse_label_watch_se3():
     p = parse_label("Se3 44 - midnight")
     assert p.category == "watch"

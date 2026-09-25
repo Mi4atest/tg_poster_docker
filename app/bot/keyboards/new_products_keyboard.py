@@ -77,12 +77,12 @@ def get_new_iphone_versions_keyboard(
     label_resolver: Optional[Callable[[str, str], str]] = None,
 ) -> InlineKeyboardMarkup:
     """
-    Клавиатура версий iPhone для новых товаров (12, 13, 14, 15, 16, 17).
-    version_counts: {"12": 0, "13": 3, "14": 5, "15": 6, "16": 10, "17": 18}
+    Клавиатура версий iPhone для новых товаров (12–18).
+    version_counts: {"12": 0, "13": 3, "14": 5, "15": 6, "16": 10, "17": 18, "18": 4}
     label_resolver: (path, default_label) -> подпись из настроек конструктора.
     """
     buttons = []
-    for v in ["12", "13", "14", "15", "16", "17"]:
+    for v in ["12", "13", "14", "15", "16", "17", "18"]:
         c = version_counts.get(v, 0)
         if c <= 0:
             continue

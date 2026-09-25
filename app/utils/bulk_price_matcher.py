@@ -146,7 +146,7 @@ def _product_key(product: dict) -> Optional[ProductMatchKey]:
             memory = _normalize_memory(details.get("memory"))
             color = details.get("color") or resolve_color_emoji(name)
             storage = None
-            if ver in ("17",) or model in ("Air", "17E"):
+            if ver in ("17", "18") or model in ("Air", "17E"):
                 st = parse_iphone_storage_type(name)
                 if st == "esim":
                     storage = "esim"

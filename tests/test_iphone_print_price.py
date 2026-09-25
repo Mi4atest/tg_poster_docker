@@ -144,7 +144,40 @@ def test_print_model_display_pro_max():
     assert print_model_display("Air") == "Air"
 
 
-def test_split_columns():
+def test_color_alias_18_pro():
+    line = format_new_iphone_line(
+        {
+            "name": "Apple iPhone 18 Pro 256Gb White eSim Новый",
+            "price": "128500₽",
+        }
+    )
+    assert line is not None
+    assert line.sort_model == "18 Pro"
+    assert "Silver" in line.text
+    assert "eSim" in line.text
+
+    glacier = format_new_iphone_line(
+        {
+            "name": "Apple iPhone 18 Pro Max 512Gb Blue Sim+eSim Новый",
+            "price": "175000₽",
+        }
+    )
+    assert glacier is not None
+    assert glacier.sort_model == "18 Pro Max"
+    assert "Glacier" in glacier.text
+    assert "Sim+eSim" in glacier.text
+
+    burgundy = format_new_iphone_line(
+        {
+            "name": "Apple iPhone 18 Pro 256Gb 🔴 eSim Новый",
+            "price": "134500₽",
+        }
+    )
+    assert burgundy is not None
+    assert "Burgundy" in burgundy.text
+
+
+def test_18_pro_goes_to_right_column():
     from app.utils.iphone_print_price import PrintPriceLine
 
     lines = [
@@ -152,6 +185,8 @@ def test_split_columns():
         PrintPriceLine("Air 256 Black eSim - 2", "Air", "256", 2),
         PrintPriceLine("17 PRO 256 Silver eSim - 3", "17 Pro", "256", 3),
         PrintPriceLine("17 PRO MAX 256 Silver eSim - 4", "17 Pro Max", "256", 4),
+        PrintPriceLine("18 PRO 256 Silver eSim - 5", "18 Pro", "256", 5),
+        PrintPriceLine("18 PRO MAX 256 Burgundy eSim - 6", "18 Pro Max", "256", 6),
     ]
     grouped = group_lines_with_blanks(lines)
     left, right = split_new_into_columns(grouped)
@@ -161,6 +196,8 @@ def test_split_columns():
     assert "Air" in left_models
     assert "17 Pro" in right_models
     assert "17 Pro Max" in right_models
+    assert "18 Pro" in right_models
+    assert "18 Pro Max" in right_models
 
 
 def test_build_pdf_smoke_one_page():

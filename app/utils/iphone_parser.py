@@ -124,22 +124,22 @@ IPHONE_MODELS = {
     },
     "iPhone 16": {
         "keywords": ["iphone 16", "iphone 16 "],
-        "exclude": ["16 plus", "16 pro", "16 pro max", "16e", "16 e", "17"],
+        "exclude": ["16 plus", "16 pro", "16 pro max", "16e", "16 e", "17", "18"],
         "variants": ["16"]
     },
     "iPhone 16E": {
         "keywords": ["iphone 16e", "iphone 16 e", "iphone 16e "],
-        "exclude": ["16 plus", "16 pro", "16 pro max", "17"],
+        "exclude": ["16 plus", "16 pro", "16 pro max", "17", "18"],
         "variants": ["16e", "16 e"]
     },
     "iPhone 16 Plus": {
         "keywords": ["iphone 16 plus", "iphone 16 plus "],
-        "exclude": ["16 pro", "16 pro max", "16e", "16 e", "17"],
+        "exclude": ["16 pro", "16 pro max", "16e", "16 e", "17", "18"],
         "variants": ["16 plus"]
     },
     "iPhone 16 Pro": {
         "keywords": ["iphone 16 pro", "iphone 16 pro "],
-        "exclude": ["16 pro max", "17"],
+        "exclude": ["16 pro max", "17", "18"],
         "variants": ["16 pro"]
     },
     "iPhone 16 Pro Max": {
@@ -149,23 +149,33 @@ IPHONE_MODELS = {
     },
     "iPhone 17": {
         "keywords": ["iphone 17", "iphone 17 "],
-        "exclude": ["17 pro", "17 pro max", "17e", "17 e"],
+        "exclude": ["17 pro", "17 pro max", "17e", "17 e", "18"],
         "variants": ["17"]
     },
     "iPhone 17E": {
         "keywords": ["iphone 17e", "iphone 17 e", "iphone 17e "],
-        "exclude": ["17 pro", "17 pro max"],
+        "exclude": ["17 pro", "17 pro max", "18"],
         "variants": ["17e", "17 e"]
     },
     "iPhone 17 Pro": {
         "keywords": ["iphone 17 pro", "iphone 17 pro "],
-        "exclude": ["17 pro max", "17e", "17 e"],
+        "exclude": ["17 pro max", "17e", "17 e", "18"],
         "variants": ["17 pro"]
     },
     "iPhone 17 Pro Max": {
         "keywords": ["iphone 17 pro max", "iphone 17 pro max "],
-        "exclude": [],
+        "exclude": ["18"],
         "variants": ["17 pro max"]
+    },
+    "iPhone 18 Pro": {
+        "keywords": ["iphone 18 pro", "iphone 18 pro "],
+        "exclude": ["18 pro max"],
+        "variants": ["18 pro"]
+    },
+    "iPhone 18 Pro Max": {
+        "keywords": ["iphone 18 pro max", "iphone 18 pro max "],
+        "exclude": [],
+        "variants": ["18 pro max"]
     },
     "iPhone Air": {
         "keywords": ["iphone air", "iphone air "],
@@ -354,6 +364,8 @@ def sort_models_for_display(models: List[str]) -> List[str]:
         "iPhone 17E",
         "iPhone 17 Pro",
         "iPhone 17 Pro Max",
+        "iPhone 18 Pro",
+        "iPhone 18 Pro Max",
         "iPhone SE 2020",
         "iPhone SE 2022",
         "Другие"
@@ -376,9 +388,9 @@ def get_main_iphone_versions() -> List[str]:
     Возвращает список основных версий iPhone (без вариантов).
     
     Returns:
-        Список основных версий: ["X", "11", "12", "13", "14", "15", "16", "17", "SE", "Air"]
+        Список основных версий: ["X", "11", "12", "13", "14", "15", "16", "17", "18", "SE", "Air"]
     """
-    return ["X", "11", "12", "13", "14", "15", "16", "17", "SE", "Air"]
+    return ["X", "11", "12", "13", "14", "15", "16", "17", "18", "SE", "Air"]
 
 
 def get_models_for_version(version: str, grouped_products: Dict[str, List[Dict]]) -> Dict[str, List[Dict]]:
@@ -411,7 +423,7 @@ def get_models_for_version(version: str, grouped_products: Dict[str, List[Dict]]
                 result[model_name] = products
         elif version_lower == "x":
             # Для X проверяем X, XS, XS Max, XR
-            if model_lower.startswith("iphone x") and not any(v in model_lower for v in ["11", "12", "13", "14", "15", "16", "17"]):
+            if model_lower.startswith("iphone x") and not any(v in model_lower for v in ["11", "12", "13", "14", "15", "16", "17", "18"]):
                 result[model_name] = products
         else:
             # Для остальных версий проверяем начало названия
@@ -541,7 +553,7 @@ def parse_iphone_details(name: str) -> Dict[str, Optional[str]]:
 
 def get_iphone_version_from_model(model_name: str) -> Optional[str]:
     """
-    Возвращает основную версию (12, 13, 14, 15, 16, 17, SE, Air) по названию модели.
+    Возвращает основную версию (12, 13, 14, 15, 16, 17, 18, SE, Air) по названию модели.
     """
     if not model_name:
         return None

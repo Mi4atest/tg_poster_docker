@@ -31,6 +31,8 @@ MODEL_SORT_ORDER: tuple[str, ...] = (
     "Air",
     "17 Pro",
     "17 Pro Max",
+    "18 Pro",
+    "18 Pro Max",
 )
 
 # Модели левой колонки. Правая колонка: начиная с RIGHT_COLUMN_START_MODEL.

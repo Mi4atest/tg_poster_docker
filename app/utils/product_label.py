@@ -119,6 +119,10 @@ def _parse_airpods_model(name: str) -> Optional[str]:
         return "AirPods 4 ANC"
     if "airpods 4" in nl:
         return "AirPods 4"
+    if "5 wcc" in nl:
+        return "AirPods 5 WCC"
+    if "airpods 5" in nl:
+        return "AirPods 5"
     if "airpods 3" in nl and "magsafe" in nl:
         return "AirPods 3 Magsafe"
     if "airpods 3" in nl:
@@ -212,7 +216,7 @@ def _describe_iphone(p: dict) -> ProductLabel:
         mem_display = "1Tb" if mem == "1Tb" else f"{mem}Gb"
     color = parse_iphone_color_key(name) or resolve_color_emoji(name)
     storage = None
-    if ver == "17" and mem_display:
+    if ver in ("17", "18") and mem_display:
         if st == "esim":
             storage = "eSim"
         elif st == "1+1" or st is None:

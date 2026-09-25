@@ -44,6 +44,8 @@ AIRPODS_ORDER = [
     "AirPods 3 Magsafe",
     "AirPods 4",
     "AirPods 4 ANC",
+    "AirPods 5",
+    "AirPods 5 WCC",
     "AirPods Pro 2",
     "AirPods Pro 3",
 ]
@@ -52,6 +54,8 @@ AIRPODS_KEY = {
     "AirPods 3 Magsafe": "airpods_3_magsafe",
     "AirPods 4": "airpods_4",
     "AirPods 4 ANC": "airpods_4_anc",
+    "AirPods 5": "airpods_5",
+    "AirPods 5 WCC": "airpods_5_wcc",
     "AirPods Pro 2": "airpods_pro_2",
     "AirPods Pro 3": "airpods_pro_3",
 }
@@ -302,7 +306,7 @@ def _filter_classical(items: List[dict], collection_value: Optional[str] = None)
 
 
 def _iphone_version_counts(products: List[dict]) -> Dict[str, int]:
-    counts = {v: 0 for v in ["12", "13", "14", "15", "16", "17"]}
+    counts = {v: 0 for v in ["12", "13", "14", "15", "16", "17", "18"]}
     for p in products:
         name = p.get("name", "")
         model = parse_iphone_model(name)
@@ -328,6 +332,7 @@ def _iphone_model_counts(products: List[dict], version: str) -> Dict[str, int]:
         "15": ["15", "15 Plus", "15 Pro", "15 Pro Max"],
         "16": ["16", "16E", "16 Plus", "16 Pro", "16 Pro Max"],
         "17": ["Air", "17", "17E", "17 Pro", "17 Pro Max"],
+        "18": ["18 Pro", "18 Pro Max"],
     }
     order = VERSION_MODELS.get(version, [])
     counts: Dict[str, int] = {}
@@ -381,9 +386,9 @@ def _iphone_storage_counts(products: List[dict], version: str, model_key: str, m
         st = parse_iphone_storage_type(name)
         if st in counts:
             counts[st] += 1
-        elif version == "17" and st is None:
+        elif version in ("17", "18") and st is None:
             mk = (model_key or "").lower()
-            if mk == "17" or "17_pro" in mk or "17_promax" in mk:
+            if mk in ("17", "18") or "pro" in mk:
                 counts["1+1"] += 1
     return counts
 
@@ -410,9 +415,9 @@ def _iphone_products_for_storage(
         if storage_norm == "1+1":
             if st == "1+1":
                 out.append(p)
-            elif version == "17" and st is None:
+            elif version in ("17", "18") and st is None:
                 mk = (model_key or "").lower()
-                if mk == "17" or "17_pro" in mk or "17_promax" in mk:
+                if mk in ("17", "18") or "pro" in mk:
                     out.append(p)
         elif st == storage_norm:
             out.append(p)
@@ -474,6 +479,10 @@ def _parse_airpods_model(name: str) -> Optional[str]:
         return "AirPods 4 ANC"
     if "airpods 4" in nl:
         return "AirPods 4"
+    if "5 wcc" in nl:
+        return "AirPods 5 WCC"
+    if "airpods 5" in nl:
+        return "AirPods 5"
     if "airpods 3" in nl and "magsafe" in nl:
         return "AirPods 3 Magsafe"
     if "airpods 3" in nl:
@@ -877,7 +886,7 @@ def _hardcoded_children(
 
     if path == "root>cat>iPhone":
         v_counts = _iphone_version_counts(iphone_new)
-        for v in ["12", "13", "14", "15", "16", "17"]:
+        for v in ["12", "13", "14", "15", "16", "17", "18"]:
             pth = f"root>cat>iPhone>ver>{v}"
             out.append(
                 MenuNode(
@@ -901,6 +910,7 @@ def _hardcoded_children(
             "15": ["15", "15 Plus", "15 Pro", "15 Pro Max"],
             "16": ["16", "16E", "16 Plus", "16 Pro", "16 Pro Max"],
             "17": ["Air", "17", "17E", "17 Pro", "17 Pro Max"],
+            "18": ["18 Pro", "18 Pro Max"],
         }
         for disp in VERSION_MODELS.get(ver, []):
             c = m_counts.get(disp, 0)
@@ -1373,6 +1383,7 @@ def _iphone_model_key_to_display(version: str, model_key: str) -> str:
         "15": ["15", "15 Plus", "15 Pro", "15 Pro Max"],
         "16": ["16", "16E", "16 Plus", "16 Pro", "16 Pro Max"],
         "17": ["Air", "17", "17E", "17 Pro", "17 Pro Max"],
+        "18": ["18 Pro", "18 Pro Max"],
     }
     for disp in VERSION_MODELS.get(version, []):
         if _display_to_model_key(disp) == model_key:

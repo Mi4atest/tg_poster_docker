@@ -302,3 +302,48 @@ def test_match_watch_rose_as_rose_gold():
     results = match_bulk_lines([line], catalog)
     assert results[0].status == MatchStatus.MATCHED
     assert results[0].product_id == 31
+
+
+def test_match_iphone_18_pro_esim_not_sim():
+    catalog = [
+        _iphone_product(70, "Apple iPhone 18 Pro 256Gb Silver eSim Новый", "128500₽"),
+        _iphone_product(71, "Apple iPhone 18 Pro 256Gb Silver Sim+eSim Новый", "135000₽"),
+        {
+            "id": 80,
+            "name": "Apple AirPods 5",
+            "display_label": None,
+            "price": "16300₽",
+            "collection_name": "Airpods",
+            "custom_button_id": None,
+        },
+        {
+            "id": 81,
+            "name": "Apple AirPods 5 WCC",
+            "display_label": None,
+            "price": "17500₽",
+            "collection_name": "Airpods",
+            "custom_button_id": None,
+        },
+    ]
+    esim = match_bulk_lines(
+        [BulkPriceLine("18 Pro 256GB ⚪️ eSim", 128500, 129000, 1)],
+        catalog,
+    )
+    assert esim[0].status == MatchStatus.MATCHED
+    assert esim[0].product_id == 70
+
+    sim = match_bulk_lines(
+        [BulkPriceLine("18 Pro 256GB ⚪️ Sim+eSim", 135000, 136000, 2)],
+        catalog,
+    )
+    assert sim[0].product_id == 71
+
+    pods = match_bulk_lines(
+        [
+            BulkPriceLine("AirPods 5", 16300, 16400, 3),
+            BulkPriceLine("AirPods 5 WCC", 17500, 17600, 4),
+        ],
+        catalog,
+    )
+    assert pods[0].product_id == 80
+    assert pods[1].product_id == 81

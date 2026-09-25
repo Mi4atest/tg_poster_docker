@@ -81,6 +81,7 @@ IPHONE_VERSION_MODEL_ORDER: Dict[str, List[str]] = {
     "15": ["15", "15 Plus", "15 Pro", "15 Pro Max"],
     "16": ["16", "16E", "16 Plus", "16 Pro", "16 Pro Max"],
     "17": ["Air", "17", "17E", "17 Pro", "17 Pro Max"],
+    "18": ["18 Pro", "18 Pro Max"],
 }
 
 
@@ -214,7 +215,7 @@ def _iphone_storage_sort_order(name: str, version_num: int) -> int:
         return 1
     if st == "2sim":
         return 2
-    if version_num == 17:
+    if version_num in (17, 18):
         return 1
     return 0
 
@@ -274,7 +275,7 @@ def _sort_iphone_products(products: List[dict]) -> List[dict]:
 
 def _iphone_version_counts(products: List[dict]) -> Dict[str, int]:
     counts = {}
-    for v in ["12", "13", "14", "15", "16", "17"]:
+    for v in ["12", "13", "14", "15", "16", "17", "18"]:
         counts[v] = 0
     for p in products:
         name = p.get("name", "")
@@ -348,9 +349,9 @@ def _iphone_storage_counts(products: List[dict], version: str, model_key: str, m
         if st in counts:
             counts[st] += 1
         # iPhone 17 (базовый, Pro, Pro Max): товары без esim/2sim в названии считаем как 1+1
-        elif version == "17" and st is None:
+        elif version in ("17", "18") and st is None:
             mk = (model_key or "").lower()
-            if mk == "17" or "17_pro" in mk or "17_promax" in mk:
+            if mk in ("17", "18") or "pro" in mk:
                 counts["1+1"] += 1
     return counts
 
@@ -424,7 +425,7 @@ def _short_line_iphone(
     if used_custom_label:
         # Для custom-товаров подпись уже может содержать память/цвет/sim, не дублируем части.
         line = f"{model_label} - {price}"
-    elif version == "17":
+    elif version in ("17", "18"):
         if storage_key:
             stor_norm = storage_key.replace("p", "+") if "p" in storage_key else storage_key
             stor_label = "eSim" if stor_norm == "esim" else "(1+1)" if stor_norm == "1+1" else "2sim"
@@ -474,7 +475,7 @@ def _short_line_iphone_by_product(
     if used_custom_label:
         # Для custom-кнопок текст уже финальный, иначе получаем дубли вида "128Gb 🔵 128Gb 🔵".
         line = f"{model_label} - {price}"
-    elif ver == "17" and mem_display:
+    elif ver in ("17", "18") and mem_display:
         stor_label = "eSim" if st == "esim" else "(1+1)" if (st == "1+1" or st is None) else "2sim"
         line = f"{model_label} {mem_display} {color_emoji} {stor_label} - {price}"
     else:
@@ -596,9 +597,9 @@ def _iphone_products_for_storage(
         if storage_norm == "1+1":
             if st == "1+1":
                 out.append(p)
-            elif version == "17" and st is None:
+            elif version in ("17", "18") and st is None:
                 mk = (model_key or "").lower()
-                if mk == "17" or "17_pro" in mk or "17_promax" in mk:
+                if mk in ("17", "18") or "pro" in mk:
                     out.append(p)
         elif st == storage_norm:
             out.append(p)
@@ -1300,7 +1301,7 @@ async def new_products_category(callback: CallbackQuery, state: FSMContext):
             v_counts = _iphone_version_counts(iphone_new)
             with SessionLocal() as db:
                 all_items = mcs.load_new_products_dicts(db)
-                for v in ["12", "13", "14", "15", "16", "17"]:
+                for v in ["12", "13", "14", "15", "16", "17", "18"]:
                     pth = f"root>cat>iPhone>ver>{v}"
                     v_counts[v] = mcs.total_count_for_path(db, pth, all_items)
                 keyboard = _merge_custom_into_markup(

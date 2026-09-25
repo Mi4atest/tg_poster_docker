@@ -23,6 +23,7 @@ COLOR_EMOJI_MAP: Dict[str, str] = {
     "White Titanium": "⚪️",
     
     "Blue": "🔵",
+    "Glacier": "🔵",
     "Pacific Blue": "🔵",
     "Ultramarine": "🔵",
     "Mist Blue": "🔵",
@@ -32,6 +33,7 @@ COLOR_EMOJI_MAP: Dict[str, str] = {
     "Blue Titanium": "🔵",
     
     "Red": "🔴",
+    "Burgundy": "🔴",
     "Product Red": "🔴",
     
     "Green": "🟢",

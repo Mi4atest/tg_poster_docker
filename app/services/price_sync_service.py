@@ -108,6 +108,9 @@ class PriceSyncService:
         self._list_debounce_used = False
         self._list_debounce_availability = False
         self._list_debounce_vk_price = False
+        # Не ждём правку дашборда в критическом пути (иначе FloodWait 100–280с
+        # блокирует ответ «Помечен недоступным» / смену цены).
+        self._dash_refresh_tasks: Dict[int, asyncio.Task] = {}
 
     def start(self, bot: Bot) -> None:
         self._bot = bot
@@ -125,6 +128,24 @@ class PriceSyncService:
         if self._list_debounce_task and not self._list_debounce_task.done():
             self._list_debounce_task.cancel()
 
+    def _schedule_dashboard_refresh(self, bot: Bot, chat_id: int) -> None:
+        """Обновить дашборд в фоне; предыдущий pending refresh для чата отменяется."""
+        old = self._dash_refresh_tasks.get(chat_id)
+        if old is not None and not old.done():
+            old.cancel()
+
+        async def _run() -> None:
+            try:
+                await self._refresh_dashboard(bot, chat_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Background dashboard refresh failed chat_id=%s", chat_id)
+
+        self._dash_refresh_tasks[chat_id] = asyncio.create_task(
+            _run(), name=f"platform_dash_refresh_{chat_id}"
+        )
+
     async def _enqueue(
         self,
         bot: Bot,
@@ -135,7 +156,7 @@ class PriceSyncService:
         dash.pending_count += 1
         dash.jobs.appendleft(job)
         await self._queue.put(job)
-        await self._refresh_dashboard(bot, job.chat_id)
+        self._schedule_dashboard_refresh(bot, job.chat_id)
         return job
 
     async def enqueue_price_sync(
@@ -219,7 +240,7 @@ class PriceSyncService:
                 elif job.status in (JobStatus.ERROR, JobStatus.PARTIAL):
                     dash.error_count += 1
                 job.finished_at = datetime.now(timezone.utc)
-                await self._refresh_dashboard(bot, job.chat_id)
+                self._schedule_dashboard_refresh(bot, job.chat_id)
                 if job.refresh_used_list or job.refresh_availability_list or job.refresh_vk_channel_price:
                     self._schedule_list_refresh(
                         used=job.refresh_used_list,
@@ -649,6 +670,8 @@ class PriceSyncService:
         return "\n".join(lines) + footer_block
 
     async def _refresh_dashboard(self, bot: Bot, chat_id: int) -> None:
+        """Обновить «📡 Синхронизация площадок». Без ожидания FloodWait и без
+        шторма SendMessage при лимите — иначе блокируется UI снятия/цены."""
         dash = self._get_dashboard(chat_id)
         text = self.render_dashboard_text(chat_id)
         opts = {
@@ -662,6 +685,7 @@ class PriceSyncService:
                 return
             from app.bot.utils.telegram_edit import edit_message_text_safe
 
+            # max_attempts=1: при flood сразу выходим, не sleep(100–280с)
             ok = await edit_message_text_safe(
                 bot,
                 chat_id=chat_id,
@@ -670,17 +694,19 @@ class PriceSyncService:
                 parse_mode="HTML",
                 link_preview_disabled=True,
                 apply_rate_limit=False,
+                max_attempts=1,
             )
+            # При flood/ошибке не шлём новое SendMessage — это снова бьёт в лимит.
             if not ok:
-                msg = await bot.send_message(chat_id=chat_id, text=text, **opts)
-                dash.message_id = msg.message_id
-        except Exception:
-            logger.exception("Failed to refresh sync dashboard chat_id=%s", chat_id)
-            try:
-                msg = await bot.send_message(chat_id=chat_id, text=text, **opts)
-                dash.message_id = msg.message_id
-            except Exception:
-                logger.exception("Failed to create sync dashboard chat_id=%s", chat_id)
+                logger.warning(
+                    "Sync dashboard edit skipped (flood/error) chat_id=%s msg=%s",
+                    chat_id,
+                    dash.message_id,
+                )
+        except Exception as e:
+            logger.warning(
+                "Failed to refresh sync dashboard chat_id=%s: %s", chat_id, e
+            )
 
 
 _price_sync_service: Optional[PriceSyncService] = None

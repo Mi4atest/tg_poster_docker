@@ -254,20 +254,17 @@ def get_airpods_models_keyboard(
     model_counts: {"AirPods 3": 2, "AirPods 3 Magsafe": 1, "AirPods 4": 1, ...}
     """
     buttons = []
-    # Порядок моделей AirPods
-    order = ["AirPods 3", "AirPods 3 Magsafe", "AirPods 4", "AirPods 4 ANC", "AirPods Pro 2", "AirPods Pro 3"]
-    for model in order:
+    for model in mcs_paths.AIRPODS_ORDER:
         c = model_counts.get(model, 0)
         if c <= 0:
             continue
-        model_key = model.replace(" ", "_").lower().replace("airpods", "airpods")
-        mk = mcs_paths.AIRPODS_KEY.get(model, model_key)
+        mk = mcs_paths.AIRPODS_KEY[model]
         pth = f"root>cat>Airpods>md>{mk}"
         disp = label_resolver(pth, model) if label_resolver else model
         buttons.append([
             InlineKeyboardButton(
                 text=f"{disp} ({c})",
-                callback_data=f"new_airpods_{model_key}"
+                callback_data=f"new_airpods_{mk}"
             )
         ])
     buttons.append([

@@ -1012,6 +1012,10 @@ def _parse_airpods_model(name: str) -> Optional[str]:
         return "AirPods 4 ANC"
     if "airpods 4" in name_lower:
         return "AirPods 4"
+    if "5 wcc" in name_lower:
+        return "AirPods 5 WCC"
+    if "airpods 5" in name_lower:
+        return "AirPods 5"
     # AirPods 3 Magsafe: "AirPods 3 с зарядным кейсом Magsafe" — проверяем наличие 3 и magsafe
     if "airpods 3" in name_lower and "magsafe" in name_lower:
         return "AirPods 3 Magsafe"
@@ -1093,8 +1097,7 @@ def _format_airpods_list(products: List[dict]) -> str:
             model_map[model].append(p)
     
     lines = []
-    order = ["AirPods 3", "AirPods 3 Magsafe", "AirPods 4", "AirPods 4 ANC", "AirPods Pro 2", "AirPods Pro 3"]
-    for model in order:
+    for model in mcs.AIRPODS_ORDER:
         if model in model_map:
             for p in model_map[model]:
                 price = _normalize_price_display(p.get("price"))
@@ -1174,12 +1177,7 @@ def _available_sort_key(
     if group == "Airpods":
         model = _parse_airpods_model(p.get("name", "")) or ""
         model_order = {
-            "AirPods 3": 0,
-            "AirPods 3 Magsafe": 1,
-            "AirPods 4": 2,
-            "AirPods 4 ANC": 3,
-            "AirPods Pro 2": 4,
-            "AirPods Pro 3": 5,
+            name: idx for idx, name in enumerate(mcs.AIRPODS_ORDER)
         }.get(model, 99)
         return (g, model_order, _price_sort_value(p), p.get("id", 0))
 
@@ -1531,15 +1529,8 @@ async def new_airpods_model(callback: CallbackQuery, state: FSMContext):
     # Ключ в callback_data с подчёркиваниями: new_airpods_airpods_3 -> airpods_3
     model_key = callback.data.replace("new_airpods_", "")
     
-    # Маппинг ключей на названия моделей (ключи с подчёркиваниями)
-    model_map = {
-        "airpods_3": "AirPods 3",
-        "airpods_3_magsafe": "AirPods 3 Magsafe",
-        "airpods_4": "AirPods 4",
-        "airpods_4_anc": "AirPods 4 ANC",
-        "airpods_pro_2": "AirPods Pro 2",
-        "airpods_pro_3": "AirPods Pro 3",
-    }
+    # Маппинг ключей на названия моделей (единый источник — menu_constructor_service)
+    model_map = {v: k for k, v in mcs.AIRPODS_KEY.items()}
     model_name = model_map.get(model_key.lower())
     
     if not model_name:

@@ -128,7 +128,9 @@ async def _finalize_post_creation(callback: CallbackQuery, state: FSMContext, av
             post_name = post.get("name", "")
             post_id = post.get("id")
 
-            success_text = build_post_ready_text(post_name, photo_count, video_count)
+            success_text = build_post_ready_text(
+                post_name, photo_count, video_count, post=post
+            )
             keyboard = build_post_ready_keyboard(post_id)
 
             await callback.message.edit_text(success_text, reply_markup=keyboard, parse_mode="HTML")
@@ -656,7 +658,9 @@ async def select_collection(callback: CallbackQuery, state: FSMContext):
     post = await get_post_api(post_id) if post_id else None
     if post:
         photo_count, video_count = post_media_counts(post)
-        text = build_post_ready_text(post.get("name", ""), photo_count, video_count)
+        text = build_post_ready_text(
+            post.get("name", ""), photo_count, video_count, post=post
+        )
         keyboard = build_post_ready_keyboard(post_id)
     else:
         keyboard = build_post_ready_keyboard(post_id or "")

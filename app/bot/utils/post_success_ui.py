@@ -10,6 +10,7 @@ from app.bot.keyboards.post_avito_keyboard import AVITO_BODY_LABELS, AVITO_SCREE
 from app.bot.utils.button_styles import ikb
 from app.integrations.avito.condition_maps import clamp_avito_level
 from app.services.settings_service import SettingsService, get_settings_service
+from app.utils.post_publication_preflight import check_post_preflight, format_preflight_html
 
 _SOCIAL_PLATFORMS = (
     ("vk", "VK"),
@@ -96,7 +97,13 @@ def format_avito_draft_line(avito_draft: Optional[dict], service: Optional[Setti
     return f"🛒 Авито: экран «{screen}», корпус «{body}»"
 
 
-def build_post_ready_text(post_name: str, photo_count: int, video_count: int) -> str:
+def build_post_ready_text(
+    post_name: str,
+    photo_count: int,
+    video_count: int,
+    *,
+    post: dict | None = None,
+) -> str:
     name = html.escape(post_name or "Без названия")
     media = _media_line(photo_count, video_count)
     lines = [
@@ -106,8 +113,12 @@ def build_post_ready_text(post_name: str, photo_count: int, video_count: int) ->
         media,
         "",
         "Статус: 📝 черновик",
-        "👉 Следующий шаг — «В очередь»",
     ]
+    if post is not None:
+        preflight = format_preflight_html(check_post_preflight(post))
+        if preflight:
+            lines.extend(["", preflight])
+    lines.extend(["", "👉 Следующий шаг — «В очередь»"])
     return "\n".join(lines)
 
 

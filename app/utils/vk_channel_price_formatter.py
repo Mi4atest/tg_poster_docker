@@ -34,6 +34,7 @@ from app.utils.product_label import (
     _parse_airtag_model,
     _parse_pencil_model,
 )
+from app.utils.telegram_text_units import telegram_text_units
 from app.utils.vk_channel_price_template import (
     PriceSection,
     PriceSlot,
@@ -60,7 +61,7 @@ class RenderedPrice:
 
 
 def _utf16_len(s: str) -> int:
-    return len(s.encode("utf-16-le")) // 2
+    return telegram_text_units(s)
 
 
 def _product_key_extended(product: dict) -> Optional[ProductMatchKey]:

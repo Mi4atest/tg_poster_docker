@@ -141,6 +141,16 @@ def _get_integration_field_current_value(field: str) -> str:
     return str(v)
 
 
+def _get_vk_integration_field_prompt(field: str) -> str:
+    if field not in ("vk_access_token", "vk_market_access_token"):
+        return ""
+    return (
+        "Вставьте токен или всю ссылку с oauth.vk.ru / oauth.vk.com после кнопки "
+        "vk.com на https://vkhost.github.io — бот сам возьмёт access_token "
+        "из адресной строки (от vk1… / vk2… до &)."
+    )
+
+
 def _get_instagram_integration_field_prompt(field: str) -> str:
     prompts = {
         "instagram_graph_access_token": (
@@ -268,7 +278,9 @@ def _build_integration_platform_text(platform: str) -> str:
             f"ID группы (куда постим): {integrations.get('vk_group_id') or env_settings.VK_GROUP_ID or 'не задан'}\n"
             f"ID приложения: {integrations.get('vk_app_id') or env_settings.VK_APP_ID or '54604726'}\n"
             f"Защищённый ключ: {'задан' if service.get_secret('vk_app_secret') else 'не задан'}\n\n"
-            "Получить токен своего приложения:\n"
+            "Временный токен (vk.com на vkhost): можно вставить всю ссылку "
+            "из адресной строки — access_token вырежется сам.\n"
+            "Своё приложение:\n"
             "https://appleshop.ap43.ru/vk/oauth/vkid/start"
         )
     if platform == "telegram":
@@ -758,7 +770,10 @@ async def request_integration_value(callback: CallbackQuery, state: FSMContext):
         integration_restore_message_id=callback.message.message_id,
     )
     current = _get_integration_field_current_value(field)
-    instruction = _get_instagram_integration_field_prompt(field)
+    instruction = (
+        _get_instagram_integration_field_prompt(field)
+        or _get_vk_integration_field_prompt(field)
+    )
     instruction_block = f"\n\n{instruction}" if instruction else ""
     await callback.message.edit_text(
         f"Текущее значение `{field}`:\n{current}{instruction_block}\n\nВведите новое значение:",
@@ -911,6 +926,11 @@ async def save_integration_value(message: Message, state: FSMContext):
     return_cb = str(data.get("input_return_callback") or "")
     restore_chat = data.get("integration_restore_chat_id")
     restore_mid = data.get("integration_restore_message_id")
+
+    if field in ("vk_access_token", "vk_market_access_token") and raw:
+        from app.utils.vk_token_parse import extract_vk_access_token
+
+        raw = extract_vk_access_token(raw)
 
     if field in SECRET_INTEGRATION_FIELDS:
         if not raw and field != "mobileproxy_api_token":

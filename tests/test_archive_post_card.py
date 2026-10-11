@@ -57,6 +57,7 @@ def test_format_archive_post_card_has_two_pre_blocks():
         "is_published_instagram": False,
         "is_published_max": False,
         "is_published_avito": False,
+        "is_published_vk_story": False,
     }
     html = format_archive_post_card(post)
     assert html.count("<pre>") == 2
@@ -71,6 +72,14 @@ def test_format_archive_post_card_has_two_pre_blocks():
     assert "Работаем без выходных" in html
     assert "📷 6 фото" in html
     assert "📹 1 видео" in html
+    assert "Публикации:" in html
+    assert '<tg-emoji emoji-id="5463375215725671627">🙊</tg-emoji> ✅ ВКонтакте' in html
+    assert '<tg-emoji emoji-id="5426990524831642021">💬</tg-emoji> ✅ Telegram' in html
+    assert '<tg-emoji emoji-id="5348533850429470257">🌐</tg-emoji> ❌ Instagram' in html
+    assert '<tg-emoji emoji-id="5361632749063013291">📡</tg-emoji> ❌ Max' in html
+    assert '<tg-emoji emoji-id="5314707757453029689">🛍</tg-emoji> ❌ Авито' in html
+    assert "📱 ❌ Сторис" in html
+    assert "ВК: ✅, ТГ:" not in html
 
 
 def test_format_post_card_for_user_archive_vs_drafts():

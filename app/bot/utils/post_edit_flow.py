@@ -21,6 +21,41 @@ TEXT_PREVIEW_LEN = 120
 # Запас под HTML-обёртку и статусы площадок (лимит сообщения TG = 4096).
 ARCHIVE_CARD_TEXT_LIMIT = 3500
 
+# Custom emoji для статусов площадок в карточке Архива (private chat, Bot API 9.4).
+# id из паков Marketplace/логотипов; alt — из getCustomEmojiStickers.
+_ARCHIVE_PLATFORM_CUSTOM_EMOJI: dict[str, tuple[str, str]] = {
+    "vk": ("5463375215725671627", "🙊"),
+    "telegram": ("5426990524831642021", "💬"),
+    "instagram": ("5348533850429470257", "🌐"),
+    "max": ("5361632749063013291", "📡"),
+    "avito": ("5314707757453029689", "🛍"),
+}
+
+
+def _tg_custom_emoji_html(custom_emoji_id: str, alt: str) -> str:
+    return f'<tg-emoji emoji-id="{custom_emoji_id}">{alt}</tg-emoji>'
+
+
+def _archive_platform_status_block(post: dict) -> str:
+    """Вертикальный блок статусов публикации для HTML-карточки Архива."""
+    rows = [
+        ("vk", "ВКонтакте", bool(post.get("is_published_vk"))),
+        ("telegram", "Telegram", bool(post.get("is_published_telegram"))),
+        ("instagram", "Instagram", bool(post.get("is_published_instagram"))),
+        ("max", "Max", bool(post.get("is_published_max"))),
+        ("avito", "Авито", bool(post.get("is_published_avito"))),
+    ]
+    lines = ["Публикации:"]
+    for key, label, ok in rows:
+        eid, alt = _ARCHIVE_PLATFORM_CUSTOM_EMOJI[key]
+        mark = "✅" if ok else "❌"
+        lines.append(f"{_tg_custom_emoji_html(eid, alt)} {mark} {html.escape(label)}")
+    # Сторис — без custom emoji (нет id в эксперименте)
+    st_ok = bool(post.get("is_published_vk_story"))
+    st_mark = "✅" if st_ok else "❌"
+    lines.append(f"📱 {st_mark} Сторис")
+    return "\n".join(lines)
+
 
 def _escape_md(text: str) -> str:
     for ch in ("\\", "_", "*", "`", "["):
@@ -188,13 +223,7 @@ def format_archive_post_card(post: dict, *, success_prefix: str = "") -> str:
     lines.append(f"📷 {photo_count} фото")
     lines.append(f"📹 {video_count} видео")
     lines.append("")
-    vk = "✅" if post.get("is_published_vk") else "❌"
-    tg = "✅" if post.get("is_published_telegram") else "❌"
-    ig = "✅" if post.get("is_published_instagram") else "❌"
-    mx = "✅" if post.get("is_published_max") else "❌"
-    av = "✅" if post.get("is_published_avito") else "❌"
-    st = "✅" if post.get("is_published_vk_story") else "❌"
-    lines.append(f"ВК: {vk}, ТГ: {tg}, IG: {ig}, MAX: {mx}, Авито: {av}, Сторис: {st}")
+    lines.append(_archive_platform_status_block(post))
     return "\n".join(lines)
 
 

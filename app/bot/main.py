@@ -10,6 +10,7 @@ from app.bot.handlers import (
     post_creation,
     post_management,
     scheduler,
+    schedule_post,
     product_management,
     iphone_market_price,
     iphone_market_watchlist,
@@ -65,6 +66,7 @@ dp.include_router(bulk_price_update.router)
 dp.include_router(price_tags.router)
 dp.include_router(settings.router)
 dp.include_router(post_management.router)
+dp.include_router(schedule_post.router)
 dp.include_router(scheduler.router)
 dp.include_router(menu_constructor.router)
 

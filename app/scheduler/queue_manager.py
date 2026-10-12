@@ -13,8 +13,17 @@ from app.api.models.post import Post, PublicationQueue
 
 logger = logging.getLogger(__name__)
 
+# Приоритет пользовательского «Запланировать» (обычные=0, publish_now=999).
+SCHEDULED_PRIORITY = 100
+
 # Старый маркер Instagram и общий [retry=n/m] для ВК/IG.
 _RETRY_MARKER_RE = re.compile(r"\[(?:ig_)?retry=(\d+)/(\d+)\]")
+
+_DUE_SCHEDULE_SQL = "(scheduled_at IS NULL OR scheduled_at <= :now)"
+_FUTURE_USER_SCHEDULE_SQL = (
+    "scheduled_at IS NOT NULL AND scheduled_at > :now "
+    "AND priority >= :sched_priority AND priority < 999"
+)
 
 
 def parse_retry_attempt(error_message: Optional[str]) -> int:
@@ -81,19 +90,50 @@ class QueueManager:
                 existing = (
                     self.db.execute(
                         text(
-                            "SELECT id FROM publication_queue "
+                            "SELECT id, status FROM publication_queue "
                             "WHERE post_id = :post_id AND platform = :platform "
                             "AND status IN ('pending', 'publishing', 'paused') "
                             "LIMIT 1"
                         ),
                         {"post_id": post_id, "platform": platform},
                     )
+                    .mappings()
                     .first()
                 )
                 if existing:
-                    logger.info(
-                        "Post %s already in queue for platform %s", post_id, platform
-                    )
+                    if scheduled_at is not None and existing["status"] in (
+                        "pending",
+                        "paused",
+                    ):
+                        self.db.execute(
+                            text(
+                                "UPDATE publication_queue SET status = 'pending', "
+                                "priority = :priority, scheduled_at = :scheduled_at "
+                                "WHERE id = :id"
+                            ),
+                            {
+                                "id": existing["id"],
+                                "priority": priority,
+                                "scheduled_at": scheduled_at,
+                            },
+                        )
+                        queue_items.append(
+                            PublicationQueue(
+                                id=existing["id"],
+                                post_id=post_id,
+                                platform=platform,
+                                status="pending",
+                                priority=priority,
+                                scheduled_at=scheduled_at,
+                                created_at=now,
+                            )
+                        )
+                    else:
+                        logger.info(
+                            "Post %s already in queue for platform %s",
+                            post_id,
+                            platform,
+                        )
                     continue
 
                 qid = self.db.execute(
@@ -124,14 +164,22 @@ class QueueManager:
                 )
 
             if queue_items:
-                self.db.execute(
-                    text(
-                        "UPDATE posts SET in_queue = true, queue_status = 'pending', "
-                        "scheduled_at = COALESCE(:scheduled_at, scheduled_at), "
-                        "updated_at = NOW() WHERE id = :id"
-                    ),
-                    {"id": post_id, "scheduled_at": scheduled_at},
-                )
+                if scheduled_at is not None:
+                    self.db.execute(
+                        text(
+                            "UPDATE posts SET in_queue = true, queue_status = 'pending', "
+                            "scheduled_at = :scheduled_at, updated_at = NOW() WHERE id = :id"
+                        ),
+                        {"id": post_id, "scheduled_at": scheduled_at},
+                    )
+                else:
+                    self.db.execute(
+                        text(
+                            "UPDATE posts SET in_queue = true, queue_status = 'pending', "
+                            "updated_at = NOW() WHERE id = :id"
+                        ),
+                        {"id": post_id},
+                    )
 
             self.db.commit()
 
@@ -428,7 +476,7 @@ class QueueManager:
                     db.execute(
                         text(
                             "UPDATE posts SET in_queue = false, queue_status = 'completed', "
-                            "updated_at = NOW() WHERE id = :id"
+                            "scheduled_at = NULL, updated_at = NOW() WHERE id = :id"
                         ),
                         {"id": post_id},
                     )
@@ -697,6 +745,7 @@ class QueueManager:
                 if post:
                     post.in_queue = False
                     post.queue_status = None
+                    post.scheduled_at = None
 
             self.db.commit()
             return True
@@ -739,6 +788,7 @@ class QueueManager:
                 if post:
                     post.in_queue = False
                     post.queue_status = None
+                    post.scheduled_at = None
             self.db.commit()
             return n
         except Exception as e:
@@ -747,19 +797,21 @@ class QueueManager:
             return 0
 
     def get_queue_stats(self) -> Dict[str, int]:
-        """Получить статистику очереди."""
+        """Статистика активной очереди (без будущих scheduled_at)."""
         with self._isolated_session() as db:
             try:
                 platforms = ["vk", "telegram", "instagram", "max", "avito"]
+                now = datetime.now(timezone.utc)
                 rows = (
                     db.execute(
                         text(
                             "SELECT platform, COUNT(*) AS cnt FROM publication_queue "
                             "WHERE status IN ('pending', 'publishing', 'paused') "
+                            f"AND {_DUE_SCHEDULE_SQL} "
                             "AND platform = ANY(:platforms) "
                             "GROUP BY platform"
                         ),
-                        {"platforms": platforms},
+                        {"platforms": platforms, "now": now},
                     )
                     .mappings()
                     .all()
@@ -774,10 +826,181 @@ class QueueManager:
                 logger.error("Error getting queue stats: %s", e)
                 return {}
 
-    def get_queue_for_platform(self, platform: str) -> List[SimpleNamespace]:
-        """Получить записи очереди для платформы (с именем поста, без lazy-load ORM)."""
+    def count_scheduled_posts(self) -> int:
+        """Число уникальных постов с пользовательским отложенным временем."""
         with self._isolated_session() as db:
             try:
+                now = datetime.now(timezone.utc)
+                return int(
+                    db.execute(
+                        text(
+                            "SELECT COUNT(DISTINCT post_id) FROM publication_queue "
+                            "WHERE status = 'pending' "
+                            f"AND {_FUTURE_USER_SCHEDULE_SQL}"
+                        ),
+                        {"now": now, "sched_priority": SCHEDULED_PRIORITY},
+                    ).scalar()
+                    or 0
+                )
+            except Exception as e:
+                logger.error("Error counting scheduled posts: %s", e)
+                return 0
+
+    def list_scheduled_posts(self) -> List[SimpleNamespace]:
+        """Запланированные посты (агрегация по post_id), только пользовательский schedule."""
+        with self._isolated_session() as db:
+            try:
+                now = datetime.now(timezone.utc)
+                rows = (
+                    db.execute(
+                        text(
+                            "SELECT pq.post_id, MIN(pq.scheduled_at) AS scheduled_at, "
+                            "COALESCE(p.name, '') AS post_name, "
+                            "string_agg(DISTINCT pq.platform, ',' ORDER BY pq.platform) AS platforms "
+                            "FROM publication_queue pq "
+                            "LEFT JOIN posts p ON p.id = pq.post_id "
+                            "WHERE pq.status = 'pending' "
+                            f"AND {_FUTURE_USER_SCHEDULE_SQL} "
+                            "GROUP BY pq.post_id, p.name "
+                            "ORDER BY MIN(pq.scheduled_at) ASC"
+                        ),
+                        {"now": now, "sched_priority": SCHEDULED_PRIORITY},
+                    )
+                    .mappings()
+                    .all()
+                )
+                result: List[SimpleNamespace] = []
+                for row in rows:
+                    platforms_raw = row.get("platforms") or ""
+                    platforms = [p for p in platforms_raw.split(",") if p]
+                    result.append(
+                        SimpleNamespace(
+                            post_id=row["post_id"],
+                            scheduled_at=row["scheduled_at"],
+                            post_name=row["post_name"] or "",
+                            platforms=platforms,
+                        )
+                    )
+                return result
+            except Exception as e:
+                logger.error("Error listing scheduled posts: %s", e)
+                return []
+
+    def update_post_schedule(
+        self, post_id: str, scheduled_at: datetime, *, priority: int = SCHEDULED_PRIORITY
+    ) -> int:
+        """Перенести время для всех pending/paused задач поста."""
+        try:
+            rows = (
+                self.db.query(PublicationQueue)
+                .filter(
+                    and_(
+                        PublicationQueue.post_id == post_id,
+                        PublicationQueue.status.in_(["pending", "paused"]),
+                    )
+                )
+                .all()
+            )
+            updated = 0
+            for row in rows:
+                row.status = "pending"
+                row.scheduled_at = scheduled_at
+                row.priority = max(int(row.priority or 0), int(priority))
+                updated += 1
+            if updated:
+                post = self.db.query(Post).filter(Post.id == post_id).first()
+                if post:
+                    post.scheduled_at = scheduled_at
+                    post.in_queue = True
+                    post.queue_status = "pending"
+                self.db.commit()
+            else:
+                self.db.rollback()
+            return updated
+        except Exception as e:
+            logger.error("Error updating schedule for post %s: %s", post_id, e)
+            self.db.rollback()
+            return 0
+
+    def promote_scheduled_now(self, post_id: str) -> int:
+        """Сбросить scheduled_at и оставить обычный приоритет (в активную очередь)."""
+        try:
+            rows = (
+                self.db.query(PublicationQueue)
+                .filter(
+                    and_(
+                        PublicationQueue.post_id == post_id,
+                        PublicationQueue.status.in_(["pending", "paused"]),
+                    )
+                )
+                .all()
+            )
+            updated = 0
+            for row in rows:
+                row.status = "pending"
+                row.scheduled_at = None
+                if int(row.priority or 0) == SCHEDULED_PRIORITY:
+                    row.priority = 0
+                updated += 1
+            if updated:
+                post = self.db.query(Post).filter(Post.id == post_id).first()
+                if post:
+                    post.scheduled_at = None
+                    post.in_queue = True
+                    post.queue_status = "pending"
+                self.db.commit()
+            else:
+                self.db.rollback()
+            return updated
+        except Exception as e:
+            logger.error("Error promoting scheduled post %s: %s", post_id, e)
+            self.db.rollback()
+            return 0
+
+    def cancel_scheduled_post(self, post_id: str) -> int:
+        """Убрать запланированный пост из очереди → снова черновик."""
+        try:
+            rows = (
+                self.db.query(PublicationQueue)
+                .filter(
+                    and_(
+                        PublicationQueue.post_id == post_id,
+                        PublicationQueue.status.in_(["pending", "paused"]),
+                    )
+                )
+                .all()
+            )
+            n = len(rows)
+            if not n:
+                return 0
+            for row in rows:
+                self.db.delete(row)
+            self.db.flush()
+            remaining = (
+                self.db.query(PublicationQueue)
+                .filter(
+                    PublicationQueue.post_id == post_id,
+                    PublicationQueue.status.in_(["pending", "publishing", "paused"]),
+                )
+                .count()
+            )
+            post = self.db.query(Post).filter(Post.id == post_id).first()
+            if post and remaining == 0:
+                post.in_queue = False
+                post.queue_status = None
+                post.scheduled_at = None
+            self.db.commit()
+            return n
+        except Exception as e:
+            logger.error("Error cancelling scheduled post %s: %s", post_id, e)
+            self.db.rollback()
+            return 0
+
+    def get_queue_for_platform(self, platform: str) -> List[SimpleNamespace]:
+        """Активная очередь платформы (без будущих scheduled_at)."""
+        with self._isolated_session() as db:
+            try:
+                now = datetime.now(timezone.utc)
                 rows = (
                     db.execute(
                         text(
@@ -788,9 +1011,10 @@ class QueueManager:
                             "LEFT JOIN posts p ON p.id = pq.post_id "
                             "WHERE pq.platform = :platform "
                             "AND pq.status IN ('pending', 'publishing', 'paused') "
+                            f"AND {_DUE_SCHEDULE_SQL} "
                             "ORDER BY pq.priority DESC, pq.created_at ASC"
                         ),
-                        {"platform": platform},
+                        {"platform": platform, "now": now},
                     )
                     .mappings()
                     .all()

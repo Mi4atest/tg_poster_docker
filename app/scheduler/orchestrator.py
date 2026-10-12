@@ -336,6 +336,47 @@ class PublicationOrchestrator:
             scheduled_at=None,
         )
 
+    def schedule_post(
+        self,
+        post_id: str,
+        scheduled_at: datetime,
+        platforms: Optional[list] = None,
+        *,
+        enforce_enabled_filter: bool = True,
+    ) -> bool:
+        """Поставить пост в очередь на точное время (МСК→UTC уже сконвертирован)."""
+        from app.scheduler.queue_manager import SCHEDULED_PRIORITY
+
+        return self.add_post_to_queue(
+            post_id=post_id,
+            platforms=platforms,
+            priority=SCHEDULED_PRIORITY,
+            scheduled_at=scheduled_at,
+            enforce_enabled_filter=enforce_enabled_filter,
+        )
+
+    def reschedule_post(self, post_id: str, scheduled_at: datetime) -> bool:
+        from app.scheduler.queue_manager import SCHEDULED_PRIORITY
+
+        return (
+            self.queue_manager.update_post_schedule(
+                post_id, scheduled_at, priority=SCHEDULED_PRIORITY
+            )
+            > 0
+        )
+
+    def cancel_scheduled_post(self, post_id: str) -> bool:
+        return self.queue_manager.cancel_scheduled_post(post_id) > 0
+
+    def promote_scheduled_now(self, post_id: str) -> bool:
+        return self.queue_manager.promote_scheduled_now(post_id) > 0
+
+    def get_scheduled_count(self) -> int:
+        return self.queue_manager.count_scheduled_posts()
+
+    def list_scheduled_posts(self) -> list:
+        return self.queue_manager.list_scheduled_posts()
+
     def get_queue_stats(self) -> dict:
         """Получить статистику очереди.
         

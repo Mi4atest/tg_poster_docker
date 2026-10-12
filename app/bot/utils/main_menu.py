@@ -14,11 +14,21 @@ logger = logging.getLogger(__name__)
 
 
 def get_queue_count(bot) -> int:
-    """Количество постов в очереди публикации."""
+    """Количество постов в активной очереди публикации (без будущих scheduled)."""
     try:
         if hasattr(bot, "orchestrator"):
             stats = bot.orchestrator.get_queue_stats()
             return stats.get("total", 0)
+    except Exception:
+        pass
+    return 0
+
+
+def get_scheduled_count(bot) -> int:
+    """Количество запланированных постов (пользовательский schedule)."""
+    try:
+        if hasattr(bot, "orchestrator") and bot.orchestrator is not None:
+            return int(bot.orchestrator.get_scheduled_count() or 0)
     except Exception:
         pass
     return 0
@@ -41,10 +51,12 @@ async def build_main_keyboard(
         return await products_menu_markup(user_id=user_id)
     queue_count = get_queue_count(bot)
     drafts_count = await get_drafts_count()
+    scheduled_count = get_scheduled_count(bot)
     return get_main_keyboard(
         queue_count=queue_count,
         drafts_count=drafts_count,
         notes_count=notes_count,
+        scheduled_count=scheduled_count,
     )
 
 

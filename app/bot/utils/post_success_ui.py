@@ -118,7 +118,7 @@ def build_post_ready_text(
         preflight = format_preflight_html(check_post_preflight(post))
         if preflight:
             lines.extend(["", preflight])
-    lines.extend(["", "👉 Следующий шаг — «В очередь»"])
+    lines.extend(["", "👉 Следующий шаг — «В очередь» или «Запланировать»"])
     return "\n".join(lines)
 
 
@@ -126,6 +126,7 @@ def build_post_ready_keyboard(post_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [ikb("📋 В очередь", f"add_to_queue_{post_id}")],
+            [ikb("📅 Запланировать", f"schedule_post_{post_id}")],
             [InlineKeyboardButton(text="📝 В черновики", callback_data="pending_posts")],
             [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_to_main")],
         ]

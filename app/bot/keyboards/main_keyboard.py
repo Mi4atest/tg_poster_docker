@@ -13,6 +13,7 @@ def get_main_keyboard(
     queue_count: int = 0,
     drafts_count: int = 0,
     notes_count: int = 0,
+    scheduled_count: int = 0,
     *,
     readonly: bool = False,
 ) -> InlineKeyboardMarkup:
@@ -22,6 +23,7 @@ def get_main_keyboard(
         queue_count: Количество постов в очереди (для динамического отображения)
         drafts_count: Количество черновиков; кнопка показывается только при count > 0
         notes_count: Активные напоминалки; ✅ только если есть хотя бы одна
+        scheduled_count: Запланированные; кнопка только при count > 0
         readonly: Директор / витрина — только «Товары»
     """
     if readonly:
@@ -38,6 +40,10 @@ def get_main_keyboard(
     if drafts_count > 0:
         label = f"📝 Черновики ({drafts_count})" if drafts_count else "📝 Черновики"
         buttons.append([ikb(label, "pending_posts")])
+    if scheduled_count > 0:
+        buttons.append(
+            [ikb(f"📅 Запланированные ({scheduled_count})", "scheduled_menu")]
+        )
     buttons.extend([
         [ikb(
             f"📋 В очереди {queue_count}" if queue_count > 0 else "📋 В очереди",
@@ -102,7 +108,10 @@ def get_post_actions_keyboard(from_archive=False, from_search=False) -> InlineKe
         back_label, back_cb = "⬅️ Назад к черновикам", "back_to_posts"
 
     buttons = [
-        [ikb("📤 Отправить во все соцсети", "publish_all")],
+        [
+            ikb("📤 Отправить везде", "publish_all"),
+            ikb("📅 Запланировать", "schedule_selected_post"),
+        ],
         [
             ikb("📱 в ВК", "publish_vk"),
             ikb("📢 в ТГ", "publish_telegram"),

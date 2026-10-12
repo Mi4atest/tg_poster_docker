@@ -28,8 +28,15 @@ _DANGER_EXACT = frozenset({
     "cancel_publish_all_pending",
 })
 
-_PRIMARY_PREFIXES = ("queue_publish_now_", "add_to_queue_and_create_", "add_to_queue_", "create_another_post_")
-_DANGER_PREFIXES = ("queue_cancel_post_",)
+_PRIMARY_PREFIXES = (
+    "queue_publish_now_",
+    "add_to_queue_and_create_",
+    "add_to_queue_",
+    "create_another_post_",
+    "schedule_post_",
+    "scheduled_promote_",
+)
+_DANGER_PREFIXES = ("queue_cancel_post_", "scheduled_cancel_")
 
 
 def style_for_callback(callback_data: str) -> Optional[ButtonStyle]:

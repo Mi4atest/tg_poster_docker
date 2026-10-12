@@ -31,10 +31,12 @@ _DANGER_EXACT = frozenset({
 _PRIMARY_PREFIXES = (
     "queue_publish_now_",
     "add_to_queue_and_create_",
-    "add_to_queue_",
     "create_another_post_",
     "schedule_post_",
     "scheduled_promote_",
+)
+_SUCCESS_PREFIXES = (
+    "add_to_queue_",
 )
 _DANGER_PREFIXES = ("queue_cancel_post_", "scheduled_cancel_")
 
@@ -50,6 +52,9 @@ def style_for_callback(callback_data: str) -> Optional[ButtonStyle]:
     for prefix in _PRIMARY_PREFIXES:
         if callback_data.startswith(prefix):
             return "primary"
+    for prefix in _SUCCESS_PREFIXES:
+        if callback_data.startswith(prefix):
+            return "success"
     for prefix in _DANGER_PREFIXES:
         if callback_data.startswith(prefix):
             return "danger"

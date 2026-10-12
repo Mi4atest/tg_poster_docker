@@ -161,6 +161,13 @@ def check_vk_token(token: str) -> str:
             "VK API. Токен рабочий, но вызовы не проходят — нужен токен другого "
             "приложения либо своё приложение в VK ID."
         )
+    elif missing and "market.get" in ok_methods:
+        miss_names = ", ".join(s for s, _ in missing)
+        lines.append(
+            f"⚠️ Витрина/цены доступны, но не хватает: {miss_names}. "
+            "Публикация постов с фото на стену может падать — дозапросите "
+            "доступ у VK (devsupport) или публикуйте без фото."
+        )
     elif missing:
         lines.append(
             "⚠️ API отвечает, но прав не хватает: возьмите токен приложения, "

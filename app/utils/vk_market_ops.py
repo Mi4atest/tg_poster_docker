@@ -125,6 +125,12 @@ def enqueue(
 
 def _execute(action: str, vk_product_id: int, payload: dict[str, Any]) -> None:
     raise_if_vk_flood_blocked(f"market.{action}")
+    try:
+        from app.utils.vk_token_refresh import ensure_fresh_vk_token
+
+        ensure_fresh_vk_token()
+    except Exception:
+        pass
     owner_id = -resolved_vk_group_id_int()
     vk = get_market_vk_session().get_api()
     if action == "hide":

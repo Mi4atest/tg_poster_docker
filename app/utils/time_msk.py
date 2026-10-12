@@ -27,6 +27,8 @@ _DATE_RE = re.compile(
     r"^\s*(\d{1,2})[./](\d{1,2})(?:[./](\d{2}|\d{4}))?\s*$"
 )
 _TIME_RE = re.compile(r"^\s*(\d{1,2}):(\d{2})\s*$")
+_DIGITS_RE = re.compile(r"^\d+$")
+_WS_RE = re.compile(r"\s+")
 
 
 def to_msk(dt: datetime) -> datetime:
@@ -67,37 +69,122 @@ def combine_msk_naive_utc(day: date, hour: int, minute: int) -> datetime:
     return local.astimezone(timezone.utc).replace(tzinfo=None)
 
 
-def parse_msk_date(text: str, *, now: datetime | None = None) -> date:
-    """Распарсить ДД.ММ / ДД.ММ.ГГ / ДД.ММ.ГГГГ относительно текущего года МСК."""
-    match = _DATE_RE.match(text or "")
-    if not match:
-        raise ValueError("Некорректная дата")
-    day_n = int(match.group(1))
-    month_n = int(match.group(2))
-    year_raw = match.group(3)
-    ref = to_msk(now) if now is not None else msk_now()
+def _year_from_raw(year_raw: str | None, ref: datetime) -> int:
     if year_raw is None:
-        year_n = ref.year
-    elif len(year_raw) == 2:
-        year_n = 2000 + int(year_raw)
-    else:
-        year_n = int(year_raw)
+        return ref.year
+    if len(year_raw) == 2:
+        return 2000 + int(year_raw)
+    return int(year_raw)
+
+
+def _make_date(day_n: int, month_n: int, year_n: int) -> date:
     try:
         return date(year_n, month_n, day_n)
     except ValueError as exc:
         raise ValueError("Некорректная дата") from exc
 
 
-def parse_msk_time(text: str) -> time:
-    """Распарсить ЧЧ:ММ."""
-    match = _TIME_RE.match(text or "")
-    if not match:
-        raise ValueError("Некорректное время")
-    hour = int(match.group(1))
-    minute = int(match.group(2))
+def _make_time(hour: int, minute: int) -> time:
     if hour > 23 or minute > 59:
         raise ValueError("Некорректное время")
     return time(hour, minute)
+
+
+def parse_msk_date(text: str, *, now: datetime | None = None) -> date:
+    """Распарсить дату: ДД.ММ[.ГГ[ГГ]] или компактно ДДММ / ДДММГГ / ДДММГГГГ."""
+    raw = (text or "").strip()
+    match = _DATE_RE.match(raw)
+    ref = to_msk(now) if now is not None else msk_now()
+    if match:
+        return _make_date(
+            int(match.group(1)),
+            int(match.group(2)),
+            _year_from_raw(match.group(3), ref),
+        )
+    if _DIGITS_RE.match(raw):
+        if len(raw) == 4:  # ДДММ
+            return _make_date(int(raw[:2]), int(raw[2:4]), ref.year)
+        if len(raw) == 6:  # ДДММГГ
+            return _make_date(
+                int(raw[:2]), int(raw[2:4]), _year_from_raw(raw[4:6], ref)
+            )
+        if len(raw) == 8:  # ДДММГГГГ
+            return _make_date(
+                int(raw[:2]), int(raw[2:4]), _year_from_raw(raw[4:8], ref)
+            )
+    raise ValueError("Некорректная дата")
+
+
+def parse_msk_time(text: str) -> time:
+    """Распарсить время: ЧЧ:ММ или компактно ЧЧММ / ЧММ."""
+    raw = (text or "").strip()
+    match = _TIME_RE.match(raw)
+    if match:
+        return _make_time(int(match.group(1)), int(match.group(2)))
+    if _DIGITS_RE.match(raw) and len(raw) in (3, 4):
+        hhmm = raw.zfill(4)
+        return _make_time(int(hhmm[:2]), int(hhmm[2:]))
+    raise ValueError("Некорректное время")
+
+
+def parse_schedule_user_input(
+    text: str, *, now: datetime | None = None
+) -> tuple[date, time | None]:
+    """Гибкий ввод даты/времени для мастера «Запланировать».
+
+    Возвращает (день, время|None). None у времени — нужен выбор кнопками.
+
+    Примеры:
+      171026 / 17.10.26          → дата
+      1610 171026                → 16:10 + дата
+      16:10 17.10.2026           → то же
+      1610171026 / 161017102026  → склеено ЧЧММ+ДДММГГ[ГГ]
+    """
+    raw = _WS_RE.sub(" ", (text or "").strip())
+    if not raw:
+        raise ValueError("Пустой ввод")
+
+    parts = raw.split(" ")
+    if len(parts) == 2:
+        a, b = parts[0], parts[1]
+        # Сначала «время дата» (как в подсказке: 1610 171026).
+        try:
+            return parse_msk_date(b, now=now), parse_msk_time(a)
+        except ValueError:
+            pass
+        try:
+            return parse_msk_date(a, now=now), parse_msk_time(b)
+        except ValueError as exc:
+            raise ValueError("Некорректные дата и время") from exc
+
+    if len(parts) != 1:
+        raise ValueError("Некорректный формат")
+
+    token = parts[0]
+    # Склеенные цифры: ЧЧММ + дата
+    if _DIGITS_RE.match(token):
+        if len(token) == 10:  # ЧЧММДДММГГ
+            t = parse_msk_time(token[:4])
+            d = parse_msk_date(token[4:], now=now)
+            return d, t
+        if len(token) == 12:  # ЧЧММДДММГГГГ
+            t = parse_msk_time(token[:4])
+            d = parse_msk_date(token[4:], now=now)
+            return d, t
+        # 4/6/8 — только дата
+        if len(token) in (4, 6, 8):
+            return parse_msk_date(token, now=now), None
+
+    # С разделителями — только дата (время без даты не сюда)
+    return parse_msk_date(token, now=now), None
+
+
+SCHEDULE_INPUT_HINT_HTML = (
+    "Ввод <b>МСК</b>, можно без точек и двоеточий:\n"
+    "• <code>171026</code> или <code>17.10.26</code> — только дата, потом время\n"
+    "• <code>1610 171026</code> — сразу 16:10 и дата\n"
+    "• <code>16:10 17.10.2026</code> — тоже ок"
+)
 
 
 def parse_schedule_msk_to_naive_utc(

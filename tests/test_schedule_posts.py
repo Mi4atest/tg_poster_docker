@@ -13,6 +13,7 @@ from app.utils.time_msk import (
     parse_msk_date,
     parse_msk_time,
     parse_schedule_msk_to_naive_utc,
+    parse_schedule_user_input,
 )
 
 
@@ -22,6 +23,9 @@ class ParseMskScheduleTest(unittest.TestCase):
         self.assertEqual(parse_msk_date("13.10", now=now), date(2026, 10, 13))
         self.assertEqual(parse_msk_date("13/10/26", now=now), date(2026, 10, 13))
         self.assertEqual(parse_msk_date("13.10.2026", now=now), date(2026, 10, 13))
+        self.assertEqual(parse_msk_date("1310", now=now), date(2026, 10, 13))
+        self.assertEqual(parse_msk_date("171026", now=now), date(2026, 10, 17))
+        self.assertEqual(parse_msk_date("17102026", now=now), date(2026, 10, 17))
 
     def test_parse_date_invalid(self):
         with self.assertRaises(ValueError):
@@ -32,10 +36,35 @@ class ParseMskScheduleTest(unittest.TestCase):
     def test_parse_time(self):
         self.assertEqual(parse_msk_time("18:30").hour, 18)
         self.assertEqual(parse_msk_time("9:05").minute, 5)
+        self.assertEqual(parse_msk_time("1610").hour, 16)
+        self.assertEqual(parse_msk_time("1610").minute, 10)
+        self.assertEqual(parse_msk_time("930").hour, 9)
         with self.assertRaises(ValueError):
             parse_msk_time("25:00")
         with self.assertRaises(ValueError):
             parse_msk_time("18")
+
+    def test_parse_schedule_user_input_variants(self):
+        now = datetime(2026, 10, 12, 12, 0, tzinfo=timezone.utc)
+        d, t = parse_schedule_user_input("171026", now=now)
+        self.assertEqual(d, date(2026, 10, 17))
+        self.assertIsNone(t)
+
+        d, t = parse_schedule_user_input("1610 171026", now=now)
+        self.assertEqual(d, date(2026, 10, 17))
+        self.assertEqual((t.hour, t.minute), (16, 10))
+
+        d, t = parse_schedule_user_input("1610 17102026", now=now)
+        self.assertEqual(d, date(2026, 10, 17))
+        self.assertEqual((t.hour, t.minute), (16, 10))
+
+        d, t = parse_schedule_user_input("16:10 17.10.2026", now=now)
+        self.assertEqual(d, date(2026, 10, 17))
+        self.assertEqual((t.hour, t.minute), (16, 10))
+
+        d, t = parse_schedule_user_input("1610171026", now=now)
+        self.assertEqual(d, date(2026, 10, 17))
+        self.assertEqual((t.hour, t.minute), (16, 10))
 
     def test_combine_and_validate_future(self):
         # 12:00 МСК = 09:00 UTC

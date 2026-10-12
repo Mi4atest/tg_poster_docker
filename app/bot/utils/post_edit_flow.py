@@ -23,7 +23,7 @@ ARCHIVE_CARD_TEXT_LIMIT = 3500
 
 # Custom emoji для статусов площадок в карточке Архива (private chat, Bot API 9.4).
 # id из паков Marketplace/логотипов; alt — из getCustomEmojiStickers.
-_ARCHIVE_PLATFORM_CUSTOM_EMOJI: dict[str, tuple[str, str]] = {
+ARCHIVE_PLATFORM_CUSTOM_EMOJI: dict[str, tuple[str, str]] = {
     "vk": ("5463375215725671627", "🙊"),
     "telegram": ("5426990524831642021", "💬"),
     "instagram": ("5348533850429470257", "🌐"),
@@ -31,9 +31,39 @@ _ARCHIVE_PLATFORM_CUSTOM_EMOJI: dict[str, tuple[str, str]] = {
     "avito": ("5314707757453029689", "🛍"),
 }
 
+_ARCHIVE_PLATFORM_LABELS: dict[str, str] = {
+    "vk": "ВКонтакте",
+    "telegram": "Telegram",
+    "instagram": "Instagram",
+    "max": "Max",
+    "avito": "Авито",
+}
+
+# Порядок колонки как в Архиве.
+_ARCHIVE_PLATFORM_ORDER = ("vk", "telegram", "instagram", "max", "avito")
+
+
+def tg_custom_emoji_html(custom_emoji_id: str, alt: str) -> str:
+    return f'<tg-emoji emoji-id="{custom_emoji_id}">{alt}</tg-emoji>'
+
 
 def _tg_custom_emoji_html(custom_emoji_id: str, alt: str) -> str:
-    return f'<tg-emoji emoji-id="{custom_emoji_id}">{alt}</tg-emoji>'
+    return tg_custom_emoji_html(custom_emoji_id, alt)
+
+
+def format_platforms_column_html(platforms: list[str] | None) -> str:
+    """Вертикальная колонка площадок с custom emoji (как в Архиве), без ✅/❌."""
+    if not platforms:
+        return ""
+    wanted = {str(p).lower() for p in platforms}
+    lines: list[str] = []
+    for key in _ARCHIVE_PLATFORM_ORDER:
+        if key not in wanted:
+            continue
+        eid, alt = ARCHIVE_PLATFORM_CUSTOM_EMOJI[key]
+        label = html.escape(_ARCHIVE_PLATFORM_LABELS[key])
+        lines.append(f"{tg_custom_emoji_html(eid, alt)} {label}")
+    return "\n".join(lines)
 
 
 def _archive_platform_status_block(post: dict) -> str:
@@ -47,7 +77,7 @@ def _archive_platform_status_block(post: dict) -> str:
     ]
     lines = ["Публикации:"]
     for key, label, ok in rows:
-        eid, alt = _ARCHIVE_PLATFORM_CUSTOM_EMOJI[key]
+        eid, alt = ARCHIVE_PLATFORM_CUSTOM_EMOJI[key]
         mark = "✅" if ok else "❌"
         lines.append(f"{_tg_custom_emoji_html(eid, alt)} {mark} {html.escape(label)}")
     # Сторис — без custom emoji (нет id в эксперименте)

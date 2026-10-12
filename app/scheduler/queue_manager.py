@@ -20,9 +20,15 @@ SCHEDULED_PRIORITY = 100
 _RETRY_MARKER_RE = re.compile(r"\[(?:ig_)?retry=(\d+)/(\d+)\]")
 
 _DUE_SCHEDULE_SQL = "(scheduled_at IS NULL OR scheduled_at <= :now)"
+# Без алиаса — для запросов только к publication_queue.
 _FUTURE_USER_SCHEDULE_SQL = (
     "scheduled_at IS NOT NULL AND scheduled_at > :now "
     "AND priority >= :sched_priority AND priority < 999"
+)
+# С алиасом pq — для JOIN с posts (там тоже есть scheduled_at/priority).
+_FUTURE_USER_SCHEDULE_SQL_PQ = (
+    "pq.scheduled_at IS NOT NULL AND pq.scheduled_at > :now "
+    "AND pq.priority >= :sched_priority AND pq.priority < 999"
 )
 
 
@@ -860,7 +866,7 @@ class QueueManager:
                             "FROM publication_queue pq "
                             "LEFT JOIN posts p ON p.id = pq.post_id "
                             "WHERE pq.status = 'pending' "
-                            f"AND {_FUTURE_USER_SCHEDULE_SQL} "
+                            f"AND {_FUTURE_USER_SCHEDULE_SQL_PQ} "
                             "GROUP BY pq.post_id, p.name "
                             "ORDER BY MIN(pq.scheduled_at) ASC"
                         ),

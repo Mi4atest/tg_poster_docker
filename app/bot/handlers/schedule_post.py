@@ -20,13 +20,15 @@ from app.bot.keyboards.schedule_keyboard import (
     get_scheduled_list_keyboard,
     get_scheduled_post_actions_keyboard,
 )
+from app.bot.utils.post_edit_flow import format_platforms_column_html
 from app.bot.utils.post_success_ui import post_media_counts
 from app.utils.time_msk import (
+    SCHEDULE_INPUT_HINT_HTML,
     format_schedule_msk,
     msk_now,
-    parse_msk_date,
     parse_msk_time,
     parse_schedule_msk_to_naive_utc,
+    parse_schedule_user_input,
 )
 
 logger = logging.getLogger(__name__)
@@ -243,8 +245,9 @@ async def schedule_day_custom(callback: CallbackQuery, state: FSMContext):
     await _answer_quietly(callback)
     await _safe_edit(
         callback.message,
-        f"📅 Введите дату в формате <b>ДД.ММ</b> или <b>ДД.ММ.ГГГГ</b> (МСК)\n"
-        f"📝 {html.escape(name or 'Без названия')}",
+        f"📅 <b>Дата или дата+время</b>\n"
+        f"📝 {html.escape(name or 'Без названия')}\n\n"
+        f"{SCHEDULE_INPUT_HINT_HTML}",
         reply_markup=get_schedule_day_keyboard(post_id, reschedule=reschedule),
     )
 
@@ -260,15 +263,39 @@ async def schedule_custom_date_message(message: Message, state: FSMContext):
         await message.answer("❌ Сессия планирования сброшена")
         return
     try:
-        day = parse_msk_date(message.text or "")
+        day, t = parse_schedule_user_input(message.text or "")
     except ValueError:
-        await message.answer("❌ Некорректная дата. Пример: 13.10 или 13.10.2026")
+        await message.answer(
+            "❌ Не понял ввод.\n\n" + SCHEDULE_INPUT_HINT_HTML,
+            parse_mode="HTML",
+        )
+        return
+
+    if t is None:
+        await state.set_state(None)
+        await state.update_data(schedule_day=day.isoformat())
+        await message.answer(
+            _time_prompt(name, day, reschedule=reschedule),
+            reply_markup=get_schedule_time_keyboard(post_id, reschedule=reschedule),
+            parse_mode="HTML",
+        )
+        return
+
+    try:
+        scheduled_at = parse_schedule_msk_to_naive_utc(day, t.hour, t.minute)
+    except ValueError as exc:
+        await message.answer(f"❌ {exc}")
         return
     await state.set_state(None)
-    await state.update_data(schedule_day=day.isoformat())
+    await state.update_data(
+        schedule_day=day.isoformat(),
+        schedule_hour=t.hour,
+        schedule_minute=t.minute,
+        schedule_at_iso=scheduled_at.replace(tzinfo=timezone.utc).isoformat(),
+    )
     await message.answer(
-        _time_prompt(name, day, reschedule=reschedule),
-        reply_markup=get_schedule_time_keyboard(post_id, reschedule=reschedule),
+        _confirm_prompt(name, scheduled_at),
+        reply_markup=get_schedule_confirm_keyboard(post_id, reschedule=reschedule),
         parse_mode="HTML",
     )
 
@@ -317,7 +344,7 @@ async def schedule_time_custom(callback: CallbackQuery, state: FSMContext):
     await _answer_quietly(callback)
     await _safe_edit(
         callback.message,
-        f"🕐 Введите время в формате <b>ЧЧ:ММ</b> (МСК)\n"
+        f"🕐 Введите время (МСК): <b>1610</b> или <b>16:10</b>\n"
         f"📝 {html.escape(name or 'Без названия')}\n"
         f"{day_line}",
         reply_markup=get_schedule_time_keyboard(post_id, reschedule=reschedule),
@@ -336,7 +363,7 @@ async def schedule_custom_time_message(message: Message, state: FSMContext):
     try:
         t = parse_msk_time(message.text or "")
     except ValueError:
-        await message.answer("❌ Некорректное время. Пример: 18:30")
+        await message.answer("❌ Некорректное время. Пример: <code>1610</code> или <code>16:10</code>", parse_mode="HTML")
         return
     await state.set_state(None)
     # Эмулируем CallbackQuery-подобный confirm через message
@@ -519,13 +546,15 @@ async def _render_scheduled_menu(callback: CallbackQuery) -> None:
         for i, item in enumerate(items[:15], 1):
             name = html.escape(item.post_name or f"Пост {item.post_id[:8]}")
             when = format_schedule_msk(item.scheduled_at) if item.scheduled_at else "—"
-            plats = ", ".join(item.platforms) if item.platforms else "—"
             lines.append(f"{i}. {name}")
-            lines.append(f"   🕐 {html.escape(when)}")
-            lines.append(f"   📡 {html.escape(plats)}")
+            lines.append(f"🕐 {html.escape(when)}")
+            plats_col = format_platforms_column_html(getattr(item, "platforms", None))
+            if plats_col:
+                lines.append(plats_col)
+            lines.append("")
         if len(items) > 15:
-            lines.append(f"\n… и ещё {len(items) - 15}")
-        text = "\n".join(lines)
+            lines.append(f"… и ещё {len(items) - 15}")
+        text = "\n".join(lines).rstrip()
     await _safe_edit(
         callback.message,
         text,
@@ -559,14 +588,19 @@ async def scheduled_post_card(callback: CallbackQuery, state: FSMContext):
         media_parts.append(f"📹 {video_count}")
     media = " · ".join(media_parts) if media_parts else "без медиа"
     when = format_schedule_msk(item.scheduled_at) if item and item.scheduled_at else "—"
-    plats = ", ".join(item.platforms) if item and item.platforms else "—"
-    text = (
-        f"📅 <b>Запланированный пост</b>\n\n"
-        f"📝 {name}\n"
-        f"{media}\n"
-        f"🕐 {html.escape(when)}\n"
-        f"📡 {html.escape(plats)}"
+    plats_col = format_platforms_column_html(
+        item.platforms if item else None
     )
+    text_parts = [
+        "📅 <b>Запланированный пост</b>",
+        "",
+        f"📝 {name}",
+        media,
+        f"🕐 {html.escape(when)}",
+    ]
+    if plats_col:
+        text_parts.extend(["", plats_col])
+    text = "\n".join(text_parts)
     await state.update_data(
         schedule_post_id=post_id,
         schedule_post_name=post.get("name") or "",

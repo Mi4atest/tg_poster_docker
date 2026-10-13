@@ -9,9 +9,11 @@ from app.bot.utils.post_success_ui import build_post_ready_keyboard
 from app.scheduler.queue_manager import SCHEDULED_PRIORITY
 from app.utils.time_msk import (
     combine_msk_naive_utc,
+    format_schedule_confirm_msk,
     format_schedule_msk,
     parse_msk_date,
     parse_msk_time,
+    parse_schedule_flexible,
     parse_schedule_msk_to_naive_utc,
     parse_schedule_user_input,
 )
@@ -86,6 +88,25 @@ class ParseMskScheduleTest(unittest.TestCase):
         self.assertIn("13.10", label)
         self.assertIn("12:00", label)
         self.assertIn("МСК", label)
+
+    def test_format_schedule_confirm_msk(self):
+        # 13:10 UTC → 16:10 МСК 17 октября
+        label = format_schedule_confirm_msk(datetime(2026, 10, 17, 13, 10))
+        self.assertEqual(label, "16:10 17 октября 2026 (МСК)")
+
+    def test_parse_schedule_flexible_time_only_and_prefer(self):
+        now = datetime(2026, 10, 12, 12, 0, tzinfo=timezone.utc)
+        d, t = parse_schedule_flexible("940", now=now)
+        self.assertIsNone(d)
+        self.assertEqual((t.hour, t.minute), (9, 40))
+
+        d, t = parse_schedule_flexible("1005", prefer_time=True, now=now)
+        self.assertIsNone(d)
+        self.assertEqual((t.hour, t.minute), (10, 5))
+
+        d, t = parse_schedule_flexible("1005", prefer_time=False, now=now)
+        self.assertEqual(d, date(2026, 5, 10))
+        self.assertIsNone(t)
 
 
 class SchedulePriorityConstantTest(unittest.TestCase):

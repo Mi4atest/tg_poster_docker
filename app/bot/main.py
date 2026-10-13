@@ -65,8 +65,10 @@ dp.include_router(new_products_management.router)
 dp.include_router(bulk_price_update.router)
 dp.include_router(price_tags.router)
 dp.include_router(settings.router)
-dp.include_router(post_management.router)
+# schedule_post до post_management: цифровой ввод (940, 1005) не должен
+# перехватываться выбором поста по номеру во время планирования.
 dp.include_router(schedule_post.router)
+dp.include_router(post_management.router)
 dp.include_router(scheduler.router)
 dp.include_router(menu_constructor.router)
 

@@ -24,11 +24,11 @@ from app.bot.utils.post_edit_flow import format_platforms_column_html
 from app.bot.utils.post_success_ui import post_media_counts
 from app.utils.time_msk import (
     SCHEDULE_INPUT_HINT_HTML,
+    format_schedule_confirm_msk,
     format_schedule_msk,
     msk_now,
-    parse_msk_time,
+    parse_schedule_flexible,
     parse_schedule_msk_to_naive_utc,
-    parse_schedule_user_input,
 )
 
 logger = logging.getLogger(__name__)
@@ -36,6 +36,8 @@ router = Router()
 
 
 class SchedulePost(StatesGroup):
+    waiting_input = State()
+    # Алиасы для совместимости со старыми сессиями в памяти.
     waiting_custom_date = State()
     waiting_custom_time = State()
 
@@ -92,14 +94,18 @@ async def _load_post(post_id: str) -> Optional[dict]:
     return await get_post_api(post_id)
 
 
-def _day_prompt(post_name: str, *, reschedule: bool) -> str:
+def _day_prompt(post_name: str, *, reschedule: bool, time_hint: str | None = None) -> str:
     title = "Перенести публикацию" if reschedule else "Запланировать публикацию"
     name = html.escape(post_name or "Без названия")
-    return (
-        f"📅 <b>{title}</b>\n\n"
-        f"📝 {name}\n\n"
-        "Выберите день (время — <b>МСК</b>):"
-    )
+    lines = [
+        f"📅 <b>{title}</b>",
+        "",
+        f"📝 {name}",
+    ]
+    if time_hint:
+        lines.extend(["", f"🕐 Время: <b>{html.escape(time_hint)}</b> — выберите или введите день"])
+    lines.extend(["", SCHEDULE_INPUT_HINT_HTML, "", "Или кнопки дня:"])
+    return "\n".join(lines)
 
 
 def _time_prompt(post_name: str, day: date, *, reschedule: bool) -> str:
@@ -109,18 +115,51 @@ def _time_prompt(post_name: str, day: date, *, reschedule: bool) -> str:
         f"📅 <b>{title}</b>\n\n"
         f"📝 {name}\n"
         f"📆 День: <b>{day.strftime('%d.%m.%Y')}</b> (МСК)\n\n"
-        "Выберите время:"
+        "Выберите время кнопкой или введите, например <code>1005</code> / <code>10:05</code>:"
     )
 
 
 def _confirm_prompt(post_name: str, scheduled_at) -> str:
     name = html.escape(post_name or "Без названия")
-    when = format_schedule_msk(scheduled_at)
+    when = format_schedule_confirm_msk(scheduled_at)
     return (
         f"📅 <b>Подтверждение</b>\n\n"
         f"📝 {name}\n"
         f"🕐 {html.escape(when)}\n\n"
         "Запланировать публикацию?"
+    )
+
+
+async def _goto_confirm(
+    *,
+    state: FSMContext,
+    post_id: str,
+    name: str,
+    day: date,
+    hour: int,
+    minute: int,
+    reschedule: bool,
+    reply,
+) -> None:
+    try:
+        scheduled_at = parse_schedule_msk_to_naive_utc(day, hour, minute)
+    except ValueError as exc:
+        await reply(f"❌ {exc}")
+        return
+    await state.set_state(SchedulePost.waiting_input)
+    await state.update_data(
+        schedule_post_id=post_id,
+        schedule_reschedule=reschedule,
+        schedule_post_name=name,
+        schedule_day=day.isoformat(),
+        schedule_hour=hour,
+        schedule_minute=minute,
+        schedule_at_iso=scheduled_at.replace(tzinfo=timezone.utc).isoformat(),
+    )
+    await reply(
+        _confirm_prompt(name, scheduled_at),
+        reply_markup=get_schedule_confirm_keyboard(post_id, reschedule=reschedule),
+        parse_mode="HTML",
     )
 
 
@@ -135,7 +174,7 @@ async def start_schedule_wizard(
     if not post:
         await _answer_quietly(callback, "❌ Пост не найден", show_alert=True)
         return
-    await state.set_state(None)
+    await state.set_state(SchedulePost.waiting_input)
     await state.update_data(
         schedule_post_id=post_id,
         schedule_reschedule=reschedule,
@@ -143,6 +182,7 @@ async def start_schedule_wizard(
         schedule_day=None,
         schedule_hour=None,
         schedule_minute=None,
+        schedule_at_iso=None,
     )
     await _answer_quietly(callback)
     await _safe_edit(
@@ -209,6 +249,9 @@ async def schedule_day_offset(callback: CallbackQuery, state: FSMContext):
     if data.get("schedule_post_id") != post_id:
         post = await _load_post(post_id)
         name = (post or {}).get("name") or ""
+    hour = data.get("schedule_hour")
+    minute = data.get("schedule_minute")
+    await state.set_state(SchedulePost.waiting_input)
     await state.update_data(
         schedule_post_id=post_id,
         schedule_reschedule=reschedule,
@@ -216,6 +259,21 @@ async def schedule_day_offset(callback: CallbackQuery, state: FSMContext):
         schedule_day=day.isoformat(),
     )
     await _answer_quietly(callback)
+    if hour is not None and minute is not None:
+        async def _reply(text, **kwargs):
+            await _safe_edit(callback.message, text, **kwargs)
+
+        await _goto_confirm(
+            state=state,
+            post_id=post_id,
+            name=name,
+            day=day,
+            hour=int(hour),
+            minute=int(minute),
+            reschedule=reschedule,
+            reply=_reply,
+        )
+        return
     await _safe_edit(
         callback.message,
         _time_prompt(name, day, reschedule=reschedule),
@@ -236,24 +294,31 @@ async def schedule_day_custom(callback: CallbackQuery, state: FSMContext):
     if data.get("schedule_post_id") != post_id:
         post = await _load_post(post_id)
         name = (post or {}).get("name") or ""
+    time_hint = None
+    if data.get("schedule_hour") is not None and data.get("schedule_minute") is not None:
+        time_hint = f"{int(data['schedule_hour']):02d}:{int(data['schedule_minute']):02d}"
+    await state.set_state(SchedulePost.waiting_input)
     await state.update_data(
         schedule_post_id=post_id,
         schedule_reschedule=reschedule,
         schedule_post_name=name,
     )
-    await state.set_state(SchedulePost.waiting_custom_date)
     await _answer_quietly(callback)
     await _safe_edit(
         callback.message,
-        f"📅 <b>Дата или дата+время</b>\n"
-        f"📝 {html.escape(name or 'Без названия')}\n\n"
-        f"{SCHEDULE_INPUT_HINT_HTML}",
+        _day_prompt(name, reschedule=reschedule, time_hint=time_hint),
         reply_markup=get_schedule_day_keyboard(post_id, reschedule=reschedule),
     )
 
 
-@router.message(StateFilter(SchedulePost.waiting_custom_date))
-async def schedule_custom_date_message(message: Message, state: FSMContext):
+@router.message(
+    StateFilter(
+        SchedulePost.waiting_input,
+        SchedulePost.waiting_custom_date,
+        SchedulePost.waiting_custom_time,
+    )
+)
+async def schedule_input_message(message: Message, state: FSMContext):
     data = await state.get_data()
     post_id = data.get("schedule_post_id")
     reschedule = bool(data.get("schedule_reschedule"))
@@ -262,17 +327,46 @@ async def schedule_custom_date_message(message: Message, state: FSMContext):
         await state.clear()
         await message.answer("❌ Сессия планирования сброшена")
         return
+
+    day_s = data.get("schedule_day")
+    prefer_time = bool(day_s)
     try:
-        day, t = parse_schedule_user_input(message.text or "")
+        day_parsed, t_parsed = parse_schedule_flexible(
+            message.text or "", prefer_time=prefer_time
+        )
     except ValueError:
         await message.answer(
             "❌ Не понял ввод.\n\n" + SCHEDULE_INPUT_HINT_HTML,
             parse_mode="HTML",
         )
+        await state.set_state(SchedulePost.waiting_input)
         return
 
-    if t is None:
-        await state.set_state(None)
+    day = date.fromisoformat(day_s) if day_s else day_parsed
+    if day_parsed is not None:
+        day = day_parsed
+
+    hour = data.get("schedule_hour")
+    minute = data.get("schedule_minute")
+    if t_parsed is not None:
+        hour, minute = t_parsed.hour, t_parsed.minute
+
+    await state.set_state(SchedulePost.waiting_input)
+
+    if day is not None and hour is not None and minute is not None:
+        await _goto_confirm(
+            state=state,
+            post_id=post_id,
+            name=name,
+            day=day,
+            hour=int(hour),
+            minute=int(minute),
+            reschedule=reschedule,
+            reply=message.answer,
+        )
+        return
+
+    if day is not None and (hour is None or minute is None):
         await state.update_data(schedule_day=day.isoformat())
         await message.answer(
             _time_prompt(name, day, reschedule=reschedule),
@@ -281,21 +375,18 @@ async def schedule_custom_date_message(message: Message, state: FSMContext):
         )
         return
 
-    try:
-        scheduled_at = parse_schedule_msk_to_naive_utc(day, t.hour, t.minute)
-    except ValueError as exc:
-        await message.answer(f"❌ {exc}")
+    if t_parsed is not None and day is None:
+        await state.update_data(schedule_hour=hour, schedule_minute=minute)
+        time_hint = f"{int(hour):02d}:{int(minute):02d}"
+        await message.answer(
+            _day_prompt(name, reschedule=reschedule, time_hint=time_hint),
+            reply_markup=get_schedule_day_keyboard(post_id, reschedule=reschedule),
+            parse_mode="HTML",
+        )
         return
-    await state.set_state(None)
-    await state.update_data(
-        schedule_day=day.isoformat(),
-        schedule_hour=t.hour,
-        schedule_minute=t.minute,
-        schedule_at_iso=scheduled_at.replace(tzinfo=timezone.utc).isoformat(),
-    )
+
     await message.answer(
-        _confirm_prompt(name, scheduled_at),
-        reply_markup=get_schedule_confirm_keyboard(post_id, reschedule=reschedule),
+        "❌ Не понял ввод.\n\n" + SCHEDULE_INPUT_HINT_HTML,
         parse_mode="HTML",
     )
 
@@ -337,7 +428,7 @@ async def schedule_time_custom(callback: CallbackQuery, state: FSMContext):
     await state.update_data(
         schedule_post_id=post_id, schedule_reschedule=reschedule
     )
-    await state.set_state(SchedulePost.waiting_custom_time)
+    await state.set_state(SchedulePost.waiting_input)
     day_line = ""
     if day_s:
         day_line = f"📆 День: <b>{day_s[8:10]}.{day_s[5:7]}.{day_s[:4]}</b>\n"
@@ -348,50 +439,6 @@ async def schedule_time_custom(callback: CallbackQuery, state: FSMContext):
         f"📝 {html.escape(name or 'Без названия')}\n"
         f"{day_line}",
         reply_markup=get_schedule_time_keyboard(post_id, reschedule=reschedule),
-    )
-
-
-@router.message(StateFilter(SchedulePost.waiting_custom_time))
-async def schedule_custom_time_message(message: Message, state: FSMContext):
-    data = await state.get_data()
-    post_id = data.get("schedule_post_id")
-    reschedule = bool(data.get("schedule_reschedule"))
-    if not post_id:
-        await state.clear()
-        await message.answer("❌ Сессия планирования сброшена")
-        return
-    try:
-        t = parse_msk_time(message.text or "")
-    except ValueError:
-        await message.answer("❌ Некорректное время. Пример: <code>1610</code> или <code>16:10</code>", parse_mode="HTML")
-        return
-    await state.set_state(None)
-    # Эмулируем CallbackQuery-подобный confirm через message
-    day_s = data.get("schedule_day")
-    name = data.get("schedule_post_name") or ""
-    if not day_s:
-        await message.answer("❌ Сначала выберите день")
-        await message.answer(
-            _day_prompt(name, reschedule=reschedule),
-            reply_markup=get_schedule_day_keyboard(post_id, reschedule=reschedule),
-            parse_mode="HTML",
-        )
-        return
-    day = date.fromisoformat(day_s)
-    try:
-        scheduled_at = parse_schedule_msk_to_naive_utc(day, t.hour, t.minute)
-    except ValueError as exc:
-        await message.answer(f"❌ {exc}")
-        return
-    await state.update_data(
-        schedule_hour=t.hour,
-        schedule_minute=t.minute,
-        schedule_at_iso=scheduled_at.replace(tzinfo=timezone.utc).isoformat(),
-    )
-    await message.answer(
-        _confirm_prompt(name, scheduled_at),
-        reply_markup=get_schedule_confirm_keyboard(post_id, reschedule=reschedule),
-        parse_mode="HTML",
     )
 
 
@@ -411,32 +458,34 @@ async def _finish_time_choice(
         post = await _load_post(post_id)
         name = (post or {}).get("name") or name
     if not day_s:
-        await _answer_quietly(callback, "❌ Сначала выберите день", show_alert=True)
+        await state.set_state(SchedulePost.waiting_input)
+        await state.update_data(schedule_hour=hour, schedule_minute=minute)
+        await _answer_quietly(callback)
         await _safe_edit(
             callback.message,
-            _day_prompt(name, reschedule=reschedule),
+            _day_prompt(
+                name,
+                reschedule=reschedule,
+                time_hint=f"{hour:02d}:{minute:02d}",
+            ),
             reply_markup=get_schedule_day_keyboard(post_id, reschedule=reschedule),
         )
         return
     day = date.fromisoformat(day_s)
-    try:
-        scheduled_at = parse_schedule_msk_to_naive_utc(day, hour, minute)
-    except ValueError as exc:
-        await _answer_quietly(callback, f"❌ {exc}", show_alert=True)
-        return
-    await state.update_data(
-        schedule_post_id=post_id,
-        schedule_reschedule=reschedule,
-        schedule_post_name=name,
-        schedule_hour=hour,
-        schedule_minute=minute,
-        schedule_at_iso=scheduled_at.replace(tzinfo=timezone.utc).isoformat(),
-    )
     await _answer_quietly(callback)
-    await _safe_edit(
-        callback.message,
-        _confirm_prompt(name, scheduled_at),
-        reply_markup=get_schedule_confirm_keyboard(post_id, reschedule=reschedule),
+
+    async def _reply(text, **kwargs):
+        await _safe_edit(callback.message, text, **kwargs)
+
+    await _goto_confirm(
+        state=state,
+        post_id=post_id,
+        name=name,
+        day=day,
+        hour=hour,
+        minute=minute,
+        reschedule=reschedule,
+        reply=_reply,
     )
 
 
@@ -485,7 +534,7 @@ async def schedule_confirm(callback: CallbackQuery, state: FSMContext):
         )
         return
 
-    when = format_schedule_msk(scheduled_at)
+    when = format_schedule_confirm_msk(scheduled_at)
     await _answer_quietly(callback, "✅ Запланировано")
     await _safe_edit(
         callback.message,
@@ -507,7 +556,7 @@ async def schedule_back_day(callback: CallbackQuery, state: FSMContext):
         return
     data = await state.get_data()
     name = data.get("schedule_post_name") or ""
-    await state.set_state(None)
+    await state.set_state(SchedulePost.waiting_input)
     await state.update_data(
         schedule_day=None, schedule_hour=None, schedule_minute=None, schedule_at_iso=None
     )

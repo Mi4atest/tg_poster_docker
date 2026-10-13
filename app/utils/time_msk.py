@@ -23,6 +23,22 @@ MSK_MONTH_NAMES = (
     "Декабрь",
 )
 
+MSK_MONTH_GENITIVE = (
+    "",
+    "января",
+    "февраля",
+    "марта",
+    "апреля",
+    "мая",
+    "июня",
+    "июля",
+    "августа",
+    "сентября",
+    "октября",
+    "ноября",
+    "декабря",
+)
+
 _DATE_RE = re.compile(
     r"^\s*(\d{1,2})[./](\d{1,2})(?:[./](\d{2}|\d{4}))?\s*$"
 )
@@ -57,6 +73,13 @@ def format_status_date_msk(dt: datetime) -> str:
 def format_schedule_msk(dt: datetime) -> str:
     """Подпись запланированного времени: ДД.ММ ЧЧ:ММ (МСК)."""
     return to_msk(dt).strftime("%d.%m %H:%M") + " (МСК)"
+
+
+def format_schedule_confirm_msk(dt: datetime) -> str:
+    """Читаемая подпись для подтверждения: 16:10 17 октября 2026 (МСК)."""
+    local = to_msk(dt)
+    month = MSK_MONTH_GENITIVE[local.month]
+    return f"{local.strftime('%H:%M')} {local.day} {month} {local.year} (МСК)"
 
 
 def msk_now() -> datetime:
@@ -179,9 +202,43 @@ def parse_schedule_user_input(
     return parse_msk_date(token, now=now), None
 
 
+def parse_schedule_flexible(
+    text: str,
+    *,
+    prefer_time: bool = False,
+    now: datetime | None = None,
+) -> tuple[date | None, time | None]:
+    """Разбор ввода мастера: дата и/или время.
+
+    prefer_time=True — когда день уже выбран кнопкой (1005 → 10:05, не 10.05).
+    Возвращает (day|None, time|None); хотя бы одно не None при успехе.
+    """
+    raw = _WS_RE.sub(" ", (text or "").strip())
+    if not raw:
+        raise ValueError("Пустой ввод")
+
+    # После «Сегодня/Завтра» 3–4 цифры = время.
+    if prefer_time and _DIGITS_RE.match(raw) and len(raw) in (3, 4):
+        return None, parse_msk_time(raw)
+    if prefer_time and _TIME_RE.match(raw):
+        return None, parse_msk_time(raw)
+
+    try:
+        return parse_schedule_user_input(raw, now=now)
+    except ValueError:
+        pass
+
+    # Только время: 940 / 0940 / 09:40
+    try:
+        return None, parse_msk_time(raw)
+    except ValueError as exc:
+        raise ValueError("Некорректный ввод") from exc
+
+
 SCHEDULE_INPUT_HINT_HTML = (
     "Ввод <b>МСК</b>, можно без точек и двоеточий:\n"
     "• <code>171026</code> или <code>17.10.26</code> — только дата, потом время\n"
+    "• <code>940</code> / <code>0940</code> — только время, потом день\n"
     "• <code>1610 171026</code> — сразу 16:10 и дата\n"
     "• <code>16:10 17.10.2026</code> — тоже ок"
 )

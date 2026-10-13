@@ -1242,7 +1242,10 @@ async def process_post_selection(message: Message, state: FSMContext):
     # Проверяем, не находится ли пользователь в состоянии редактирования цены товара или поиска товаров
     current_state = await state.get_state()
     if current_state:
-        return
+        # Иначе «940»/«1005» в мастере планирования глотаются и не доходят до schedule_post.
+        from aiogram.dispatcher.event.bases import SkipHandler
+
+        raise SkipHandler()
     
     post_number = int(message.text)
 

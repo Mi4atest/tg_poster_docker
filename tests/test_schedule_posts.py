@@ -155,6 +155,7 @@ class QueueStatsSplitLogicTest(unittest.TestCase):
         from app.scheduler import queue_manager as qm
 
         self.assertIn("scheduled_at <= :now", qm._DUE_SCHEDULE_SQL)
+        self.assertIn("pq.scheduled_at <= :now", qm._DUE_SCHEDULE_SQL_PQ)
         self.assertIn("scheduled_at > :now", qm._FUTURE_USER_SCHEDULE_SQL)
         self.assertIn("priority >= :sched_priority", qm._FUTURE_USER_SCHEDULE_SQL)
 

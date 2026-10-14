@@ -19,13 +19,14 @@ SCHEDULED_PRIORITY = 100
 # Старый маркер Instagram и общий [retry=n/m] для ВК/IG.
 _RETRY_MARKER_RE = re.compile(r"\[(?:ig_)?retry=(\d+)/(\d+)\]")
 
-_DUE_SCHEDULE_SQL = "(scheduled_at IS NULL OR scheduled_at <= :now)"
 # Без алиаса — для запросов только к publication_queue.
+_DUE_SCHEDULE_SQL = "(scheduled_at IS NULL OR scheduled_at <= :now)"
+# С алиасом pq — для JOIN с posts (у posts тоже есть scheduled_at).
+_DUE_SCHEDULE_SQL_PQ = "(pq.scheduled_at IS NULL OR pq.scheduled_at <= :now)"
 _FUTURE_USER_SCHEDULE_SQL = (
     "scheduled_at IS NOT NULL AND scheduled_at > :now "
     "AND priority >= :sched_priority AND priority < 999"
 )
-# С алиасом pq — для JOIN с posts (там тоже есть scheduled_at/priority).
 _FUTURE_USER_SCHEDULE_SQL_PQ = (
     "pq.scheduled_at IS NOT NULL AND pq.scheduled_at > :now "
     "AND pq.priority >= :sched_priority AND pq.priority < 999"
@@ -1017,7 +1018,7 @@ class QueueManager:
                             "LEFT JOIN posts p ON p.id = pq.post_id "
                             "WHERE pq.platform = :platform "
                             "AND pq.status IN ('pending', 'publishing', 'paused') "
-                            f"AND {_DUE_SCHEDULE_SQL} "
+                            f"AND {_DUE_SCHEDULE_SQL_PQ} "
                             "ORDER BY pq.priority DESC, pq.created_at ASC"
                         ),
                         {"platform": platform, "now": now},

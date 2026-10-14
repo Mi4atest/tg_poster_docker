@@ -71,15 +71,20 @@ def format_status_date_msk(dt: datetime) -> str:
 
 
 def format_schedule_msk(dt: datetime) -> str:
-    """Подпись запланированного времени: ДД.ММ ЧЧ:ММ (МСК)."""
+    """Компактная подпись (кнопки): ДД.ММ ЧЧ:ММ (МСК)."""
     return to_msk(dt).strftime("%d.%m %H:%M") + " (МСК)"
 
 
-def format_schedule_confirm_msk(dt: datetime) -> str:
-    """Читаемая подпись для подтверждения: 16:10 17 октября 2026 (МСК)."""
+def format_schedule_human_msk(dt: datetime) -> str:
+    """Человекочитаемо: 16 октября 2026 в 21:00."""
     local = to_msk(dt)
     month = MSK_MONTH_GENITIVE[local.month]
-    return f"{local.strftime('%H:%M')} {local.day} {month} {local.year} (МСК)"
+    return f"{local.day} {month} {local.year} в {local.strftime('%H:%M')}"
+
+
+def format_schedule_confirm_msk(dt: datetime) -> str:
+    """Подпись для подтверждения (как human)."""
+    return format_schedule_human_msk(dt)
 
 
 def msk_now() -> datetime:

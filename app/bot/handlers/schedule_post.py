@@ -16,7 +16,8 @@ from aiogram.types import CallbackQuery, Message
 from app.bot.keyboards.schedule_keyboard import (
     get_schedule_confirm_keyboard,
     get_schedule_day_keyboard,
-    get_schedule_time_keyboard,
+    get_schedule_hour_keyboard,
+    get_schedule_minute_keyboard,
     get_scheduled_list_keyboard,
     get_scheduled_post_actions_keyboard,
 )
@@ -25,7 +26,7 @@ from app.bot.utils.post_success_ui import post_media_counts
 from app.utils.time_msk import (
     SCHEDULE_INPUT_HINT_HTML,
     format_schedule_confirm_msk,
-    format_schedule_msk,
+    format_schedule_human_msk,
     msk_now,
     parse_schedule_flexible,
     parse_schedule_msk_to_naive_utc,
@@ -103,20 +104,41 @@ def _day_prompt(post_name: str, *, reschedule: bool, time_hint: str | None = Non
         f"📝 {name}",
     ]
     if time_hint:
-        lines.extend(["", f"🕐 Время: <b>{html.escape(time_hint)}</b> — выберите или введите день"])
-    lines.extend(["", SCHEDULE_INPUT_HINT_HTML, "", "Или кнопки дня:"])
+        lines.extend(["", f"🕐 Время: <b>{html.escape(time_hint)}</b> — выберите день"])
+    lines.extend(
+        [
+            "",
+            "Выберите день или введите дату/время сообщением.",
+            f"<i>{SCHEDULE_INPUT_HINT_HTML}</i>",
+        ]
+    )
     return "\n".join(lines)
 
 
-def _time_prompt(post_name: str, day: date, *, reschedule: bool) -> str:
+def _hour_prompt(post_name: str, day: date, *, reschedule: bool) -> str:
     title = "Перенести" if reschedule else "Запланировать"
     name = html.escape(post_name or "Без названия")
     return (
         f"📅 <b>{title}</b>\n\n"
         f"📝 {name}\n"
         f"📆 День: <b>{day.strftime('%d.%m.%Y')}</b> (МСК)\n\n"
-        "Выберите время кнопкой или введите, например <code>1005</code> / <code>10:05</code>:"
+        "Выберите час (или введите время, напр. <code>1005</code>):"
     )
+
+
+def _minute_prompt(post_name: str, day: date, hour: int, *, reschedule: bool) -> str:
+    title = "Перенести" if reschedule else "Запланировать"
+    name = html.escape(post_name or "Без названия")
+    return (
+        f"📅 <b>{title}</b>\n\n"
+        f"📝 {name}\n"
+        f"📆 День: <b>{day.strftime('%d.%m.%Y')}</b> · час <b>{hour:02d}</b>\n\n"
+        "Выберите минуты:"
+    )
+
+
+def _time_prompt(post_name: str, day: date, *, reschedule: bool) -> str:
+    return _hour_prompt(post_name, day, reschedule=reschedule)
 
 
 def _confirm_prompt(post_name: str, scheduled_at) -> str:
@@ -125,7 +147,7 @@ def _confirm_prompt(post_name: str, scheduled_at) -> str:
     return (
         f"📅 <b>Подтверждение</b>\n\n"
         f"📝 {name}\n"
-        f"🕐 {html.escape(when)}\n\n"
+        f"🕐 <b>{html.escape(when)}</b>\n\n"
         "Запланировать публикацию?"
     )
 
@@ -276,8 +298,8 @@ async def schedule_day_offset(callback: CallbackQuery, state: FSMContext):
         return
     await _safe_edit(
         callback.message,
-        _time_prompt(name, day, reschedule=reschedule),
-        reply_markup=get_schedule_time_keyboard(post_id, reschedule=reschedule),
+        _hour_prompt(name, day, reschedule=reschedule),
+        reply_markup=get_schedule_hour_keyboard(post_id, reschedule=reschedule),
     )
 
 
@@ -369,8 +391,8 @@ async def schedule_input_message(message: Message, state: FSMContext):
     if day is not None and (hour is None or minute is None):
         await state.update_data(schedule_day=day.isoformat())
         await message.answer(
-            _time_prompt(name, day, reschedule=reschedule),
-            reply_markup=get_schedule_time_keyboard(post_id, reschedule=reschedule),
+            _hour_prompt(name, day, reschedule=reschedule),
+            reply_markup=get_schedule_hour_keyboard(post_id, reschedule=reschedule),
             parse_mode="HTML",
         )
         return
@@ -391,14 +413,110 @@ async def schedule_input_message(message: Message, state: FSMContext):
     )
 
 
-# --- Time ---
+# --- Time: hour → minutes ---
+
+
+@router.callback_query(F.data.regexp(r"^sched(_rs)?_hour_\d{2}_.+"))
+async def schedule_hour_choice(callback: CallbackQuery, state: FSMContext):
+    reschedule = _is_reschedule(callback.data)
+    rest = _strip_schedule_prefix(callback.data)
+    # hour_HH_post_id
+    if not rest.startswith("hour_"):
+        await _answer_quietly(callback, "❌ Ошибка", show_alert=True)
+        return
+    body = rest[len("hour_") :]
+    hh, _, post_id = body.partition("_")
+    if not post_id or not hh.isdigit():
+        await _answer_quietly(callback, "❌ Ошибка", show_alert=True)
+        return
+    hour = int(hh)
+    data = await state.get_data()
+    name = data.get("schedule_post_name") or ""
+    day_s = data.get("schedule_day")
+    if data.get("schedule_post_id") != post_id:
+        post = await _load_post(post_id)
+        name = (post or {}).get("name") or name
+    if not day_s:
+        await _answer_quietly(callback, "❌ Сначала выберите день", show_alert=True)
+        await _safe_edit(
+            callback.message,
+            _day_prompt(name, reschedule=reschedule),
+            reply_markup=get_schedule_day_keyboard(post_id, reschedule=reschedule),
+        )
+        return
+    day = date.fromisoformat(day_s)
+    await state.set_state(SchedulePost.waiting_input)
+    await state.update_data(
+        schedule_post_id=post_id,
+        schedule_reschedule=reschedule,
+        schedule_post_name=name,
+        schedule_pick_hour=hour,
+    )
+    await _answer_quietly(callback)
+    await _safe_edit(
+        callback.message,
+        _minute_prompt(name, day, hour, reschedule=reschedule),
+        reply_markup=get_schedule_minute_keyboard(post_id, hour, reschedule=reschedule),
+    )
+
+
+@router.callback_query(F.data.regexp(r"^sched(_rs)?_min_\d{2}_.+"))
+async def schedule_minute_choice(callback: CallbackQuery, state: FSMContext):
+    reschedule = _is_reschedule(callback.data)
+    rest = _strip_schedule_prefix(callback.data)
+    if not rest.startswith("min_"):
+        await _answer_quietly(callback, "❌ Ошибка", show_alert=True)
+        return
+    body = rest[len("min_") :]
+    mm, _, post_id = body.partition("_")
+    if not post_id or not mm.isdigit():
+        await _answer_quietly(callback, "❌ Ошибка", show_alert=True)
+        return
+    minute = int(mm)
+    data = await state.get_data()
+    hour = data.get("schedule_pick_hour")
+    if hour is None:
+        await _answer_quietly(callback, "❌ Сначала выберите час", show_alert=True)
+        return
+    await _finish_time_choice(
+        callback, state, post_id, int(hour), minute, reschedule=reschedule
+    )
+
+
+@router.callback_query(F.data.regexp(r"^sched(_rs)?_back_hour_.+"))
+async def schedule_back_hour(callback: CallbackQuery, state: FSMContext):
+    reschedule = _is_reschedule(callback.data)
+    rest = _strip_schedule_prefix(callback.data)
+    post_id = _parse_post_suffix(rest, "back_hour")
+    if not post_id:
+        await _answer_quietly(callback, "❌ Ошибка", show_alert=True)
+        return
+    data = await state.get_data()
+    name = data.get("schedule_post_name") or ""
+    day_s = data.get("schedule_day")
+    await state.set_state(SchedulePost.waiting_input)
+    await state.update_data(schedule_pick_hour=None)
+    await _answer_quietly(callback)
+    if not day_s:
+        await _safe_edit(
+            callback.message,
+            _day_prompt(name, reschedule=reschedule),
+            reply_markup=get_schedule_day_keyboard(post_id, reschedule=reschedule),
+        )
+        return
+    day = date.fromisoformat(day_s)
+    await _safe_edit(
+        callback.message,
+        _hour_prompt(name, day, reschedule=reschedule),
+        reply_markup=get_schedule_hour_keyboard(post_id, reschedule=reschedule),
+    )
 
 
 @router.callback_query(F.data.regexp(r"^sched(_rs)?_time_\d{3,4}_.+"))
-async def schedule_time_preset(callback: CallbackQuery, state: FSMContext):
+async def schedule_time_preset_legacy(callback: CallbackQuery, state: FSMContext):
+    """Старые сообщения с пресетами ЧЧММ — сразу к подтверждению."""
     reschedule = _is_reschedule(callback.data)
     rest = _strip_schedule_prefix(callback.data)
-    # time_HHMM_post_id
     if not rest.startswith("time_"):
         await _answer_quietly(callback, "❌ Ошибка", show_alert=True)
         return
@@ -438,7 +556,7 @@ async def schedule_time_custom(callback: CallbackQuery, state: FSMContext):
         f"🕐 Введите время (МСК): <b>1610</b> или <b>16:10</b>\n"
         f"📝 {html.escape(name or 'Без названия')}\n"
         f"{day_line}",
-        reply_markup=get_schedule_time_keyboard(post_id, reschedule=reschedule),
+        reply_markup=get_schedule_hour_keyboard(post_id, reschedule=reschedule),
     )
 
 
@@ -540,7 +658,7 @@ async def schedule_confirm(callback: CallbackQuery, state: FSMContext):
         callback.message,
         f"✅ <b>Публикация запланирована</b>\n\n"
         f"📝 {html.escape(name or 'Без названия')}\n"
-        f"🕐 {html.escape(when)}\n\n"
+        f"🕐 <b>{html.escape(when)}</b>\n\n"
         "Пост появится в разделе «Запланированные».",
         reply_markup=get_scheduled_post_actions_keyboard(post_id),
     )
@@ -594,9 +712,13 @@ async def _render_scheduled_menu(callback: CallbackQuery) -> None:
         lines = ["📅 <b>Запланированные</b>", ""]
         for i, item in enumerate(items[:15], 1):
             name = html.escape(item.post_name or f"Пост {item.post_id[:8]}")
-            when = format_schedule_msk(item.scheduled_at) if item.scheduled_at else "—"
+            when = (
+                format_schedule_human_msk(item.scheduled_at)
+                if item.scheduled_at
+                else "—"
+            )
             lines.append(f"{i}. {name}")
-            lines.append(f"🕐 {html.escape(when)}")
+            lines.append(f"🕐 <b>{html.escape(when)}</b>")
             plats_col = format_platforms_column_html(getattr(item, "platforms", None))
             if plats_col:
                 lines.append(plats_col)
@@ -636,7 +758,11 @@ async def scheduled_post_card(callback: CallbackQuery, state: FSMContext):
     if video_count:
         media_parts.append(f"📹 {video_count}")
     media = " · ".join(media_parts) if media_parts else "без медиа"
-    when = format_schedule_msk(item.scheduled_at) if item and item.scheduled_at else "—"
+    when = (
+        format_schedule_human_msk(item.scheduled_at)
+        if item and item.scheduled_at
+        else "—"
+    )
     plats_col = format_platforms_column_html(
         item.platforms if item else None
     )
@@ -645,7 +771,7 @@ async def scheduled_post_card(callback: CallbackQuery, state: FSMContext):
         "",
         f"📝 {name}",
         media,
-        f"🕐 {html.escape(when)}",
+        f"🕐 <b>{html.escape(when)}</b>",
     ]
     if plats_col:
         text_parts.extend(["", plats_col])

@@ -89,10 +89,16 @@ class ParseMskScheduleTest(unittest.TestCase):
         self.assertIn("12:00", label)
         self.assertIn("МСК", label)
 
-    def test_format_schedule_confirm_msk(self):
-        # 13:10 UTC → 16:10 МСК 17 октября
-        label = format_schedule_confirm_msk(datetime(2026, 10, 17, 13, 10))
-        self.assertEqual(label, "16:10 17 октября 2026 (МСК)")
+    def test_format_schedule_human_msk(self):
+        # 18:00 UTC → 21:00 МСК 16 октября
+        from app.utils.time_msk import format_schedule_human_msk
+
+        label = format_schedule_human_msk(datetime(2026, 10, 16, 18, 0))
+        self.assertEqual(label, "16 октября 2026 в 21:00")
+        self.assertEqual(
+            format_schedule_confirm_msk(datetime(2026, 10, 16, 18, 0)),
+            "16 октября 2026 в 21:00",
+        )
 
     def test_parse_schedule_flexible_time_only_and_prefer(self):
         now = datetime(2026, 10, 12, 12, 0, tzinfo=timezone.utc)
@@ -189,20 +195,44 @@ def test_schedule_keyboard_callbacks_fit_telegram_limit():
     from app.bot.keyboards.schedule_keyboard import (
         get_schedule_confirm_keyboard,
         get_schedule_day_keyboard,
-        get_schedule_time_keyboard,
+        get_schedule_hour_keyboard,
+        get_schedule_minute_keyboard,
         get_scheduled_post_actions_keyboard,
     )
 
     post_id = "a" * 36  # uuid-like
     for kb in (
         get_schedule_day_keyboard(post_id),
-        get_schedule_time_keyboard(post_id, reschedule=True),
+        get_schedule_hour_keyboard(post_id, reschedule=True),
+        get_schedule_minute_keyboard(post_id, 10),
         get_schedule_confirm_keyboard(post_id),
         get_scheduled_post_actions_keyboard(post_id),
     ):
         for row in kb.inline_keyboard:
             for btn in row:
                 assert btn.callback_data is None or len(btn.callback_data.encode()) <= 64
+
+
+def test_schedule_day_and_hour_layout():
+    from app.bot.keyboards.schedule_keyboard import (
+        get_schedule_day_keyboard,
+        get_schedule_hour_keyboard,
+    )
+
+    day_kb = get_schedule_day_keyboard("pid")
+    texts = [b.text for row in day_kb.inline_keyboard for b in row]
+    assert "Сегодня" in texts
+    assert "Завтра" in texts
+    assert "Послезавтра" not in texts
+    assert any("Ввести" in t for t in texts)
+
+    hour_kb = get_schedule_hour_keyboard("pid")
+    hour_texts = [b.text for row in hour_kb.inline_keyboard for b in row]
+    assert "08:00" in hour_texts
+    assert "22:00" in hour_texts
+    assert "10:00" in hour_texts
+    # две колонки часов
+    assert len(hour_kb.inline_keyboard[0]) == 2
 
 
 if __name__ == "__main__":

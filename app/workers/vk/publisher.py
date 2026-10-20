@@ -13,8 +13,8 @@ from app.config.settings import (
     API_PORT,
     VK_WALL_ATTACH_MARKET,
 )
+from app.utils.vk_api_guard import after_vk_error, before_vk_call
 from app.utils.vk_client import get_community_vk_session, resolved_vk_group_id_int
-from app.utils.vk_flood_gate import note_exception as note_vk_flood
 from app.utils.vk_flood_gate import raise_if_blocked as raise_if_vk_flood_blocked
 from app.db.database import SessionLocal
 from app.db.post_queries import (
@@ -236,9 +236,10 @@ class VKPublisher:
     ):
         for attempt in range(1, attempts + 1):
             try:
+                before_vk_call("wall.photo_upload")
                 return await asyncio.to_thread(self._upload_photo_sync, temp_file)
             except Exception as exc:
-                note_vk_flood(exc, "wall photo upload")
+                after_vk_error(exc, "wall photo upload")
                 if attempt >= attempts or not self._is_retryable_upload_error(exc):
                     raise
                 delay = vk_upload_backoff_seconds(attempt, exc)
@@ -268,11 +269,12 @@ class VKPublisher:
     ):
         for attempt in range(1, attempts + 1):
             try:
+                before_vk_call("wall.video_upload")
                 return await asyncio.to_thread(
                     self._upload_video_sync, temp_file, name, description
                 )
             except Exception as exc:
-                note_vk_flood(exc, "wall video upload")
+                after_vk_error(exc, "wall video upload")
                 if attempt >= attempts or not self._is_retryable_upload_error(exc):
                     raise
                 delay = vk_upload_backoff_seconds(attempt, exc)
@@ -286,12 +288,17 @@ class VKPublisher:
                 await asyncio.sleep(delay)
 
     def _wall_post_sync(self, text: str, attachments: str):
-        return self.vk.wall.post(
-            owner_id=-self.group_id,
-            from_group=1,
-            message=text,
-            attachments=attachments,
-        )
+        before_vk_call("wall.post")
+        try:
+            return self.vk.wall.post(
+                owner_id=-self.group_id,
+                from_group=1,
+                message=text,
+                attachments=attachments,
+            )
+        except Exception as exc:
+            after_vk_error(exc, "wall.post")
+            raise
 
     async def publish_post(self, post_id, signature_enabled: bool = True):
         """Publish a post to VK."""
@@ -539,23 +546,6 @@ class VKPublisher:
             return True
         except Exception as e:
             logger.error(f"Error publishing post {post_id} to VK: {str(e)}")
-            # #region agent log
-            try:
-                from app.utils.vk_debug_log import vk_dbg, vk_exc_debug_meta, vk_token_debug_meta
-
-                vk_dbg(
-                    "C",
-                    "publisher.py:publish_post",
-                    "VK wall publish failed",
-                    {
-                        "post_id": post_id,
-                        **vk_exc_debug_meta(e),
-                        "token": vk_token_debug_meta(),
-                    },
-                )
-            except Exception:
-                pass
-            # #endregion
             try:
                 db.rollback()
             except Exception:

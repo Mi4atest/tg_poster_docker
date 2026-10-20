@@ -78,7 +78,12 @@ def main() -> int:
     print("[27]  = ключ сообщества не подходит для market → нужен user vk1.a в VK_MARKET_ACCESS_TOKEN")
     print("[1051]/[15] = токен vk2.a (VK ID) не подходит для market → нужен vk1.a, не VK ID OAuth")
     print("Ключ группы → VK_ACCESS_TOKEN | User vk1.a с market → VK_MARKET_ACCESS_TOKEN")
-    print("https://appleshop.ap43.ru/vk/oauth/help")
+    try:
+        from app.utils.vk_public_url import vk_oauth_help_url
+
+        print(vk_oauth_help_url())
+    except Exception:
+        print("/vk/oauth/help")
     return 0 if ok else 1
 
 

@@ -32,6 +32,18 @@ VK_ACCESS_TOKEN = os.getenv("VK_ACCESS_TOKEN")
 # User OAuth token for market.* (market.edit/get/add). Community key returns error 27.
 VK_MARKET_ACCESS_TOKEN = (os.getenv("VK_MARKET_ACCESS_TOKEN") or "").strip()
 VK_GROUP_ID = os.getenv("VK_GROUP_ID")
+# Единственный VK user_id, которому разрешено привязать токен на этом инстансе.
+# Пусто → проверка владельца отключена (не рекомендуется для продакшена).
+_vk_oauth_owner_raw = (os.getenv("VK_OAUTH_OWNER_ID") or "").strip()
+VK_OAUTH_OWNER_ID: Optional[int] = int(_vk_oauth_owner_raw) if _vk_oauth_owner_raw.isdigit() else None
+# Минимальный интервал между любыми VK API-вызовами внутри процесса (антифлуд).
+VK_API_MIN_INTERVAL_SEC = float(os.getenv("VK_API_MIN_INTERVAL_SEC", "0.35"))
+# Алерт админам при ошибках refresh / quota (code 9/29).
+VK_QUOTA_ALERT_ENABLED = os.getenv("VK_QUOTA_ALERT_ENABLED", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+)
 INSTAGRAM_GRAPH_ACCESS_TOKEN = os.getenv("INSTAGRAM_GRAPH_ACCESS_TOKEN", "")
 INSTAGRAM_GRAPH_USER_ID = os.getenv("INSTAGRAM_GRAPH_USER_ID", "")
 INSTAGRAM_GRAPH_API_VERSION = os.getenv("INSTAGRAM_GRAPH_API_VERSION", "v19.0")
@@ -122,8 +134,17 @@ if _s_avito_phone_cat:
     except ValueError:
         AVITO_DEFAULT_CATEGORY_SMARTPHONES = None
 
+# Публичный базовый URL инстанса (HTTPS, без trailing slash).
+# Используется для VK OAuth callback и (по умолчанию) для Avito feed.
+PUBLIC_BASE_URL = (
+    os.getenv("PUBLIC_BASE_URL")
+    or os.getenv("AVITO_FEED_PUBLIC_BASE_URL")
+    or "https://appleshop.ap43.ru"
+).strip().rstrip("/")
 # Публичный URL для фида и фото в автозагрузке (HTTPS).
-AVITO_FEED_PUBLIC_BASE_URL = (os.getenv("AVITO_FEED_PUBLIC_BASE_URL") or "https://appleshop.ap43.ru").strip().rstrip("/")
+AVITO_FEED_PUBLIC_BASE_URL = (
+    os.getenv("AVITO_FEED_PUBLIC_BASE_URL") or PUBLIC_BASE_URL or "https://appleshop.ap43.ru"
+).strip().rstrip("/")
 AVITO_AUTOLOAD_ADDRESS = (os.getenv("AVITO_AUTOLOAD_ADDRESS") or "Киров").strip()
 _avito_phone = (os.getenv("AVITO_AUTOLOAD_CONTACT_PHONE") or os.getenv("TELEGRAM_CONTACT_PHONE") or "").strip()
 AVITO_AUTOLOAD_CONTACT_PHONE = re.sub(r"\D", "", _avito_phone) if _avito_phone else ""

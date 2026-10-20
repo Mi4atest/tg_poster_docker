@@ -28,6 +28,7 @@ from app.utils.vk_client import (
     get_market_vk_session,
     resolved_vk_group_id_int,
 )
+from app.utils.vk_api_guard import after_vk_error, before_vk_call
 from app.utils.vk_flood_gate import note_exception as note_vk_flood
 from app.utils.vk_flood_gate import raise_if_blocked as raise_if_vk_flood_blocked
 
@@ -744,19 +745,6 @@ class VKProductPublisher:
             return result
         except Exception as e:
             logger.error(f"Error publishing product to VK Market: {str(e)}")
-            # #region agent log
-            try:
-                from app.utils.vk_debug_log import vk_dbg, vk_exc_debug_meta, vk_token_debug_meta
-
-                vk_dbg(
-                    "B",
-                    "product_publisher.py:publish_product",
-                    "VK market.add/publish failed",
-                    {**vk_exc_debug_meta(e), "token": vk_token_debug_meta()},
-                )
-            except Exception:
-                pass
-            # #endregion
             return None
 
     async def update_product_price(self, vk_product_id: int, price: int):
@@ -770,7 +758,7 @@ class VKProductPublisher:
         Returns:
             True если успешно, False в противном случае
         """
-        raise_if_vk_flood_blocked("market.edit price")
+        before_vk_call("market.edit price")
         try:
             await self._wait_for_api_interval()
 
@@ -792,24 +780,6 @@ class VKProductPublisher:
                     "Set VK_MARKET_ACCESS_TOKEN to official user OAuth token (market scope)."
                 )
             logger.error(f"Error updating product price in VK Market: {str(e)}")
-            # #region agent log
-            try:
-                from app.utils.vk_debug_log import vk_dbg, vk_exc_debug_meta, vk_token_debug_meta
-
-                vk_dbg(
-                    "A",
-                    "product_publisher.py:update_product_price",
-                    "VK market.edit price failed",
-                    {
-                        "vk_product_id": vk_product_id,
-                        **vk_exc_debug_meta(e),
-                        "token": vk_token_debug_meta(),
-                    },
-                    run_id="post-fix",
-                )
-            except Exception:
-                pass
-            # #endregion
             raise
 
     async def publish_product_to_vk(self, post_id: str) -> bool:
@@ -822,7 +792,7 @@ class VKProductPublisher:
         Returns:
             True если успешно, False иначе
         """
-        raise_if_vk_flood_blocked("market publish")
+        before_vk_call("market publish")
         try:
             from app.services.settings_service import get_settings_service
 

@@ -13,6 +13,7 @@ from typing import Any, Optional
 import requests
 
 from app.utils.vk_client import vk_app_id
+from app.utils.vk_public_url import vk_oauth_owner_id, vk_oauth_start_url
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,18 @@ VKID_TOKEN = "https://id.vk.ru/oauth2/auth"
 # Обновлять, когда до истечения осталось меньше этого запаса.
 REFRESH_SKEW_SEC = 10 * 60
 POLL_SEC = 5 * 60
+
+# Необратимые ошибки: не долбить refresh, алертнуть админа.
+_FATAL_REFRESH_MARKERS = (
+    "invalid_grant",
+    "invalid_token",
+    "revoked",
+    "expired",
+    "access_denied",
+)
+
+_last_fatal_alert_at = 0.0
+_FATAL_ALERT_COOLDOWN_SEC = 6 * 3600
 
 
 def _get_secret(name: str) -> str:
@@ -45,6 +58,17 @@ def _expires_at() -> int:
         return 0
 
 
+def _bound_user_id() -> Optional[int]:
+    from app.services.settings_service import get_settings_service
+
+    data = get_settings_service().get_all()
+    raw = (data.get("integrations") or {}).get("vk_oauth_user_id")
+    try:
+        return int(raw) if raw is not None and str(raw).strip() != "" else None
+    except (TypeError, ValueError):
+        return None
+
+
 def needs_refresh(*, now: Optional[float] = None) -> bool:
     """True, если это VK ID-токен с refresh и скоро истечёт (или уже истёк)."""
     token = _get_secret("vk_access_token")
@@ -57,17 +81,46 @@ def needs_refresh(*, now: Optional[float] = None) -> bool:
     return float(now if now is not None else time.time()) >= exp - REFRESH_SKEW_SEC
 
 
+def _is_fatal_refresh_error(err: object) -> bool:
+    text = str(err or "").lower()
+    return any(m in text for m in _FATAL_REFRESH_MARKERS)
+
+
+def _alert_refresh_failure(message: str) -> None:
+    global _last_fatal_alert_at
+    now = time.time()
+    if now - _last_fatal_alert_at < _FATAL_ALERT_COOLDOWN_SEC:
+        return
+    _last_fatal_alert_at = now
+    try:
+        from app.config import settings as env_settings
+        from app.utils.vk_api_guard import _send_alert_best_effort
+
+        if not getattr(env_settings, "VK_QUOTA_ALERT_ENABLED", True):
+            return
+        _send_alert_best_effort(
+            f"⚠️ VK ID refresh failed\n{message}\n"
+            f"Повторите вход: {vk_oauth_start_url()}"
+        )
+    except Exception:
+        logger.warning("VK refresh alert failed", exc_info=True)
+
+
 def refresh_vk_access_token() -> dict[str, Any]:
     """Обменять refresh_token на новую пару. Сохраняет секреты при успехе."""
     refresh = _get_secret("vk_refresh_token")
     device_id = _device_id()
     app_id = vk_app_id()
     if not refresh:
-        return {"ok": False, "error": "нет vk_refresh_token"}
+        return {"ok": False, "error": "нет vk_refresh_token", "fatal": False}
     if not device_id:
-        return {"ok": False, "error": "нет vk_token_device_id — войдите через /vk/oauth/vkid/start"}
+        return {
+            "ok": False,
+            "error": "нет vk_token_device_id — войдите через /vk/oauth/vkid/start",
+            "fatal": True,
+        }
     if not app_id:
-        return {"ok": False, "error": "нет VK_APP_ID"}
+        return {"ok": False, "error": "нет VK_APP_ID", "fatal": True}
 
     state = secrets.token_urlsafe(16)
     payload = {
@@ -95,40 +148,62 @@ def refresh_vk_access_token() -> dict[str, Any]:
     data = resp.json()
     if not data.get("access_token"):
         err = data.get("error") or data.get("error_description") or data
-        logger.error("VK ID refresh failed: %s", err)
-        return {"ok": False, "error": str(err)[:300], "raw_keys": sorted(data.keys())}
+        fatal = _is_fatal_refresh_error(err)
+        logger.error("VK ID refresh failed: %s fatal=%s", err, fatal)
+        if fatal:
+            _alert_refresh_failure(str(err)[:300])
+        return {
+            "ok": False,
+            "error": str(err)[:300],
+            "raw_keys": sorted(data.keys()),
+            "fatal": fatal,
+        }
 
-    from app.api.endpoints.vk_oauth import _store_tokens
+    # Сохраняем привязку владельца: user_id из ответа или ранее сохранённый.
+    from app.api.endpoints.vk_oauth import _parse_user_id, _store_tokens
 
-    saved = _store_tokens(data, device_id)
-    logger.info(
-        "VK ID token refreshed, expires_in=%s saved=%s",
-        data.get("expires_in"),
-        saved,
-    )
-    # #region agent log
-    try:
-        from app.utils.vk_debug_log import vk_dbg
-
-        vk_dbg(
-            "R",
-            "vk_token_refresh.py:refresh_vk_access_token",
-            "VK ID refresh OK",
-            {
-                "expires_in": data.get("expires_in"),
-                "scope": str(data.get("scope") or "")[:120],
-                "prefix": str(data.get("access_token") or "")[:6],
-            },
-            run_id="post-fix",
+    new_uid = _parse_user_id(data)
+    bound = _bound_user_id()
+    owner = vk_oauth_owner_id()
+    expected = owner if owner is not None else bound
+    if new_uid is not None and expected is not None and int(new_uid) != int(expected):
+        msg = (
+            f"refresh user_id={new_uid} не совпадает с владельцем инстанса {expected}"
         )
+        logger.error(msg)
+        _alert_refresh_failure(msg)
+        return {"ok": False, "error": msg, "fatal": True}
+
+    binding_meta = {
+        "user_id": new_uid if new_uid is not None else bound,
+        "group_id": None,
+        "admin_level": None,
+        "scope": data.get("scope"),
+    }
+    try:
+        from app.services.settings_service import get_settings_service
+
+        integ = get_settings_service().get_all().get("integrations") or {}
+        if integ.get("vk_oauth_group_id") is not None:
+            binding_meta["group_id"] = int(integ["vk_oauth_group_id"])
+        if integ.get("vk_oauth_admin_level") is not None:
+            binding_meta["admin_level"] = int(integ["vk_oauth_admin_level"])
     except Exception:
         pass
-    # #endregion
+
+    saved = _store_tokens(data, device_id, binding_meta=binding_meta)
+    logger.info(
+        "VK ID token refreshed, expires_in=%s saved=%s user_id=%s",
+        data.get("expires_in"),
+        saved,
+        binding_meta.get("user_id"),
+    )
     return {
         "ok": True,
         "expires_in": data.get("expires_in"),
         "scope": data.get("scope"),
         "saved": saved,
+        "user_id": binding_meta.get("user_id"),
     }
 
 
@@ -139,4 +214,5 @@ def ensure_fresh_vk_token() -> Optional[str]:
     result = refresh_vk_access_token()
     if result.get("ok"):
         return f"refreshed expires_in={result.get('expires_in')}"
-    return f"refresh_failed: {result.get('error')}"
+    prefix = "refresh_fatal" if result.get("fatal") else "refresh_failed"
+    return f"{prefix}: {result.get('error')}"

@@ -112,20 +112,6 @@ def mark_flood(source: str, *, cooldown: timedelta = FLOOD_COOLDOWN) -> datetime
         _cache_read_at = _now()
     _store_to_settings(until)
     logger.warning("VK flood gate armed by %s until %s", source, until.isoformat())
-    # #region agent log
-    try:
-        from app.utils.vk_debug_log import vk_dbg
-
-        vk_dbg(
-            "G",
-            "vk_flood_gate.py:mark_flood",
-            "VK flood gate armed",
-            {"source": source, "until": until.isoformat()},
-            run_id="post-fix",
-        )
-    except Exception:
-        pass
-    # #endregion
     return until
 
 

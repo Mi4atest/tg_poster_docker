@@ -279,13 +279,24 @@ async def update_product_price(
     vk_product_id = row.get("vk_product_id")
     if sync_platforms and vk_product_id:
         try:
-            from app.workers.vk.product_publisher import VKProductPublisher
+            from app.utils.vk_market_ops import apply_or_enqueue
 
-            publisher = VKProductPublisher()
-            ok = await publisher.update_product_price(vk_product_id, price_value)
+            ok, detail = apply_or_enqueue(
+                product_id=int(product_id),
+                vk_product_id=int(vk_product_id),
+                action="price",
+                payload={"price": price_value},
+            )
+            # pending = отложено в vk_market_ops (flood/transient), не hard-error.
+            if ok:
+                vk_status = "ok"
+            elif detail and ("повтор" in detail.lower() or "flood" in detail.lower()):
+                vk_status = "pending"
+            else:
+                vk_status = "error"
             vk_sync = PricePlatformSync(
-                status="ok" if ok else "error",
-                detail=None if ok else "Не удалось обновить цену в VK Market",
+                status=vk_status,
+                detail=None if ok else (detail or "Не удалось обновить цену в VK Market")[:200],
             )
         except Exception as e:
             logger.error("Error updating product price in VK: %s", e)

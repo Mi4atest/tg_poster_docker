@@ -342,24 +342,6 @@ class PriceSyncService:
                     pr.detail = detail
             except Exception as e:
                 logger.error("VK price sync failed product_id=%s: %s", job.product_id, e)
-                # #region agent log
-                try:
-                    from app.utils.vk_debug_log import vk_dbg, vk_exc_debug_meta, vk_token_debug_meta
-
-                    vk_dbg(
-                        "A",
-                        "price_sync_service.py:_process_price_job",
-                        "VK price sync failed",
-                        {
-                            "product_id": job.product_id,
-                            **vk_exc_debug_meta(e),
-                            "token": vk_token_debug_meta(),
-                        },
-                        run_id="post-fix",
-                    )
-                except Exception:
-                    pass
-                # #endregion
                 from app.utils.vk_client import vk_user_error_detail
 
                 pr.vk = False
@@ -442,24 +424,6 @@ class PriceSyncService:
                     pr.detail = detail
             except Exception as e:
                 logger.error("VK unavailable sync failed product_id=%s: %s", job.product_id, e)
-                # #region agent log
-                try:
-                    from app.utils.vk_debug_log import vk_dbg, vk_exc_debug_meta, vk_token_debug_meta
-
-                    vk_dbg(
-                        "B",
-                        "price_sync_service.py:_process_unavailable_job",
-                        "VK unavailable sync failed",
-                        {
-                            "product_id": job.product_id,
-                            **vk_exc_debug_meta(e),
-                            "token": vk_token_debug_meta(),
-                        },
-                        run_id="post-fix",
-                    )
-                except Exception:
-                    pass
-                # #endregion
                 from app.utils.vk_client import vk_user_error_detail
 
                 pr.vk = False

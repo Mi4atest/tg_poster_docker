@@ -185,25 +185,6 @@ def set_product_status(
                         vk_sync = _sync_block("pending" if "повтор сам" in detail else "error", detail)
                 except Exception as e:
                     logger.error("Error updating product status in VK: %s", e)
-                    # #region agent log
-                    try:
-                        from app.utils.vk_debug_log import vk_dbg, vk_exc_debug_meta, vk_token_debug_meta
-
-                        vk_dbg(
-                            "B",
-                            "product_ops_service.py:set_product_status",
-                            "VK status sync failed",
-                            {
-                                "product_id": product_id,
-                                "status": status,
-                                **vk_exc_debug_meta(e),
-                                "token": vk_token_debug_meta(),
-                            },
-                            run_id="post-fix",
-                        )
-                    except Exception:
-                        pass
-                    # #endregion
                     vk_sync = _sync_block("error", str(e)[:200])
 
         avito_sync = _sync_block()

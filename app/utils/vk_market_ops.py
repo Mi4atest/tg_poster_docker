@@ -21,7 +21,6 @@ from app.utils.vk_client import (
 from app.utils.vk_flood_gate import VkFloodBlocked
 from app.utils.vk_flood_gate import flood_until as vk_flood_until
 from app.utils.vk_flood_gate import note_exception as note_vk_flood
-from app.utils.vk_flood_gate import raise_if_blocked as raise_if_vk_flood_blocked
 from app.workers.vk.upload_retry import is_vk_flood_error
 
 logger = logging.getLogger(__name__)
@@ -124,7 +123,9 @@ def enqueue(
 
 
 def _execute(action: str, vk_product_id: int, payload: dict[str, Any]) -> None:
-    raise_if_vk_flood_blocked(f"market.{action}")
+    from app.utils.vk_api_guard import before_vk_call
+
+    before_vk_call(f"market.{action}")
     try:
         from app.utils.vk_token_refresh import ensure_fresh_vk_token
 
@@ -164,33 +165,6 @@ def apply_or_enqueue(
     except Exception as exc:
         note_vk_flood(exc, f"market.{action}")
         detail = vk_user_error_detail(exc)
-        # #region agent log
-        try:
-            from app.utils.vk_debug_log import vk_dbg, vk_exc_debug_meta, vk_token_debug_meta
-
-            err = getattr(exc, "error", None)
-            extra = {}
-            if isinstance(err, dict):
-                extra = {
-                    "error_keys": sorted(str(k) for k in err.keys()),
-                    "captcha": bool(err.get("captcha_sid")),
-                }
-            vk_dbg(
-                "F",
-                "vk_market_ops.py:apply_or_enqueue",
-                "VK market call failed",
-                {
-                    "product_id": product_id,
-                    "action": action,
-                    **vk_exc_debug_meta(exc),
-                    "token": vk_token_debug_meta(),
-                    **extra,
-                },
-                run_id="post-fix",
-            )
-        except Exception:
-            pass
-        # #endregion
         if _is_transient(exc):
             delay = _retry_delay()
             enqueue(
@@ -264,20 +238,6 @@ def process_due_operation() -> Optional[str]:
                 {"att": attempts, "now": _now(), "id": op_id},
             )
             db.commit()
-        # #region agent log
-        try:
-            from app.utils.vk_debug_log import vk_dbg
-
-            vk_dbg(
-                "F",
-                "vk_market_ops.py:process_due_operation",
-                "VK delayed op succeeded",
-                {"product_id": product_id, "action": action, "attempts": attempts},
-                run_id="post-fix",
-            )
-        except Exception:
-            pass
-        # #endregion
         logger.info(
             "VK market delayed op done id=%s product_id=%s action=%s attempts=%s",
             op_id,
@@ -307,26 +267,6 @@ def process_due_operation() -> Optional[str]:
                 },
             )
             db.commit()
-        # #region agent log
-        try:
-            from app.utils.vk_debug_log import vk_dbg, vk_exc_debug_meta
-
-            vk_dbg(
-                "F",
-                "vk_market_ops.py:process_due_operation",
-                "VK delayed op failed",
-                {
-                    "product_id": product_id,
-                    "action": action,
-                    "attempts": attempts,
-                    "status": status,
-                    **vk_exc_debug_meta(exc),
-                },
-                run_id="post-fix",
-            )
-        except Exception:
-            pass
-        # #endregion
         logger.warning(
             "VK market delayed op %s id=%s product_id=%s action=%s: %s",
             status,

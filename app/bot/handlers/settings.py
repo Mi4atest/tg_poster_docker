@@ -272,16 +272,26 @@ def _build_integration_platform_text(platform: str) -> str:
     service = get_settings_service()
     integrations = service.get_all().get("integrations", {})
     if platform == "vk":
+        from app.utils.vk_public_url import vk_oauth_owner_id, vk_oauth_start_url
+
+        owner_env = vk_oauth_owner_id()
+        bound_user = integrations.get("vk_oauth_user_id")
+        bound_group = integrations.get("vk_oauth_group_id")
+        oauth_url = vk_oauth_start_url()
         return (
             "🔐 VK интеграция\n\n"
             f"Токен: {'задан' if service.get_secret('vk_access_token') else 'не задан'}\n"
+            f"Refresh: {'задан' if service.get_secret('vk_refresh_token') else 'нет'}\n"
             f"ID группы (куда постим): {integrations.get('vk_group_id') or env_settings.VK_GROUP_ID or 'не задан'}\n"
             f"ID приложения: {integrations.get('vk_app_id') or env_settings.VK_APP_ID or '54604726'}\n"
-            f"Защищённый ключ: {'задан' if service.get_secret('vk_app_secret') else 'не задан'}\n\n"
-            "Временный токен (vk.com на vkhost): можно вставить всю ссылку "
-            "из адресной строки — access_token вырежется сам.\n"
-            "Своё приложение:\n"
-            "https://appleshop.ap43.ru/vk/oauth/vkid/start"
+            f"Защищённый ключ: {'задан' if service.get_secret('vk_app_secret') else 'не задан'}\n"
+            f"Назначенный owner (VK_OAUTH_OWNER_ID): {owner_env or 'не задан'}\n"
+            f"Привязанный user_id: {bound_user or '—'}\n"
+            f"Привязанная группа OAuth: {bound_group or '—'}\n\n"
+            "Постоянный режим: только OAuth своего приложения (vk2 + refresh).\n"
+            f"{oauth_url}\n\n"
+            "В поле «Токен VK» допускается только временный vk1 (vkhost) — "
+            "строку vk2.a вручную не вставляйте (нужен полный OAuth)."
         )
     if platform == "telegram":
         return (
@@ -929,8 +939,19 @@ async def save_integration_value(message: Message, state: FSMContext):
 
     if field in ("vk_access_token", "vk_market_access_token") and raw:
         from app.utils.vk_token_parse import extract_vk_access_token
+        from app.utils.vk_public_url import vk_oauth_start_url
 
         raw = extract_vk_access_token(raw)
+        # vk2 требует refresh+device_id — только через /vk/oauth/vkid/start.
+        if raw.startswith("vk2.a."):
+            await message.answer(
+                "❌ Токен vk2.a нельзя сохранять вручную.\n"
+                "Нужен полный OAuth (access + refresh + device_id):\n"
+                f"{vk_oauth_start_url()}\n\n"
+                "В это поле можно вставить только временный vk1 (vkhost), "
+                "если OAuth приложения временно недоступен."
+            )
+            return
 
     if field in SECRET_INTEGRATION_FIELDS:
         if not raw and field != "mobileproxy_api_token":
@@ -941,6 +962,22 @@ async def save_integration_value(message: Message, state: FSMContext):
         # Одно поле «Токен VK» должно покрывать и стену, и market.edit.
         if field == "vk_access_token" and raw:
             service.set_secret("vk_market_access_token", raw)
+            # Ручной vk1 не является полной OAuth-сессией — сбрасываем refresh-метаданные.
+            if raw.startswith("vk1.a."):
+                service.set_secret("vk_refresh_token", "")
+                service.update(
+                    {
+                        "integrations": {
+                            "vk_token_device_id": "",
+                            "vk_token_expires_at": 0,
+                            "vk_oauth_user_id": None,
+                            "vk_oauth_group_id": None,
+                            "vk_oauth_admin_level": None,
+                            "vk_oauth_scope": "",
+                            "vk_oauth_bound_at": 0,
+                        }
+                    }
+                )
             _reset_vk_session_state()
         elif field == "vk_market_access_token" and raw:
             _reset_vk_session_state()

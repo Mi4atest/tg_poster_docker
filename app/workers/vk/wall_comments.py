@@ -7,8 +7,8 @@
 import logging
 from typing import List, Optional, Tuple
 
+from app.utils.vk_api_guard import after_vk_error, before_vk_call
 from app.utils.vk_client import get_community_vk_session, resolved_vk_group_id_int
-from app.utils.vk_flood_gate import raise_if_blocked as raise_if_vk_flood_blocked
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,7 @@ class VKWallCommentClient:
         needle = UNAVAILABLE_COMMENT.lower()
         ids: List[int] = []
         try:
+            before_vk_call("wall.getComments")
             resp = self.vk.wall.getComments(
                 owner_id=owner_id,
                 post_id=post_id,
@@ -48,6 +49,7 @@ class VKWallCommentClient:
                 sort="asc",
             )
         except Exception as e:
+            after_vk_error(e, "wall.getComments")
             logger.error(
                 "VK wall.getComments failed owner=%s post=%s: %s", owner_id, post_id, e
             )
@@ -63,13 +65,14 @@ class VKWallCommentClient:
 
     def create_unavailable_comment(self, owner_id: int, post_id: int) -> bool:
         """Оставить комментарий «неактуально» от лица группы (идемпотентно)."""
-        raise_if_vk_flood_blocked("wall.createComment")
+        before_vk_call("wall.createComment")
         if self._find_group_unavailable_comment_ids(owner_id, post_id):
             logger.info(
                 "VK post %s_%s already has group #неактуально comment", owner_id, post_id
             )
             return True
         try:
+            before_vk_call("wall.createComment")
             self.vk.wall.createComment(
                 owner_id=owner_id,
                 post_id=post_id,
@@ -79,6 +82,7 @@ class VKWallCommentClient:
             logger.info("VK unavailable comment posted for %s_%s", owner_id, post_id)
             return True
         except Exception as e:
+            after_vk_error(e, "wall.createComment")
             logger.error(
                 "VK wall.createComment failed owner=%s post=%s: %s", owner_id, post_id, e
             )
@@ -86,7 +90,7 @@ class VKWallCommentClient:
 
     def remove_unavailable_comments(self, owner_id: int, post_id: int) -> bool:
         """Удалить комментарии «неактуально» от лица группы под постом."""
-        raise_if_vk_flood_blocked("wall.deleteComment")
+        before_vk_call("wall.deleteComment")
         ids = self._find_group_unavailable_comment_ids(owner_id, post_id)
         if not ids:
             logger.info("VK post %s_%s: no #неактуально comment to remove", owner_id, post_id)
@@ -94,9 +98,11 @@ class VKWallCommentClient:
         all_ok = True
         for cid in ids:
             try:
+                before_vk_call("wall.deleteComment")
                 self.vk.wall.deleteComment(owner_id=owner_id, comment_id=cid)
                 logger.info("VK deleted comment %s on post %s_%s", cid, owner_id, post_id)
             except Exception as e:
+                after_vk_error(e, "wall.deleteComment")
                 logger.error(
                     "VK wall.deleteComment failed owner=%s comment=%s: %s",
                     owner_id,

@@ -18,6 +18,7 @@ from app.api.models.story import Story, StoryPublicationLog
 from app.config.settings import API_HOST, API_PORT, MEDIA_DIR
 from app.db.database import SessionLocal
 from app.utils.text_extractor import extract_model_and_price, extract_model_name_without_code
+from app.utils.vk_api_guard import after_vk_error, before_vk_call
 from app.utils.vk_client import community_token, resolved_vk_group_id_int
 from app.utils.vk_urls import api_method_url, story_url, wall_post_url
 from app.workers.vk.story_composer import build_story_image
@@ -252,7 +253,12 @@ class VKStoryPublisher:
             params["link_text"] = "more"
 
         logger.info("Getting VK story upload server group_id=%s link=%s", self.group_id, bool(link_url))
-        upload_server = self.vk.stories.getPhotoUploadServer(**params)
+        before_vk_call("stories.getPhotoUploadServer")
+        try:
+            upload_server = self.vk.stories.getPhotoUploadServer(**params)
+        except Exception as exc:
+            after_vk_error(exc, "stories.getPhotoUploadServer")
+            raise
         if not upload_server or "upload_url" not in upload_server:
             raise RuntimeError(f"Failed to get upload server: {upload_server}")
 
@@ -272,10 +278,15 @@ class VKStoryPublisher:
             raise RuntimeError(f"Invalid upload response: {upload_data}")
 
         logger.info("Saving VK story…")
-        save_result = self.vk.stories.save(
-            upload_results=upload_result,
-            group_id=self.group_id,
-        )
+        before_vk_call("stories.save")
+        try:
+            save_result = self.vk.stories.save(
+                upload_results=upload_result,
+                group_id=self.group_id,
+            )
+        except Exception as exc:
+            after_vk_error(exc, "stories.save")
+            raise
         story_data = self._extract_saved_story(save_result)
         if not story_data:
             raise RuntimeError(f"Failed to save story: {save_result}")
@@ -283,6 +294,7 @@ class VKStoryPublisher:
 
     async def publish_story(self, story_id: str) -> bool:
         """Основной путь: коллаж из фото поста + ссылка на опубликованный пост ВК."""
+        before_vk_call("stories.publish")
         db = SessionLocal()
         temp_path = None
         try:

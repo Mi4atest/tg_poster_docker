@@ -144,24 +144,6 @@ class PlatformWorker:
             else:
                 error_msg = f"Failed to publish post {post_id} to {self.platform}"
                 logger.error(error_msg)
-                # #region agent log
-                if self.platform == "vk":
-                    try:
-                        from app.utils.vk_debug_log import vk_dbg, vk_token_debug_meta
-
-                        vk_dbg(
-                            "C",
-                            "platform_worker.py:publish_post_false",
-                            "VK queue publish returned False",
-                            {
-                                "post_id": post_id,
-                                "queue_item_id": queue_item_id,
-                                "token": vk_token_debug_meta(),
-                            },
-                        )
-                    except Exception:
-                        pass
-                # #endregion
                 self._handle_publish_failure(queue_item_id, post_id, error_msg)
 
             return success
@@ -169,24 +151,6 @@ class PlatformWorker:
         except Exception as e:
             error_msg = f"Error publishing post {post_id} to {self.platform}: {str(e) or type(e).__name__}"
             logger.error(error_msg)
-            # #region agent log
-            if self.platform == "vk":
-                try:
-                    from app.utils.vk_debug_log import vk_dbg, vk_exc_debug_meta, vk_token_debug_meta
-
-                    vk_dbg(
-                        "C",
-                        "platform_worker.py:publish_post",
-                        "VK queue publish exception",
-                        {
-                            "post_id": post_id,
-                            **vk_exc_debug_meta(e),
-                            "token": vk_token_debug_meta(),
-                        },
-                    )
-                except Exception:
-                    pass
-            # #endregion
             self._handle_publish_failure(queue_item_id, post_id, error_msg)
             return False
 

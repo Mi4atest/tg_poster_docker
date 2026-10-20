@@ -2,6 +2,7 @@ import logging
 import os
 import asyncio
 import time
+from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
@@ -194,6 +195,16 @@ class InstagramGraphPublisher:
                 logger.error(f"Пост с ID {post_id} не найден")
                 return False
 
+
+            # Идемпотентность: не публиковать повторно, если флаг уже выставлен.
+            if getattr(post, "is_published_instagram", False):
+                logger.info(
+                    "IG skip already published post_id=%s media_id=%s",
+                    post_id,
+                    getattr(post, "instagram_media_id", None),
+                )
+                return True
+
             if not self.enabled:
                 reason = (
                     "Graph API не настроен. Нужны INSTAGRAM_GRAPH_ACCESS_TOKEN, "
@@ -280,23 +291,41 @@ class InstagramGraphPublisher:
                 self._last_children_count,
             )
 
-            if not await self._publish_creation(creation_id):
-                details = self._last_graph_error or "Не удалось опубликовать media container в Graph API"
-                if self._last_graph_error_code == 190:
-                    details = f"OAuthException code 190: {details}"
-                    await send_admin_alert(f"Instagram OAuthException (code 190) при публикации media: {details}")
-                self._log_error_safe(post_id, f"Graph API ошибка: {details}")
-                return False
+            published_ok = await self._publish_creation(creation_id)
+            published_media_id = self._last_published_media_id if published_ok else None
+            recovered = False
 
-            published_media_id = self._last_published_media_id
+            if not published_ok:
+                details = self._last_graph_error or "Не удалось опубликовать media container в Graph API"
+                # Meta часто уже выложила пост, а API вернул code=4 (rate limit) —
+                # без recovery очередь сделает полный republish → дубли в сетке.
+                published_media_id = await self._recover_live_publish_after_error(
+                    creation_id, caption
+                )
+                if published_media_id:
+                    recovered = True
+                    logger.warning(
+                        "IG recover after false fail post_id=%s creation_id=%s media_id=%s code=%s",
+                        post_id,
+                        creation_id,
+                        published_media_id,
+                        self._last_graph_error_code,
+                    )
+                else:
+                    if self._last_graph_error_code == 190:
+                        details = f"OAuthException code 190: {details}"
+                        await send_admin_alert(
+                            f"Instagram OAuthException (code 190) при публикации media: {details}"
+                        )
+                    self._log_error_safe(post_id, f"Graph API ошибка: {details}")
+                    return False
+
             if not published_media_id:
                 self._log_error_safe(post_id, "Graph API не вернул ID опубликованного медиа")
                 return False
 
-            graph_client = InstagramGraphClient()
-            permalink, _shortcode = await graph_client.fetch_media_permalink(published_media_id)
-
-            # Свежая сессия: параллельный VK Market INSERT мог убить соединение пула.
+            # Сразу фиксируем published в БД — до permalink/sync, чтобы ретрай
+            # очереди не успел создать второй live-пост.
             try:
                 db.rollback()
             except Exception:
@@ -310,9 +339,20 @@ class InstagramGraphPublisher:
                 db,
                 post_id,
                 media_id=published_media_id,
-                link=permalink,
+                link=None,
             )
             db.commit()
+
+            graph_client = InstagramGraphClient()
+            permalink, _shortcode = await graph_client.fetch_media_permalink(published_media_id)
+            if permalink:
+                mark_post_published_instagram(
+                    db,
+                    post_id,
+                    media_id=published_media_id,
+                    link=permalink,
+                )
+                db.commit()
 
             if permalink or published_media_id:
                 try:
@@ -330,12 +370,17 @@ class InstagramGraphPublisher:
                         sync_err,
                     )
                     db.rollback()
+            success_note = (
+                f"Пост опубликован через Instagram Graph API "
+                f"(source={used_source}, items={self._last_children_count}"
+                f"{', recovered_after_api_error' if recovered else ''})"
+            )
             insert_publication_log(
                 db,
                 post_id,
                 "instagram",
                 "success",
-                f"Пост опубликован через Instagram Graph API (source={used_source}, items={self._last_children_count})",
+                success_note,
             )
             db.commit()
             logger.info(f"Пост {post_id} успешно опубликован через Graph API")
@@ -353,12 +398,37 @@ class InstagramGraphPublisher:
             else:
                 details = f"{exc_name}: {exc_text}"
             self._last_graph_error = details
+            live_media_id = getattr(self, "_last_published_media_id", None)
             logger.error(
                 "Ошибка Graph API при публикации поста %s: %s",
                 post_id,
                 details,
                 exc_info=True,
             )
+            # Если media уже жив на Meta — не отдаём False в очередь (иначе republish→дубль).
+            if live_media_id:
+                try:
+                    salvage = SessionLocal()
+                    try:
+                        mark_post_published_instagram(
+                            salvage,
+                            post_id,
+                            media_id=str(live_media_id),
+                            link=None,
+                        )
+                        salvage.commit()
+                        logger.warning(
+                            "IG salvaged published flag after exception post_id=%s media_id=%s",
+                            post_id,
+                            live_media_id,
+                        )
+                        return True
+                    finally:
+                        salvage.close()
+                except Exception as salvage_err:
+                    logger.error(
+                        "IG salvage mark failed post_id=%s: %s", post_id, salvage_err
+                    )
             self._log_error_safe(post_id, f"Ошибка Graph API: {details}")
             return False
         finally:
@@ -916,41 +986,141 @@ class InstagramGraphPublisher:
                 await asyncio.sleep(2)
         return None
 
-    async def _publish_creation(self, creation_id: str) -> bool:
-        self._last_published_media_id = None
+    def _is_likely_false_publish_failure(self) -> bool:
+        """Ошибки, при которых Meta иногда уже выложила пост."""
+        code = str(self._last_graph_error_code or "")
+        if code == "4":
+            return True
+        msg = (self._last_graph_error or "").lower()
+        return "rate limit" in msg or "application request limit" in msg
+
+    async def _publish_creation_once(
+        self, creation_id: str, *, session: Optional[aiohttp.ClientSession] = None
+    ) -> bool:
+        """Один вызов media_publish без внутреннего цикла ретраев."""
         endpoint = f"{self.base_url}/{self.ig_user_id}/media_publish"
         payload = {"creation_id": creation_id, "access_token": self.access_token}
+        timeout = aiohttp.ClientTimeout(total=self.timeout_seconds)
+
+        async def _do(sess: aiohttp.ClientSession) -> bool:
+            async with sess.post(endpoint, data=payload) as response:
+                data = await response.json(content_type=None)
+                if response.status < 400:
+                    media_id = (data or {}).get("id")
+                    if media_id:
+                        self._last_published_media_id = str(media_id)
+                    return bool(media_id)
+                graph_error = (data or {}).get("error", {})
+                self._last_graph_error = graph_error.get("message", str(data))
+                self._last_graph_error_code = graph_error.get("code")
+                self._last_graph_error_subcode = graph_error.get("error_subcode")
+                logger.error(
+                    "Graph API media_publish error (%s): %s", response.status, data
+                )
+                return False
+
+        if session is not None:
+            return await _do(session)
+        async with aiohttp.ClientSession(timeout=timeout) as own:
+            return await _do(own)
+
+    async def _find_recent_media_id_by_caption(
+        self, caption: str, *, within_seconds: int = 900
+    ) -> Optional[str]:
+        """Найти только что появившийся media с тем же caption (exact match)."""
+        needle = (caption or "").strip()
+        if not needle or not self.ig_user_id or not self.access_token:
+            return None
+        endpoint = f"{self.base_url}/{self.ig_user_id}/media"
+        params = {
+            "fields": "id,caption,timestamp",
+            "limit": "10",
+            "access_token": self.access_token,
+        }
+        timeout = aiohttp.ClientTimeout(total=self.timeout_seconds)
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(endpoint, params=params) as response:
+                    payload = await response.json(content_type=None)
+                    if response.status >= 400:
+                        logger.warning(
+                            "IG recent media list error (%s): %s",
+                            response.status,
+                            payload,
+                        )
+                        return None
+            now = datetime.now(timezone.utc)
+            for item in (payload or {}).get("data") or []:
+                item_cap = (item.get("caption") or "").strip()
+                if item_cap != needle:
+                    continue
+                media_id = str(item.get("id") or "").strip()
+                if not media_id:
+                    continue
+                ts_raw = item.get("timestamp")
+                if ts_raw:
+                    try:
+                        ts = datetime.fromisoformat(
+                            str(ts_raw).replace("Z", "+00:00")
+                        )
+                        if ts.tzinfo is None:
+                            ts = ts.replace(tzinfo=timezone.utc)
+                        age = (now - ts.astimezone(timezone.utc)).total_seconds()
+                        if age > within_seconds:
+                            continue
+                    except Exception:
+                        pass
+                return media_id
+        except Exception as exc:
+            logger.warning("IG recent media lookup failed: %s", exc)
+        return None
+
+    async def _recover_live_publish_after_error(
+        self, creation_id: str, caption: str
+    ) -> Optional[str]:
+        """Если media_publish вернул ошибку, но пост мог уже уйти в ленту — вернуть media_id."""
+        if not self._is_likely_false_publish_failure():
+            return None
+
+        await asyncio.sleep(2)
+
+        # 1) Повтор того же creation_id (если Meta ещё не приняла publish).
+        if await self._publish_creation_once(creation_id):
+            return self._last_published_media_id
+
+        # 2) Пост уже в ленте с тем же caption (типичный code=4 после успешного publish).
+        found = await self._find_recent_media_id_by_caption(caption, within_seconds=900)
+        if found:
+            self._last_published_media_id = found
+            return found
+        return None
+
+    async def _publish_creation(self, creation_id: str) -> bool:
+        self._last_published_media_id = None
         timeout = aiohttp.ClientTimeout(total=self.timeout_seconds)
         retries = max(3, self.publish_retries)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             for attempt in range(1, retries + 1):
-                async with session.post(endpoint, data=payload) as response:
-                    data = await response.json(content_type=None)
-                    if response.status < 400:
-                        media_id = (data or {}).get("id")
-                        if media_id:
-                            self._last_published_media_id = str(media_id)
-                        return bool(media_id)
+                ok = await self._publish_creation_once(creation_id, session=session)
+                if ok:
+                    return True
 
-                    graph_error = (data or {}).get("error", {})
-                    self._last_graph_error = graph_error.get("message", str(data))
-                    self._last_graph_error_code = graph_error.get("code")
-                    logger.error(f"Graph API media_publish error ({response.status}): {data}")
-
-                    if str(self._last_graph_error_code) == "9007" and attempt < retries:
-                        status_code = await self._get_creation_status_code(
-                            creation_id, session=session
-                        )
-                        logger.warning(
-                            "IG media_publish retry post creation_id=%s attempt=%s/%s status=%s",
-                            creation_id,
-                            attempt,
-                            retries,
-                            status_code,
-                        )
-                        await asyncio.sleep(min(self.publish_retry_delay_seconds * attempt, 12))
-                        continue
-                    return False
+                if str(self._last_graph_error_code) == "9007" and attempt < retries:
+                    status_code = await self._get_creation_status_code(
+                        creation_id, session=session
+                    )
+                    logger.warning(
+                        "IG media_publish retry post creation_id=%s attempt=%s/%s status=%s",
+                        creation_id,
+                        attempt,
+                        retries,
+                        status_code,
+                    )
+                    await asyncio.sleep(min(self.publish_retry_delay_seconds * attempt, 12))
+                    continue
+                # rate limit (code 4): не крутить тот же publish в цикле —
+                # recovery снаружи решит, жив ли пост.
+                return False
         return False
 
     async def _get_creation_status_code(

@@ -79,8 +79,39 @@ class PlatformWorker:
             )
         return interval
 
+    def _instagram_already_published(self, post_id: str) -> bool:
+        """Быстрая проверка флага — не requeue, если Meta-пост уже зафиксирован."""
+        try:
+            from sqlalchemy import text
+
+            from app.db.database import SessionLocal
+
+            db = SessionLocal()
+            try:
+                row = db.execute(
+                    text(
+                        "SELECT is_published_instagram FROM posts WHERE id = :id LIMIT 1"
+                    ),
+                    {"id": post_id},
+                ).first()
+                return bool(row and row[0])
+            finally:
+                db.close()
+        except Exception as exc:
+            logger.warning("IG published-flag check failed for %s: %s", post_id, exc)
+            return False
+
     def _handle_publish_failure(self, queue_item_id: int, post_id: str, error_msg: str) -> None:
         """Для VK и Instagram — авто-ретрай с паузой; иначе сразу failed."""
+        if self.platform == "instagram" and self._instagram_already_published(post_id):
+            logger.warning(
+                "IG publish reported fail for %s but is_published_instagram=true; "
+                "marking queue completed (no requeue)",
+                post_id,
+            )
+            self.queue_manager.mark_as_completed(queue_item_id)
+            return
+
         max_attempts = self.QUEUE_AUTO_RETRY_MAX.get(self.platform)
         if max_attempts:
             delay = self._retry_delay_seconds()
@@ -248,7 +279,8 @@ class PlatformWorker:
                         )
                         if not claimed or self._is_effectively_paused():
                             continue
-                    if not self.queue_manager.mark_as_publishing(queue_item.id):
+                    claimed_ok = self.queue_manager.mark_as_publishing(queue_item.id)
+                    if not claimed_ok:
                         continue
                     await self.publish_post(queue_item.id, queue_item.post_id)
                 else:

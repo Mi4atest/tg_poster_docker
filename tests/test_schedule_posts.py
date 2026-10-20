@@ -130,6 +130,46 @@ class ScheduleUiButtonsTest(unittest.TestCase):
         self.assertIn("📅 Запланировать", texts)
         self.assertIn("schedule_post_abc-123", cbs)
         self.assertIn("📋 В очередь", texts)
+        # Целевые действия в одном ряду; черновики — отдельно
+        self.assertEqual(len(kb.inline_keyboard[0]), 2)
+        self.assertEqual(kb.inline_keyboard[0][0].callback_data, "schedule_post_abc-123")
+        self.assertEqual(kb.inline_keyboard[0][1].callback_data, "add_to_queue_abc-123")
+        self.assertEqual(kb.inline_keyboard[1][0].callback_data, "pending_posts")
+
+    def test_queue_confirm_keyboard(self):
+        from unittest.mock import MagicMock
+
+        from app.bot.utils.post_success_ui import (
+            build_queue_confirm_keyboard,
+            build_queue_confirm_text,
+        )
+
+        kb = build_queue_confirm_keyboard("abc-123")
+        cbs = [b.callback_data for row in kb.inline_keyboard for b in row]
+        self.assertIn("confirm_add_to_queue_abc-123", cbs)
+        self.assertIn("post_ready_abc-123", cbs)
+
+        service = MagicMock()
+        service.is_platform_enabled.side_effect = lambda p: p in (
+            "vk",
+            "telegram",
+            "instagram",
+            "max",
+        )
+        service.is_avito_queue_allowed.return_value = False
+        service.get_platform_interval_minutes.return_value = 3
+
+        text = build_queue_confirm_text(
+            "S [1]",
+            1,
+            0,
+            queue_stats={"vk": 0, "telegram": 0},
+            service=service,
+        )
+        self.assertIn("Отправить в очередь", text)
+        self.assertIn("автоматически", text)
+        self.assertIn("Запланировать", text)
+        self.assertIn("VK", text)
 
     def test_draft_actions_row(self):
         kb = get_post_actions_keyboard()

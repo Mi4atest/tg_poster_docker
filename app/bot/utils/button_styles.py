@@ -36,6 +36,7 @@ _PRIMARY_PREFIXES = (
     "scheduled_promote_",
 )
 _SUCCESS_PREFIXES = (
+    "confirm_add_to_queue_",
     "add_to_queue_",
 )
 _DANGER_PREFIXES = ("queue_cancel_post_", "scheduled_cancel_")

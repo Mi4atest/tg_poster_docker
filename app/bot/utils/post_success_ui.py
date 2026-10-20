@@ -123,12 +123,78 @@ def build_post_ready_text(
 
 
 def build_post_ready_keyboard(post_id: str) -> InlineKeyboardMarkup:
+    """Две целевые кнопки в ряд (меньше промахов), черновики — отдельно на всю ширину."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [ikb("📋 В очередь", f"add_to_queue_{post_id}")],
-            [ikb("📅 Запланировать", f"schedule_post_{post_id}")],
+            [
+                ikb("📅 Запланировать", f"schedule_post_{post_id}"),
+                ikb("📋 В очередь", f"add_to_queue_{post_id}"),
+            ],
             [InlineKeyboardButton(text="📝 В черновики", callback_data="pending_posts")],
             [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_to_main")],
+        ]
+    )
+
+
+def build_queue_confirm_text(
+    post_name: str,
+    photo_count: int,
+    video_count: int,
+    queue_stats: Optional[dict] = None,
+    avito_draft: Optional[dict] = None,
+    service: Optional[SettingsService] = None,
+) -> str:
+    """Текст подтверждения перед необратимым «В очередь»."""
+    service = service or get_settings_service()
+    name = html.escape(post_name or "Без названия")
+    media = _media_line(photo_count, video_count)
+
+    enabled = _enabled_social(service)
+    avito_on = service.is_platform_enabled("avito") and service.is_avito_queue_allowed()
+    if enabled:
+        plats = " · ".join(label for _, label in enabled)
+    else:
+        plats = "нет включённых соцсетей"
+    if avito_on:
+        plats = f"{plats} · Авито" if enabled else "Авито"
+
+    lines = [
+        "📋 <b>Отправить в очередь?</b>",
+        "",
+        f"📝 {name}",
+        media,
+        "",
+        "Пост встанет в общую очередь и начнёт публиковаться "
+        "<b>автоматически</b> по интервалам площадок — без выбора точного времени.",
+        f"Площадки: <b>{html.escape(plats)}</b>",
+    ]
+
+    stats = dict(queue_stats or {})
+    # Оценка «как будто уже встали» — ближе к тому, что увидит пользователь после confirm.
+    preview = {k: int(stats.get(k, 0) or 0) + 1 for k, _ in enabled}
+    eta = format_publication_eta_line(preview, service)
+    if eta:
+        lines.append(eta)
+    lines.append(format_publication_intervals_line(service))
+
+    avito_line = format_avito_draft_line(avito_draft, service)
+    if avito_line:
+        lines.append(avito_line)
+
+    lines.extend(
+        [
+            "",
+            "Нужна дата и время — лучше «Запланировать».",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def build_queue_confirm_keyboard(post_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [ikb("✅ Да, в очередь", f"confirm_add_to_queue_{post_id}")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"post_ready_{post_id}")],
         ]
     )
 

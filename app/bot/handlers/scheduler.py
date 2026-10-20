@@ -16,7 +16,15 @@ from app.bot.keyboards.scheduler_keyboard import (
 )
 from app.bot.keyboards.main_keyboard import get_create_post_entry_keyboard
 from app.bot.keyboards.post_avito_keyboard import format_post_creation_text_prompt
-from app.bot.utils.post_success_ui import build_post_queued_keyboard, build_post_queued_text, post_media_counts
+from app.bot.utils.post_success_ui import (
+    build_post_queued_keyboard,
+    build_post_queued_text,
+    build_post_ready_keyboard,
+    build_post_ready_text,
+    build_queue_confirm_keyboard,
+    build_queue_confirm_text,
+    post_media_counts,
+)
 from app.services.settings_service import get_settings_service
 from app.bot.handlers.queue_avito_ui import (
     build_avito_platform_text,
@@ -505,12 +513,81 @@ async def add_to_queue_and_create_legacy(callback: CallbackQuery, state: FSMCont
 
 
 @router.callback_query(
-    F.data.startswith("add_to_queue_") & ~F.data.startswith("add_to_queue_and_create_")
+    F.data.startswith("add_to_queue_")
+    & ~F.data.startswith("add_to_queue_and_create_")
+    & ~F.data.startswith("confirm_add_to_queue_")
 )
-async def add_to_queue(callback: CallbackQuery, state: FSMContext):
-    """Добавить пост в очередь и показать экран «что дальше»."""
-    post_id = callback.data.replace("add_to_queue_", "")
+async def add_to_queue_ask(callback: CallbackQuery, state: FSMContext):
+    """Шаг подтверждения перед необратимым добавлением в очередь."""
+    post_id = callback.data.replace("add_to_queue_", "", 1)
+    try:
+        from app.bot.handlers.post_management import get_post_api
+
+        post = await get_post_api(post_id)
+        if not post:
+            await _answer_quietly(callback, "❌ Пост не найден", show_alert=True)
+            return
+
+        orchestrator = get_orchestrator(callback.bot)
+        stats = orchestrator.get_queue_stats()
+        photo_count, video_count = post_media_counts(post)
+        avito_draft = (
+            post.get("avito_draft") if isinstance(post.get("avito_draft"), dict) else None
+        )
+        text = build_queue_confirm_text(
+            post.get("name", ""),
+            photo_count,
+            video_count,
+            stats,
+            avito_draft=avito_draft,
+        )
+        await _answer_quietly(callback)
+        await safe_edit_message(
+            callback.message,
+            text,
+            reply_markup=build_queue_confirm_keyboard(post_id),
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        logger.error(f"Error showing queue confirm: {str(e)}")
+        await _answer_quietly(callback, "❌ Ошибка", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("confirm_add_to_queue_"))
+async def confirm_add_to_queue(callback: CallbackQuery, state: FSMContext):
+    """Подтвердили — добавляем в очередь."""
+    post_id = callback.data.replace("confirm_add_to_queue_", "", 1)
     await _show_post_queued_screen(callback, state, post_id)
+
+
+@router.callback_query(F.data.startswith("post_ready_"))
+async def back_to_post_ready(callback: CallbackQuery, state: FSMContext):
+    """Назад с confirm «В очередь» на экран «Пост готов»."""
+    post_id = callback.data.replace("post_ready_", "", 1)
+    try:
+        from app.bot.handlers.post_management import get_post_api
+
+        post = await get_post_api(post_id)
+        if not post:
+            await _answer_quietly(callback, "❌ Пост не найден", show_alert=True)
+            return
+        photo_count, video_count = post_media_counts(post)
+        text = build_post_ready_text(
+            post.get("name", ""),
+            photo_count,
+            video_count,
+            post=post,
+        )
+        await _answer_quietly(callback)
+        await safe_edit_message(
+            callback.message,
+            text,
+            reply_markup=build_post_ready_keyboard(post_id),
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        logger.error(f"Error returning to post ready: {str(e)}")
+        await _answer_quietly(callback, "❌ Ошибка", show_alert=True)
 
 
 async def _show_post_queued_screen(callback: CallbackQuery, state: FSMContext, post_id: str) -> None:

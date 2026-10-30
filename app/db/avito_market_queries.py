@@ -16,11 +16,12 @@ from app.utils.market_daily import (
     QUALITY_GAP,
     QUALITY_OK,
     QUALITY_SOFT,
+    QUALITY_THIN,
     classify_sample_quality,
     observed_on_msk,
     should_replace_daily,
 )
-from app.integrations.avito.market_search import MarketListing
+from app.integrations.avito.market_search import MarketListing, compact_condition_label
 from app.utils.market_harvest import apply_harvest
 from app.utils.price_stats import MarketAnalysis
 
@@ -91,6 +92,7 @@ def _upsert_daily(
     q75_rub: Optional[int],
     snapshot_id: Optional[int],
     now: datetime,
+    force: bool = False,
 ) -> None:
     row = (
         db.query(AvitoMarketDaily)
@@ -102,7 +104,7 @@ def _upsert_daily(
         )
         .first()
     )
-    if row is not None and not should_replace_daily(row.quality, quality):
+    if row is not None and not force and not should_replace_daily(row.quality, quality):
         return
     if row is None:
         row = AvitoMarketDaily(
@@ -294,14 +296,50 @@ def _listing_audit_payload(analysis: MarketAnalysis, *, limit: int = 100) -> lis
             "title": item.title[:300],
             "price_rub": item.price_rub,
             "seller_type": item.seller_type,
-            "condition": item.condition,
+            "condition": compact_condition_label(item.condition) or item.condition,
             "city": item.city or "",
             "url": (item.url or "")[:500],
             "included": item.included,
             "rejection_reason": item.rejection_reason,
+            "cluster_size": max(1, int(item.cluster_size or 1)),
         }
         for item in (*included, *rest)[:limit]
     ]
+
+
+def _price_anchor_for_query(
+    db,
+    query: IphoneMarketQuery,
+    *,
+    region: str,
+) -> Optional[int]:
+    from app.utils.price_stats import resolve_price_anchor_rub
+
+    daily_rows = (
+        db.query(AvitoMarketDaily)
+        .filter(
+            AvitoMarketDaily.model == query.model,
+            AvitoMarketDaily.memory_gb == int(query.memory_gb),
+            AvitoMarketDaily.region == str(region),
+        )
+        .order_by(AvitoMarketDaily.observed_on.asc())
+        .all()
+    )
+    daily_points = [_daily_dict(row) for row in daily_rows]
+    shop_min = shop_max = None
+    try:
+        from app.db.avito_market_watchlist_queries import get_used_shop_price_range
+
+        shop = get_used_shop_price_range(query.model, query.memory_gb)
+        if shop:
+            shop_min, shop_max = shop.min_rub, shop.max_rub
+    except Exception:
+        pass
+    return resolve_price_anchor_rub(
+        daily_points=daily_points,
+        shop_min_rub=shop_min,
+        shop_max_rub=shop_max,
+    )
 
 
 def save_market_snapshot(
@@ -330,6 +368,7 @@ def save_market_snapshot(
             row = AvitoMarketSnapshot(cache_key=cache_key)
             db.add(row)
         summary = analysis.summary
+        spike_carry = bool(analysis.median_spike and row.median_rub is not None)
         row.model = query.model
         row.memory_gb = query.memory_gb
         row.region = region
@@ -338,16 +377,32 @@ def save_market_snapshot(
         row.matched_count = analysis.matched_count
         row.used_count = analysis.used_count
         row.outlier_count = analysis.outlier_count
-        if summary:
+        if spike_carry:
+            # Антискачок: оставляем прошлую котировку, audit обновляем.
+            daily_quality = QUALITY_THIN
+            daily_median = daily_q25 = daily_q75 = None
+        elif summary:
             row.median_rub = summary.median_rub
             row.q25_rub = summary.q25_rub
             row.q75_rub = summary.q75_rub
             row.quote_as_of = now
             row.quote_quality = quality
-        elif row.median_rub is None:
-            row.quote_quality = quality
-        row.private_summary = asdict(analysis.private_summary) if analysis.private_summary else None
-        row.business_summary = asdict(analysis.business_summary) if analysis.business_summary else None
+            daily_quality = quality
+            daily_median = summary.median_rub
+            daily_q25 = summary.q25_rub
+            daily_q75 = summary.q75_rub
+        else:
+            if row.median_rub is None:
+                row.quote_quality = quality
+            daily_quality = quality
+            daily_median = daily_q25 = daily_q75 = None
+        if not spike_carry:
+            row.private_summary = (
+                asdict(analysis.private_summary) if analysis.private_summary else None
+            )
+            row.business_summary = (
+                asdict(analysis.business_summary) if analysis.business_summary else None
+            )
         row.listing_audit = _listing_audit_payload(analysis)
         row.fetched_at = now
         row.expires_at = now + timedelta(seconds=ttl_seconds)
@@ -361,13 +416,13 @@ def save_market_snapshot(
             memory_gb=query.memory_gb,
             region=region,
             observed_on=observed_on_msk(now),
-            quality=quality,
+            quality=daily_quality,
             source=source,
             used_count=analysis.used_count,
             total_count=analysis.total_count,
-            median_rub=summary.median_rub if summary else None,
-            q25_rub=summary.q25_rub if summary else None,
-            q75_rub=summary.q75_rub if summary else None,
+            median_rub=daily_median,
+            q25_rub=daily_q25,
+            q75_rub=daily_q75,
             snapshot_id=row.id,
             now=now,
         )
@@ -402,7 +457,8 @@ def merge_harvest_into_snapshot(
         if row is None:
             return None
         snapshot = _snapshot_dict(row)
-        applied = apply_harvest(snapshot, query, harvested)
+        anchor = _price_anchor_for_query(db, query, region=region)
+        applied = apply_harvest(snapshot, query, harvested, price_anchor_rub=anchor)
         if applied is None:
             return None
         analysis, _added = applied
@@ -413,18 +469,23 @@ def merge_harvest_into_snapshot(
             min_soft_sample_size=AVITO_MARKET_SOFT_SAMPLE_SIZE,
         )
         summary = analysis.summary
+        spike_carry = bool(analysis.median_spike and row.median_rub is not None)
         row.total_count = analysis.total_count
         row.matched_count = analysis.matched_count
         row.used_count = analysis.used_count
         row.outlier_count = analysis.outlier_count
-        if summary:
+        if summary and not spike_carry:
             row.median_rub = summary.median_rub
             row.q25_rub = summary.q25_rub
             row.q75_rub = summary.q75_rub
             row.quote_as_of = now
             row.quote_quality = quality
-        row.private_summary = asdict(analysis.private_summary) if analysis.private_summary else None
-        row.business_summary = asdict(analysis.business_summary) if analysis.business_summary else None
+            row.private_summary = (
+                asdict(analysis.private_summary) if analysis.private_summary else None
+            )
+            row.business_summary = (
+                asdict(analysis.business_summary) if analysis.business_summary else None
+            )
         row.listing_audit = _listing_audit_payload(analysis)
         db.commit()
         db.refresh(row)
@@ -458,18 +519,51 @@ def refresh_snapshot_filters(snapshot_id: int) -> Optional[dict[str, Any]]:
         listings = listings_from_audit(row.listing_audit)
         if not listings:
             return _snapshot_dict(row)
+        region = str(row.region or "Россия")
+        anchor = _price_anchor_for_query(db, query, region=region)
+        # Якорь не должен брать битую текущую котировку того же дня: для repair
+        # используем daily без сегодняшней точки, если она spike относительно shop.
         analysis = analyze_market_listings(
             listings,
             query,
             min_sample_size=AVITO_MARKET_MIN_SAMPLE_SIZE,
             min_soft_sample_size=AVITO_MARKET_SOFT_SAMPLE_SIZE,
             min_seller_group_size=AVITO_MARKET_MIN_SELLER_GROUP_SIZE,
+            price_anchor_rub=anchor,
         )
+        # #region agent log
+        try:
+            from app.integrations.avito.debug_agent_log import agent_dbg
+
+            agent_dbg(
+                "E",
+                "avito_market_queries.py:refresh_snapshot_filters",
+                "recomputed snapshot from audit",
+                {
+                    "snapshot_id": int(snapshot_id),
+                    "model": query.model,
+                    "memory_gb": query.memory_gb,
+                    "total": analysis.total_count,
+                    "matched": analysis.matched_count,
+                    "used": analysis.used_count,
+                    "median": analysis.summary.median_rub if analysis.summary else None,
+                    "old_used": int(row.used_count or 0),
+                    "old_median": row.median_rub,
+                    "anchor": anchor,
+                    "spike": analysis.median_spike,
+                    "duplicates": analysis.duplicate_count,
+                },
+                run_id="post-fix",
+            )
+        except Exception:
+            pass
+        # #endregion
         new_median = analysis.summary.median_rub if analysis.summary else None
         if (
             analysis.used_count == int(row.used_count or 0)
             and analysis.total_count == int(row.total_count or 0)
             and new_median == row.median_rub
+            and analysis.duplicate_count == 0
         ):
             return _snapshot_dict(row)
         quality = classify_sample_quality(
@@ -478,17 +572,49 @@ def refresh_snapshot_filters(snapshot_id: int) -> Optional[dict[str, Any]]:
             min_soft_sample_size=AVITO_MARKET_SOFT_SAMPLE_SIZE,
         )
         summary = analysis.summary
+        # Repair: если фильтры починили выборку — всегда пишем новую медиану.
+        # Антискачок carry только когда новая медиана хуже якоря, а старая уже хорошая.
+        spike_carry = bool(
+            analysis.median_spike
+            and row.median_rub is not None
+            and anchor
+            and abs(int(row.median_rub) - int(anchor)) <= abs((new_median or 0) - int(anchor))
+        )
         row.total_count = analysis.total_count
         row.matched_count = analysis.matched_count
         row.used_count = analysis.used_count
         row.outlier_count = analysis.outlier_count
-        if summary:
+        if summary and not spike_carry:
             row.median_rub = summary.median_rub
             row.q25_rub = summary.q25_rub
             row.q75_rub = summary.q75_rub
             row.quote_quality = quality
-        row.private_summary = asdict(analysis.private_summary) if analysis.private_summary else None
-        row.business_summary = asdict(analysis.business_summary) if analysis.business_summary else None
+            row.private_summary = (
+                asdict(analysis.private_summary) if analysis.private_summary else None
+            )
+            row.business_summary = (
+                asdict(analysis.business_summary) if analysis.business_summary else None
+            )
+            if row.fetched_at:
+                # Repair может понизить quality (ok→soft), но обязан заменить
+                # отравленную дневную точку (100к из витринного спама).
+                _upsert_daily(
+                    db,
+                    model=query.model,
+                    memory_gb=query.memory_gb,
+                    region=region,
+                    observed_on=observed_on_msk(row.fetched_at),
+                    quality=quality,
+                    source="repair",
+                    used_count=analysis.used_count,
+                    total_count=analysis.total_count,
+                    median_rub=summary.median_rub,
+                    q25_rub=summary.q25_rub,
+                    q75_rub=summary.q75_rub,
+                    snapshot_id=row.id,
+                    now=_utcnow(),
+                    force=True,
+                )
         row.listing_audit = _listing_audit_payload(analysis)
         db.commit()
         db.refresh(row)

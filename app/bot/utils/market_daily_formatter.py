@@ -5,7 +5,7 @@ import html
 from datetime import date
 from typing import Any, Optional
 
-from app.utils.market_daily import QUALITY_GAP, QUALITY_OK, QUALITY_SOFT, QUALITY_THIN
+from app.utils.market_daily import QUALITY_OK, QUALITY_SOFT
 
 
 def _rub(value: int) -> str:
@@ -56,26 +56,36 @@ def format_market_daily_line(
         return (
             f"{day}  {_rub(median)} · {_rub(q25)}–{_rub(q75)}  ({used}){mark}{delta}"
         )
-    if quality == QUALITY_THIN:
-        extra = f" ({used})" if used else ""
-        return f"{day}  — нет выборки{extra}"
-    if quality == QUALITY_GAP:
-        return f"{day}  — нет данных"
     return f"{day}  —"
 
 
 def format_market_daily_html(points: list[dict[str, Any]]) -> str:
-    """Свежие дни сверху. Пусто, если точек нет."""
+    """Только дни ok/soft. Пустые gap/thin — счётчиком пропусков."""
     if not points:
         return ""
     chronological = sorted(points, key=lambda row: row.get("observed_on") or date.min)
+    quoted = [
+        point
+        for point in chronological
+        if str(point.get("quality") or "") in {QUALITY_OK, QUALITY_SOFT}
+        and _quoted_median(point) is not None
+    ]
+    skipped = len(chronological) - len(quoted)
+    if not quoted:
+        if skipped:
+            return (
+                "\n📈 Динамика по дням:\n"
+                f"<i>Пропущено дней без выборки: {skipped} "
+                "(Avito недоступен или выборка слишком тонкая)</i>"
+            )
+        return ""
     prev_for_day: dict[Any, Optional[int]] = {}
     last_quoted: Optional[int] = None
-    for point in chronological:
+    for point in quoted:
         prev_for_day[point.get("observed_on")] = last_quoted
-        quoted = _quoted_median(point)
-        if quoted is not None:
-            last_quoted = quoted
+        median = _quoted_median(point)
+        if median is not None:
+            last_quoted = median
     lines = [
         html.escape(
             format_market_daily_line(
@@ -83,11 +93,18 @@ def format_market_daily_html(points: list[dict[str, Any]]) -> str:
                 previous_median=prev_for_day.get(point.get("observed_on")),
             )
         )
-        for point in reversed(chronological)
+        for point in reversed(quoted)
     ]
+    footer = ""
+    if skipped:
+        footer = (
+            f"\n<i>Пропущено дней без выборки: {skipped} "
+            "(Avito недоступен)</i>"
+        )
     return (
         "\n📈 Динамика по дням:\n"
         "<blockquote expandable>"
         + "\n".join(lines)
         + "</blockquote>"
+        + footer
     )

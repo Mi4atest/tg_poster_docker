@@ -43,3 +43,4 @@ def test_market_web_url_contains_query():
     url = build_market_web_url(q)
     assert "all/telefony" in url
     assert "iPhone" in url or "13" in url
+    assert "f=ASgBAgECAUSyA0Iq" in url

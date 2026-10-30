@@ -25,6 +25,7 @@ from app.db.avito_market_queries import (
     get_last_live_request_at,
     get_market_snapshot,
     get_market_snapshot_by_id,
+    list_market_daily,
     list_recent_market_snapshots,
     merge_harvest_into_snapshot,
     record_live_request,
@@ -33,6 +34,7 @@ from app.db.avito_market_queries import (
     refresh_snapshot_filters,
     save_market_snapshot,
 )
+from app.db.avito_market_watchlist_queries import get_used_shop_price_range
 from app.db.database import run_db
 from app.integrations.avito.market_diag import (
     CODE_AVITO_BLOCK,
@@ -54,7 +56,11 @@ from app.integrations.avito.market_search import (
 from app.utils.iphone_market_query import IphoneMarketQuery
 from app.utils.market_daily import QUALITY_SOFT, classify_sample_quality, quote_is_carried
 from app.utils.market_harvest import group_foreign_listings, listings_from_audit
-from app.utils.price_stats import PriceSummary, analyze_market_listings
+from app.utils.price_stats import (
+    PriceSummary,
+    analyze_market_listings,
+    resolve_price_anchor_rub,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -129,6 +135,36 @@ class IphoneMarketPriceService:
     async def _fetch(self, query: IphoneMarketQuery) -> list[MarketListing]:
         return await fetch_market_listings(query, timeout_seconds=AVITO_MARKET_TIMEOUT_SEC)
 
+    async def _price_anchor(self, query: IphoneMarketQuery) -> Optional[int]:
+        daily = await run_db(list_market_daily, query.model, query.memory_gb)
+        shop_min = shop_max = None
+        try:
+            shop = await run_db(get_used_shop_price_range, query.model, query.memory_gb)
+            if shop:
+                shop_min, shop_max = shop.min_rub, shop.max_rub
+        except Exception:
+            logger.exception("Failed to load shop range for market anchor")
+        return resolve_price_anchor_rub(
+            daily_points=daily,
+            shop_min_rub=shop_min,
+            shop_max_rub=shop_max,
+        )
+
+    async def _analyze(
+        self,
+        query: IphoneMarketQuery,
+        listings: list[MarketListing],
+    ):
+        anchor = await self._price_anchor(query)
+        return analyze_market_listings(
+            listings,
+            query,
+            min_sample_size=AVITO_MARKET_MIN_SAMPLE_SIZE,
+            min_soft_sample_size=AVITO_MARKET_SOFT_SAMPLE_SIZE,
+            min_seller_group_size=AVITO_MARKET_MIN_SELLER_GROUP_SIZE,
+            price_anchor_rub=anchor,
+        )
+
     @staticmethod
     def _cache_key(query: IphoneMarketQuery) -> str:
         return f"{AVITO_MARKET_REGION.lower()}:{query.cache_key}"
@@ -197,6 +233,10 @@ class IphoneMarketPriceService:
                 quote_quality=str(quote_quality) if quote_quality else None,
                 used_count=int(snapshot.get("used_count") or 0),
                 has_summary=summary is not None,
+                quote_as_of=quote_as_of if isinstance(quote_as_of, datetime) else None,
+                fetched_at=snapshot["fetched_at"]
+                if isinstance(snapshot.get("fetched_at"), datetime)
+                else None,
             ),
             last_error=str(snapshot.get("last_error") or "") or None,
             last_error_at=snapshot.get("last_error_at")
@@ -396,13 +436,7 @@ class IphoneMarketPriceService:
                 await run_db(record_live_request, key, source=source)
                 try:
                     listings = await self._fetcher(query)
-                    analysis = analyze_market_listings(
-                        listings,
-                        query,
-                        min_sample_size=AVITO_MARKET_MIN_SAMPLE_SIZE,
-                        min_soft_sample_size=AVITO_MARKET_SOFT_SAMPLE_SIZE,
-                        min_seller_group_size=AVITO_MARKET_MIN_SELLER_GROUP_SIZE,
-                    )
+                    analysis = await self._analyze(query, listings)
                     saved = await run_db(
                         save_market_snapshot,
                         key,

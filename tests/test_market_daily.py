@@ -35,10 +35,24 @@ def test_weaker_daily_point_does_not_replace_stronger():
 
 
 def test_quote_is_carried_when_today_is_thin_but_numbers_remain():
+    from datetime import datetime
+
     assert quote_is_carried(quote_quality=QUALITY_OK, used_count=2, has_summary=True) is True
     assert quote_is_carried(quote_quality=QUALITY_OK, used_count=14, has_summary=True) is False
     assert quote_is_carried(quote_quality=QUALITY_THIN, used_count=2, has_summary=True) is False
     assert quote_is_carried(quote_quality=QUALITY_OK, used_count=2, has_summary=False) is False
+    older = datetime(2026, 10, 11, 12, 0, 0)
+    newer = datetime(2026, 10, 22, 12, 0, 0)
+    assert (
+        quote_is_carried(
+            quote_quality=QUALITY_OK,
+            used_count=24,
+            has_summary=True,
+            quote_as_of=older,
+            fetched_at=newer,
+        )
+        is True
+    )
 
 
 def test_daily_line_and_html_newest_first_with_delta():
@@ -71,10 +85,12 @@ def test_daily_line_and_html_newest_first_with_delta():
         },
     ]
     html = format_market_daily_html(points)
-    assert html.index("31.08") < html.index("30.08") < html.index("29.08")
+    assert "31.08" not in html
+    assert "29.08" not in html
+    assert html.index("30.08") < html.index("28.08")
     assert "7 900 ₽ · 7 000 ₽–8 800 ₽  (28) −300" in html
-    assert "нет выборки (2)" in html
-    assert "нет данных" in html
+    assert "Пропущено дней без выборки: 2" in html
+    assert "нет данных" not in html
     assert format_market_daily_html([]) == ""
     assert "≈" in format_market_daily_line(
         {

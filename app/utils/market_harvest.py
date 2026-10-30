@@ -36,6 +36,10 @@ def listings_from_audit(raw: object) -> tuple[MarketListing, ...]:
         if not item_id or not title or price <= 0:
             continue
         seller = row.get("seller_type")
+        try:
+            cluster_size = max(1, int(row.get("cluster_size") or 1))
+        except (TypeError, ValueError):
+            cluster_size = 1
         items.append(
             MarketListing(
                 item_id=item_id,
@@ -51,6 +55,7 @@ def listings_from_audit(raw: object) -> tuple[MarketListing, ...]:
                     else True
                 ),
                 rejection_reason=str(row.get("rejection_reason") or "") or None,
+                cluster_size=cluster_size,
             )
         )
     items.sort(key=lambda item: item.price_rub)
@@ -90,6 +95,7 @@ def apply_harvest(
     min_sample_size: int = AVITO_MARKET_MIN_SAMPLE_SIZE,
     min_soft_sample_size: int = AVITO_MARKET_SOFT_SAMPLE_SIZE,
     min_seller_group_size: int = AVITO_MARKET_MIN_SELLER_GROUP_SIZE,
+    price_anchor_rub: Optional[int] = None,
 ) -> Optional[tuple[MarketAnalysis, int]]:
     """Слить уникальные id в существующий успешный снимок и пересчитать фильтры.
 
@@ -113,6 +119,7 @@ def apply_harvest(
         min_sample_size=min_sample_size,
         min_soft_sample_size=min_soft_sample_size,
         min_seller_group_size=min_seller_group_size,
+        price_anchor_rub=price_anchor_rub,
     )
     if analysis.summary is None:
         return None

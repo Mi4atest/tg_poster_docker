@@ -122,7 +122,7 @@ def test_same_concurrent_query_is_fetched_once(monkeypatch):
         calls += 1
         await asyncio.sleep(0)
         return [
-            MarketListing(str(i), "iPhone 13 mini 128GB", 25_000 + i * 100)
+            MarketListing(str(i), "iPhone 13 mini 128GB", 25_000 + i * 100, condition="Б/у")
             for i in range(10)
         ]
 

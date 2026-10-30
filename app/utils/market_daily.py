@@ -54,8 +54,17 @@ def should_replace_daily(existing_quality: str | None, new_quality: str) -> bool
     return quality_rank(new_quality) >= quality_rank(existing_quality)
 
 
-def quote_is_carried(*, quote_quality: str | None, used_count: int, has_summary: bool) -> bool:
-    """Числа на экране вчерашние: живая выборка слишком тонкая, а котировка есть."""
+def quote_is_carried(
+    *,
+    quote_quality: str | None,
+    used_count: int,
+    has_summary: bool,
+    quote_as_of: datetime | None = None,
+    fetched_at: datetime | None = None,
+) -> bool:
+    """Числа на экране не от текущего замера: тонкая выборка или антискачок."""
     if not has_summary:
         return False
+    if quote_as_of is not None and fetched_at is not None and quote_as_of < fetched_at:
+        return True
     return classify_sample_quality(used_count) == QUALITY_THIN and quote_quality != QUALITY_THIN

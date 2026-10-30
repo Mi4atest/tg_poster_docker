@@ -43,6 +43,10 @@ logger = logging.getLogger(__name__)
 AVITO_MARKET_ITEMS_URL = "https://www.avito.ru/web/1/js/items"
 AVITO_MARKET_MOBILE_API_URL = "https://m.avito.ru/api/11/items"
 AVITO_MARKET_WEB_SEARCH_URL = "https://www.avito.ru/all/telefony"
+# Каталожный фильтр Avito: состояние «Б/у» (телефоны). f — веб-выдача, params — js/items и m.avito.
+AVITO_MARKET_USED_WEB_F = "ASgBAgECAUSyA0Iq"
+AVITO_MARKET_USED_PARAM_ID = "110000"
+AVITO_MARKET_USED_PARAM_VALUE = "329242"
 MAX_RESPONSE_BYTES = 4_000_000
 # Кэш преобразованных URL (SPFA /avito-url лимит ~2/мин с IP).
 _AVITO_URL_CACHE_TTL_SEC = 6 * 3600
@@ -104,6 +108,33 @@ class MarketListing:
     city: str = ""
     included: Optional[bool] = None
     rejection_reason: Optional[str] = None
+    cluster_size: int = 1
+
+
+# Шкала износа б/у на Avito (не бинарное «Б/у»/«Новое»). В SERP часто склеена
+# с соседним параметром: «отличное Полный комплект.»
+_CONDITION_GRADE_LABELS = (
+    ("удовлетворительн", "Удовлетворительное"),
+    ("отличн", "Отличное"),
+    ("хорош", "Хорошее"),
+    ("средн", "Среднее"),
+    ("идеальн", "Идеальное"),
+    ("б/у", "Б/у"),
+    ("б.у", "Б/у"),
+    ("новое", "Новое"),
+)
+
+
+def compact_condition_label(raw: Optional[str]) -> str:
+    """Короткое состояние товара: «отличное Полный комплект.» → «Отличное»."""
+    text = re.sub(r"\s+", " ", (raw or "").strip())
+    if not text:
+        return ""
+    low = text.lower()
+    for needle, label in _CONDITION_GRADE_LABELS:
+        if needle in low:
+            return label
+    return text
 
 
 class _JsonScriptParser(HTMLParser):
@@ -142,8 +173,14 @@ class _JsonScriptParser(HTMLParser):
 
 
 def build_market_web_url(query: IphoneMarketQuery) -> str:
-    params = urlencode({"q": query.search_text, "s": "104"})
+    params = urlencode(
+        {"q": query.search_text, "s": "104", "f": AVITO_MARKET_USED_WEB_F}
+    )
     return f"{AVITO_MARKET_WEB_SEARCH_URL}?{params}"
+
+
+def _used_api_params() -> dict[str, str]:
+    return {f"params[{AVITO_MARKET_USED_PARAM_ID}]": AVITO_MARKET_USED_PARAM_VALUE}
 
 
 def build_market_search_url(query: IphoneMarketQuery) -> str:
@@ -155,6 +192,7 @@ def build_market_search_url(query: IphoneMarketQuery) -> str:
             "locationId": str(AVITO_MARKET_LOCATION_ID),
             "presentationType": "serp",
             "query": query.search_text,
+            **_used_api_params(),
         }
     )
     return f"{AVITO_MARKET_ITEMS_URL}?{params}"
@@ -167,6 +205,7 @@ def build_market_mobile_api_url(query: IphoneMarketQuery) -> str:
             "categoryId": str(AVITO_MARKET_CATEGORY_ID),
             "locationId": str(AVITO_MARKET_LOCATION_ID),
             "query": query.search_text,
+            **_used_api_params(),
         }
     )
     return f"{AVITO_MARKET_MOBILE_API_URL}?{params}"
@@ -219,11 +258,17 @@ def _seller_type(data: dict[str, Any]) -> Optional[str]:
     return None
 
 
+def _is_listing_condition_name(name: str) -> bool:
+    """Только состояние товара, не «состояние экрана/корпуса»."""
+    normalized = re.sub(r"\s+", " ", (name or "").strip().lower().rstrip(":"))
+    return normalized in {"состояние", "состояние товара", "condition", "item condition"}
+
+
 def _condition_from_mapping(node: dict[str, Any]) -> Optional[str]:
-    name = _first_text(node, ("name", "title", "label")).lower()
+    name = _first_text(node, ("name", "title", "label"))
     value = _first_text(node, ("value", "description", "text"))
-    if value and ("состояни" in name or "condition" in name):
-        return value
+    if value and _is_listing_condition_name(name):
+        return compact_condition_label(value) or value
     return None
 
 
@@ -242,6 +287,8 @@ def _walk_condition(value: Any) -> Optional[str]:
             if found:
                 return found
     elif isinstance(value, str) and "состояни" in value.lower():
+        if re.search(r"состояни[ея]\s+(?:экрана|корпуса|батаре)", value, re.I):
+            return None
         match = re.search(r"состояни[ея]\s*[:\n]\s*([^\n,;]+)", value, re.I)
         if match:
             return match.group(1).strip()
@@ -253,15 +300,15 @@ def _condition(data: dict[str, Any]) -> Optional[str]:
         return "Новое"
     raw = data.get("condition") if data.get("condition") is not None else data.get("state")
     if isinstance(raw, str) and raw.strip():
-        return html.unescape(raw.strip())
+        return compact_condition_label(html.unescape(raw.strip())) or html.unescape(raw.strip())
     if isinstance(raw, dict):
         nested = _first_text(raw, ("name", "title", "value", "label"))
         if nested:
-            return nested
+            return compact_condition_label(nested) or nested
     for key in ("iva", "params", "itemParams", "attributes"):
         found = _walk_condition(data.get(key))
         if found:
-            return found
+            return compact_condition_label(found) or found
     return None
 
 

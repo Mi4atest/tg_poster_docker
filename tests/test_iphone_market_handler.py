@@ -3,12 +3,14 @@ from datetime import datetime
 from app.bot.handlers.iphone_market_price import (
     _cancel_keyboard,
     _compact_listing_title,
-    _history_keyboard,
+    _history_models_keyboard,
+    _history_skus_keyboard,
     _history_text,
     _html_entity_count,
     _listing_line,
     _result_keyboard,
     format_market_estimate,
+    group_market_reports_by_model,
     sort_market_report_rows,
     unique_market_report_rows,
 )
@@ -179,34 +181,45 @@ def test_market_reports_sorted_old_to_new_then_memory():
     assert [row["id"] for row in ordered] == [2, 1, 4, 3]
 
 
-def test_history_keyboard_paginates_and_stays_inside_block():
-    rows = [
-        {
-            "id": i,
-            "model": "iPhone 11" if i < 10 else "iPhone 16",
-            "memory_gb": 128,
-            "median_rub": 10_000 + i,
-        }
-        for i in range(1, 14)
+def test_history_keyboard_groups_models_in_two_columns():
+    rows = sort_market_report_rows(
+        [
+            {"id": 1, "model": "iPhone 11", "memory_gb": 64, "median_rub": 12_000},
+            {"id": 2, "model": "iPhone 11", "memory_gb": 256, "median_rub": 18_000},
+            {"id": 3, "model": "iPhone 13 mini", "memory_gb": 128, "median_rub": 27_000},
+            {"id": 4, "model": "iPhone 15 Pro", "memory_gb": 256, "median_rub": 90_000},
+            {"id": 5, "model": "iPhone 15 Pro", "memory_gb": 512, "median_rub": 95_000},
+            {"id": 6, "model": "iPhone 17 Pro", "memory_gb": 256, "median_rub": 110_000},
+        ]
+    )
+    groups = group_market_reports_by_model(rows)
+    assert [model for model, _ in groups] == [
+        "iPhone 11",
+        "iPhone 13 mini",
+        "iPhone 15 Pro",
+        "iPhone 17 Pro",
     ]
-    markup = _history_keyboard(rows, page=0)
-    pairs = [(btn.text, btn.callback_data) for row in markup.inline_keyboard for btn in row]
-    texts = [text for text, _ in pairs]
-    callbacks = [cb for _, cb in pairs]
-    assert "▶️" in texts
-    assert "◀️" not in texts
-    assert ("⬅️ Назад", "avito_market_start") in pairs
-    assert "avito_market_cancel" not in callbacks
-    assert any(cb == "avito_market_hist:1" for cb in callbacks)
-    assert any(cb.startswith("avito_market_open:") and cb.endswith(":0") for cb in callbacks)
+    assert [len(items) for _, items in groups] == [2, 1, 2, 1]
 
-    page2 = _history_keyboard(rows, page=1)
-    page2_pairs = [(btn.text, btn.callback_data) for row in page2.inline_keyboard for btn in row]
-    page2_texts = [text for text, _ in page2_pairs]
-    assert "◀️" in page2_texts
-    assert ("⬅️ Назад", "avito_market_start") in page2_pairs
-    assert any("16 128ГБ" in text for text in page2_texts)
-    assert any(cb.startswith("avito_market_open:") and cb.endswith(":1") for _, cb in page2_pairs)
+    markup = _history_models_keyboard(rows)
+    rows_kb = markup.inline_keyboard
+    assert [btn.text for btn in rows_kb[0]] == ["11 (2)", "13 mini (1)"]
+    assert [btn.text for btn in rows_kb[1]] == ["15 Pro (2)", "17 Pro (1)"]
+    assert rows_kb[0][0].callback_data == "avito_market_hist:m:0"
+    assert rows_kb[0][1].callback_data == "avito_market_open:3:g"
+    assert rows_kb[1][1].callback_data == "avito_market_open:6:g"
+    callbacks = [btn.callback_data for row in rows_kb for btn in row]
+    assert "avito_market_start" in callbacks
+    assert "avito_market_cancel" not in callbacks
+    assert all(len(cb) <= 64 for cb in callbacks)
+    assert not any("₽" in (btn.text or "") for row in rows_kb[:-2] for btn in row)
+
+    skus = _history_skus_keyboard(rows, model_idx=2)
+    sku_pairs = [(btn.text, btn.callback_data) for row in skus.inline_keyboard for btn in row]
+    assert sku_pairs[0] == ("256ГБ · 90 000 ₽", "avito_market_open:4:m:2")
+    assert sku_pairs[1] == ("512ГБ · 95 000 ₽", "avito_market_open:5:m:2")
+    assert sku_pairs[-1] == ("⬅️ Назад", "avito_market_history")
+    assert all("15 Pro" not in text for text, _ in sku_pairs[:-1])
 
 
 def test_result_keyboard_one_step_back():
@@ -231,7 +244,14 @@ def test_result_keyboard_one_step_back():
         for row in _result_keyboard(history_page=2).inline_keyboard
         for btn in row
     ]
-    assert from_history == [("⬅️ Назад", "avito_market_hist:2")]
+    assert from_history == [("⬅️ Назад", "avito_market_history")]
+
+    from_model = [
+        (btn.text, btn.callback_data)
+        for row in _result_keyboard(history_page="m:2").inline_keyboard
+        for btn in row
+    ]
+    assert from_model == [("⬅️ Назад", "avito_market_hist:m:2")]
 
 
 def test_intro_keyboard_has_watchlist_and_products_exit():
@@ -419,6 +439,34 @@ def test_listing_line_and_saved_report_drop_iphone_prefix():
     )
     assert line.startswith("3 000 ₽ · 11 Pro, 64 ГБ, 1 SIM")
     assert "iPhone" not in line
+    used_line = _listing_line(
+        MarketListing("2", "iPhone 11 Pro, 64 ГБ", 7_990, condition="Б/у", included=True),
+        "11 Pro",
+    )
+    assert used_line.endswith("Б/у")
+    unknown_line = _listing_line(
+        MarketListing(
+            "3",
+            "iPhone 11 Pro, 64 ГБ",
+            12_000,
+            included=False,
+            rejection_reason="unknown_condition",
+        ),
+        "11 Pro",
+    )
+    assert unknown_line.count("состояние не указано") == 1
+    blob_line = _listing_line(
+        MarketListing(
+            "4",
+            "iPhone 15, 128 ГБ",
+            37_990,
+            condition="отличное Полный комплект.",
+            included=True,
+        ),
+        "15",
+    )
+    assert "Отличное" in blob_line
+    assert "Полный комплект" not in blob_line
 
 
 def test_carried_quote_keeps_numbers_and_warns():

@@ -352,9 +352,11 @@ class PriceSyncService:
         if product_dict.get("avito_item_id"):
             try:
                 from app.integrations.avito import actions as avito_actions
+                from app.utils.avito_listing_price import resolve_avito_listing_price
 
                 item_id = int(str(product_dict["avito_item_id"]).strip())
-                await avito_actions.update_item_price_rub(item_id, job.price_value)
+                avito_price = resolve_avito_listing_price(product_dict, int(job.price_value))
+                await avito_actions.update_item_price_rub(item_id, avito_price)
                 pr.avito = True
             except Exception as e:
                 logger.error("Avito price sync failed product_id=%s: %s", job.product_id, e)

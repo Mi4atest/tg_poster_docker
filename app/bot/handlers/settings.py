@@ -320,7 +320,11 @@ def _build_integration_platform_text(platform: str) -> str:
             f"Авто-создание объявления из поста: {'да' if integrations.get('avito_auto_create_from_post', True) else 'нет'}\n"
             f"Вид объявления: {integrations.get('avito_listing_kind', 'resale')}\n"
             f"Мультиобъявление: {'да' if integrations.get('avito_multi_listing', True) else 'нет'}\n"
-            f"Доставка: {integrations.get('avito_delivery_mode', 'pickup_only')}"
+            f"Доставка: {integrations.get('avito_delivery_mode', 'pickup_only')}\n"
+            f"Цена Avito −3000 (новые iPhone): "
+            f"{'вкл' if integrations.get('avito_new_iphone_price_minus_3000', False) else 'выкл'}\n"
+            "При вкл: при обновлении цены на Avito для «iPhone новые» уходит "
+            "магазинная цена минус 3000 ₽; в боте и на остальных площадках — без скидки."
         )
     if platform != "instagram":
         return f"🔐 Интеграция {platform}\n\n(нет текста для этой платформы)"
@@ -1162,6 +1166,18 @@ async def avito_cycle_delivery(callback: CallbackQuery):
         reply_markup=get_integration_platform_keyboard("avito"),
     )
     await callback.answer(f"Доставка: {nxt}")
+
+
+@router.callback_query(F.data == "settings_avito_toggle_new_iphone_minus_3000")
+async def avito_toggle_new_iphone_minus_3000(callback: CallbackQuery):
+    svc = get_settings_service()
+    cur = bool(svc.get_all().get("integrations", {}).get("avito_new_iphone_price_minus_3000", False))
+    svc.update({"integrations": {"avito_new_iphone_price_minus_3000": not cur}})
+    await callback.message.edit_text(
+        _build_integration_platform_text("avito"),
+        reply_markup=get_integration_platform_keyboard("avito"),
+    )
+    await callback.answer("Цена Avito −3000: " + ("выкл" if cur else "вкл"))
 
 
 # ===================== Каналы публикации =====================

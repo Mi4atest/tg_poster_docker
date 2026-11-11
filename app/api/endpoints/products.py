@@ -307,9 +307,11 @@ async def update_product_price(
     if sync_platforms and avito_item_id:
         try:
             from app.integrations.avito import actions as avito_actions
+            from app.utils.avito_listing_price import resolve_avito_listing_price
 
             item_id = int(str(avito_item_id).strip())
-            await avito_actions.update_item_price_rub(item_id, price_value)
+            avito_price = resolve_avito_listing_price(row, price_value)
+            await avito_actions.update_item_price_rub(item_id, avito_price)
             avito_sync = PricePlatformSync(status="ok")
         except Exception as e:
             logger.error("Error updating product price in Avito: %s", e)

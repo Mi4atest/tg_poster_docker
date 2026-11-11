@@ -379,6 +379,14 @@ def get_integration_platform_keyboard(platform: str) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="Base URL Max API", callback_data="settings_edit_integration_max_api_base_url")],
         ]
     elif platform == "avito":
+        from app.services.settings_service import get_settings_service
+
+        minus_3000 = get_settings_service().is_avito_new_iphone_price_minus_3000_enabled()
+        minus_3000_label = (
+            "Цена Avito −3000 (новые iPhone): вкл"
+            if minus_3000
+            else "Цена Avito −3000 (новые iPhone): выкл"
+        )
         buttons = [
             [InlineKeyboardButton(text="Client ID", callback_data="settings_edit_integration_avito_client_id")],
             [InlineKeyboardButton(text="Client Secret", callback_data="settings_edit_integration_avito_client_secret")],
@@ -388,6 +396,7 @@ def get_integration_platform_keyboard(platform: str) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="Вид объявления: own / resale", callback_data="settings_avito_toggle_listing_kind")],
             [InlineKeyboardButton(text="Мультиобъявление: вкл/выкл", callback_data="settings_avito_toggle_multi")],
             [InlineKeyboardButton(text="Доставка: следующий режим", callback_data="settings_avito_cycle_delivery")],
+            [InlineKeyboardButton(text=minus_3000_label, callback_data="settings_avito_toggle_new_iphone_minus_3000")],
         ]
     elif platform == "instagram":
         buttons = [

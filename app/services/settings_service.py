@@ -170,6 +170,8 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
         "avito_category_id": None,
         "avito_location_id": None,
         "avito_auto_create_from_post": True,
+        # При обновлении цены на Avito для «iPhone новые»: уходит N−3000 ₽ (БД/VK/TG без скидки).
+        "avito_new_iphone_price_minus_3000": False,
         # Оценка рынка б/у iPhone по выдаче Avito (SPFA cookies + прокси).
         "avito_market_enabled": True,
         "avito_market_use_spfa": True,
@@ -713,6 +715,11 @@ class SettingsService:
 
     def is_avito_auto_create_from_post_enabled(self) -> bool:
         return bool(self.get_all().get("integrations", {}).get("avito_auto_create_from_post", True))
+
+    def is_avito_new_iphone_price_minus_3000_enabled(self) -> bool:
+        return bool(
+            self.get_all().get("integrations", {}).get("avito_new_iphone_price_minus_3000", False)
+        )
 
     def is_avito_market_enabled(self) -> bool:
         return bool(self.get_all().get("integrations", {}).get("avito_market_enabled", True))

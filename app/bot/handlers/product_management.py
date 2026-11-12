@@ -33,6 +33,10 @@ from app.bot.utils.stale_price_formatter import (
     format_stale_list_text,
     stale_button_label,
 )
+from app.bot.utils.product_search_formatter import (
+    format_product_search_text,
+    sort_archive_for_search,
+)
 from app.utils.stale_price_utils import STALE_SORT_PRICE, STALE_SORT_SALE
 from app.bot.utils.price_history_formatter import format_price_history_expandable_html
 from app.config.settings import MAX_SHARE_FALLBACK_PREFIX, STALE_BADGE_MIN_DAYS
@@ -2339,6 +2343,7 @@ async def _render_product_search(
     active = _filter_used_products_only(active)
     # Архив: снятые с продажи (помечены «Товар недоступен»)
     archive, _ = await get_products_api(status_filter="unavailable", search=query, limit=1000)
+    archive = sort_archive_for_search(archive)
 
     if not active and not archive:
         await safe_edit_message(
@@ -2366,15 +2371,14 @@ async def _render_product_search(
         products_back="psearch_back",
     )
 
-    text = f"🔍 Результаты поиска: «{query}»\n\n"
-    if active:
-        text += f"📦 В наличии: {len(active)}"
-    else:
-        text += "📦 В наличии: ничего не найдено"
-    if archive:
-        text += f"\n📁 В архиве: {len(archive)}"
-        if not active:
-            text += "\n\nНажмите «📁 В архиве», чтобы посмотреть архивные позиции."
+    text = format_product_search_text(
+        query,
+        active,
+        archive,
+        archive_expanded=archive_expanded,
+        arc_page=arc_page,
+        per_page=SEARCH_PER_PAGE,
+    )
 
     keyboard = get_search_results_keyboard(
         active,

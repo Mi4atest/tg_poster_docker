@@ -30,7 +30,10 @@ def resolve_avito_listing_price(
 
     product = product or {}
     coll = str(product.get("collection_name") or "").strip()
-    if coll != _NEW_IPHONE_COLLECTION:
+    # «iPhone новые» или custom из конструктора кнопок («Список новых»).
+    is_classic_new = coll == _NEW_IPHONE_COLLECTION
+    is_menu_custom_new = coll == "custom" and bool(product.get("custom_button_id"))
+    if not (is_classic_new or is_menu_custom_new):
         return base
 
     name = str(product.get("name") or "")

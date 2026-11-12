@@ -31,6 +31,25 @@ def test_new_iphone_clamp_to_one():
     assert resolve_avito_listing_price(product, 2000, discount_enabled=True) == 1
 
 
-def test_wrong_collection_even_if_iphone_name():
+def test_custom_without_button_keeps_price():
     product = _product(name="Apple iPhone 16 128Gb", collection="custom")
     assert resolve_avito_listing_price(product, 80000, discount_enabled=True) == 80000
+
+
+def test_custom_menu_iphone_applies_discount():
+    """Конструктор кнопок: collection=custom + custom_button_id — тоже «новые» iPhone."""
+    product = {
+        "name": "iPhone 17 Pro Max 256Gb Silver eSim",
+        "collection_name": "custom",
+        "custom_button_id": 15,
+    }
+    assert resolve_avito_listing_price(product, 103990, discount_enabled=True) == 100990
+
+
+def test_custom_menu_non_iphone_keeps_price():
+    product = {
+        "name": "AirPods Pro 2",
+        "collection_name": "custom",
+        "custom_button_id": 3,
+    }
+    assert resolve_avito_listing_price(product, 22000, discount_enabled=True) == 22000

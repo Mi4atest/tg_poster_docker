@@ -21,6 +21,8 @@ services:
       - ./.env:/app/.env
       - ./alembic.ini:/app/alembic.ini
       - ./migrations:/app/migrations
+      # Debug NDJSON (Cursor session) — writable from read-only container
+      - ./.cursor:/app/.cursor
       # Корень проекта на хосте — только чтение (git ls-remote / версия)
       - .:/host_project:ro
     depends_on:

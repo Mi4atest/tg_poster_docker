@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import tempfile
+import time
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 
@@ -20,8 +21,14 @@ from app.db.database import SessionLocal
 from app.utils.text_extractor import extract_model_and_price, extract_model_name_without_code
 from app.utils.vk_api_guard import after_vk_error, before_vk_call
 from app.utils.vk_client import community_token, resolved_vk_group_id_int
+from app.utils.vk_debug_log import vk_dbg, vk_exc_debug_meta
 from app.utils.vk_urls import api_method_url, story_url, wall_post_url
 from app.workers.vk.story_composer import build_story_image
+from app.workers.vk.upload_retry import (
+    VK_STORY_UPLOAD_ATTEMPTS,
+    is_vk_flood_error,
+    vk_upload_backoff_seconds,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -243,7 +250,35 @@ class VKStoryPublisher:
                 return items[0]
         return None
 
-    def _upload_photo_story(self, image_path: str, *, link_url: Optional[str] = None) -> dict:
+    @staticmethod
+    def _is_retryable_story_upload_error(exc: BaseException) -> bool:
+        """Транзиентные сбои upload CDN / пустой save — повторяем. Flood control — нет."""
+        code = getattr(exc, "code", None)
+        message = str(exc).lower()
+        # Как у wall: flood control (9) не крутим — стоп-кран vk_api_guard.
+        if code == 9 or "flood control" in message:
+            return False
+        if isinstance(exc, (requests.RequestException, TimeoutError, OSError)):
+            return True
+        markers = (
+            "go upload error",
+            "upload failed: http 405",
+            "upload failed: http 500",
+            "upload failed: http 502",
+            "upload failed: http 503",
+            "upload failed: http 504",
+            "temporar",
+            "timeout",
+            "connection",
+            "invalid upload response",
+            "failed to save story",
+            "failed to get upload server",
+        )
+        if any(m in message for m in markers):
+            return True
+        return code in {1, 6, 8, 10, 29} or is_vk_flood_error(exc)
+
+    def _upload_photo_story_once(self, image_path: str, *, link_url: Optional[str] = None) -> dict:
         params = {
             "add_to_news": 1,
             "group_id": self.group_id,
@@ -262,6 +297,15 @@ class VKStoryPublisher:
         if not upload_server or "upload_url" not in upload_server:
             raise RuntimeError(f"Failed to get upload server: {upload_server}")
 
+        # #region agent log
+        vk_dbg(
+            "A",
+            "story_publisher.py:_upload_photo_story_once",
+            "got_upload_server",
+            {"group_id": self.group_id, "has_link": bool(link_url)},
+        )
+        # #endregion
+
         with open(image_path, "rb") as file:
             response = requests.post(
                 upload_server["upload_url"],
@@ -270,11 +314,27 @@ class VKStoryPublisher:
             )
 
         if response.status_code != 200:
+            # #region agent log
+            vk_dbg(
+                "A",
+                "story_publisher.py:_upload_photo_story_once",
+                "upload_http_error",
+                {"status": response.status_code, "body": (response.text or "")[:200]},
+            )
+            # #endregion
             raise RuntimeError(f"Upload failed: HTTP {response.status_code} {response.text[:300]}")
 
         upload_data = response.json()
         upload_result = self._extract_upload_result(upload_data)
         if not upload_result:
+            # #region agent log
+            vk_dbg(
+                "A",
+                "story_publisher.py:_upload_photo_story_once",
+                "upload_payload_error",
+                {"payload_keys": list(upload_data.keys()) if isinstance(upload_data, dict) else type(upload_data).__name__},
+            )
+            # #endregion
             raise RuntimeError(f"Invalid upload response: {upload_data}")
 
         logger.info("Saving VK story…")
@@ -289,23 +349,186 @@ class VKStoryPublisher:
             raise
         story_data = self._extract_saved_story(save_result)
         if not story_data:
+            # #region agent log
+            vk_dbg(
+                "B",
+                "story_publisher.py:_upload_photo_story_once",
+                "save_empty_items",
+                {"save_type": type(save_result).__name__},
+            )
+            # #endregion
             raise RuntimeError(f"Failed to save story: {save_result}")
         return story_data
 
+    def _upload_photo_story(self, image_path: str, *, link_url: Optional[str] = None) -> dict:
+        """Загрузка кадра сторис с ретраями (как wall/market upload)."""
+        attempts = VK_STORY_UPLOAD_ATTEMPTS
+        last_exc: Optional[BaseException] = None
+        for attempt in range(1, attempts + 1):
+            try:
+                # #region agent log
+                vk_dbg(
+                    "C",
+                    "story_publisher.py:_upload_photo_story",
+                    "attempt_start",
+                    {"attempt": attempt, "attempts": attempts, "has_link": bool(link_url)},
+                )
+                # #endregion
+                result = self._upload_photo_story_once(image_path, link_url=link_url)
+                # #region agent log
+                vk_dbg(
+                    "C",
+                    "story_publisher.py:_upload_photo_story",
+                    "attempt_ok",
+                    {"attempt": attempt, "story_id": result.get("id") if isinstance(result, dict) else None},
+                )
+                # #endregion
+                return result
+            except Exception as exc:
+                last_exc = exc
+                after_vk_error(exc, "stories.upload")
+                retryable = self._is_retryable_story_upload_error(exc)
+                # #region agent log
+                vk_dbg(
+                    "C",
+                    "story_publisher.py:_upload_photo_story",
+                    "attempt_fail",
+                    {
+                        "attempt": attempt,
+                        "attempts": attempts,
+                        "retryable": retryable,
+                        **vk_exc_debug_meta(exc),
+                    },
+                )
+                # #endregion
+                if attempt >= attempts or not retryable:
+                    raise
+                delay = vk_upload_backoff_seconds(attempt, exc)
+                logger.warning(
+                    "VK story upload failed (attempt %s/%s): %s; retry in %ss",
+                    attempt,
+                    attempts,
+                    str(exc)[:180],
+                    delay,
+                )
+                time.sleep(delay)
+        assert last_exc is not None
+        raise last_exc
+
+    @staticmethod
+    def _log(db, story_id: str, status: str, message: str) -> None:
+        db.add(
+            StoryPublicationLog(
+                story_id=story_id,
+                status=status,
+                message=message,
+            )
+        )
+
+    @classmethod
+    def _persist_story_outcome(
+        cls,
+        story_id: str,
+        *,
+        status: str,
+        message: str,
+        link: Optional[str] = None,
+        model_name: Optional[str] = None,
+        price: Optional[str] = None,
+        attempts: int = 3,
+    ) -> bool:
+        """Свежая сессия на запись: idle_in_transaction_timeout=15s убивает старую на ретраях upload."""
+        last_exc: Optional[BaseException] = None
+        for attempt in range(1, attempts + 1):
+            db = SessionLocal()
+            try:
+                story = db.query(Story).filter(Story.id == story_id).first()
+                if not story:
+                    logger.error("Story %s not found while persisting %s", story_id, status)
+                    return False
+                if status == "success":
+                    story.is_published = True
+                    story.published_at = datetime.now(timezone.utc)
+                    if link:
+                        story.post_link = link
+                    if model_name:
+                        story.model_name = model_name
+                    if price:
+                        story.price = price
+                cls._log(db, story_id, status, message)
+                db.commit()
+                # #region agent log
+                vk_dbg(
+                    "F",
+                    "story_publisher.py:_persist_story_outcome",
+                    "persist_ok",
+                    {"story_id": story_id, "status": status, "attempt": attempt},
+                    run_id="post-fix",
+                )
+                # #endregion
+                return True
+            except Exception as exc:
+                last_exc = exc
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+                # #region agent log
+                vk_dbg(
+                    "F",
+                    "story_publisher.py:_persist_story_outcome",
+                    "persist_fail",
+                    {
+                        "story_id": story_id,
+                        "status": status,
+                        "attempt": attempt,
+                        **vk_exc_debug_meta(exc),
+                    },
+                )
+                # #endregion
+                logger.warning(
+                    "Persist story %s status=%s failed (attempt %s/%s): %s",
+                    story_id,
+                    status,
+                    attempt,
+                    attempts,
+                    str(exc)[:180],
+                )
+                time.sleep(min(2.0 * attempt, 5.0))
+            finally:
+                db.close()
+        if last_exc:
+            logger.error("Persist story %s giving up: %s", story_id, last_exc)
+        return False
+
     async def publish_story(self, story_id: str) -> bool:
-        """Основной путь: коллаж из фото поста + ссылка на опубликованный пост ВК."""
+        """Основной путь: коллаж из фото поста + ссылка на опубликованный пост ВК.
+
+        БД-сессия не держится на download/upload/retry: иначе Postgres рвёт
+        idle_in_transaction_session_timeout=15s, сторис уже в VK, а у нас fail.
+        """
         before_vk_call("stories.publish")
-        db = SessionLocal()
         temp_path = None
+        # #region agent log
+        vk_dbg("D", "story_publisher.py:publish_story", "enter", {"story_id": story_id})
+        # #endregion
+
+        post_id: Optional[str] = None
+        vk_post_id: Optional[str] = None
+        photo_ids: List[str] = []
+        model_name: Optional[str] = None
+        price: Optional[str] = None
+        post_link: Optional[str] = None
+
+        # --- короткая сессия: только чтение контекста ---
+        db = SessionLocal()
         try:
             story = db.query(Story).filter(Story.id == story_id).first()
             if not story:
                 logger.error("Story %s not found", story_id)
                 return False
-            # Повторная публикация разрешена (истории эфемерны; в VK могли удалить вручную)
             if story.is_published:
                 logger.info("Story %s was published before — publishing a new frame", story_id)
-                story.is_published = False
             if not story.post_id:
                 logger.error("Story %s has no post_id", story_id)
                 return False
@@ -317,6 +540,7 @@ class VKStoryPublisher:
             if not post.is_published_vk or not post.vk_post_id:
                 logger.error("Post %s is not published to VK", story.post_id)
                 self._log(db, story.id, "error", "Post is not published to VK")
+                db.commit()
                 return False
 
             photo_ids = list(post.photos or [])
@@ -325,14 +549,28 @@ class VKStoryPublisher:
             if not photo_ids:
                 logger.error("No photos for story %s", story_id)
                 self._log(db, story.id, "error", "No photos to build story")
+                db.commit()
                 return False
 
             model_name, price = self._resolve_title_price(post, story)
             post_link = self._post_link(post)
+            post_id = post.id
+            vk_post_id = post.vk_post_id
+            db.commit()  # закрыть транзакцию до длинной сети
+        except Exception as e:
+            logger.error("Error loading story context %s: %s", story_id, e)
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            return False
+        finally:
+            db.close()
 
+        try:
             logger.info(
                 "Building VK story collage: post=%s photos=%s model=%s price=%s",
-                post.vk_post_id,
+                vk_post_id,
                 len(photo_ids),
                 model_name,
                 price,
@@ -340,7 +578,12 @@ class VKStoryPublisher:
             blobs = await self._download_photos(photo_ids, limit=6)
             if not blobs:
                 logger.error("Failed to download photos for story %s", story_id)
-                self._log(db, story.id, "error", "Failed to download photos")
+                self._persist_story_outcome(
+                    story_id, status="error", message="Failed to download photos"
+                )
+                # #region agent log
+                vk_dbg("E", "story_publisher.py:publish_story", "download_fail", {"story_id": story_id})
+                # #endregion
                 return False
 
             brand, logo_blob = await asyncio.to_thread(self._fetch_brand_assets)
@@ -353,11 +596,13 @@ class VKStoryPublisher:
                 style=self._story_style(),
             )
             if not image_bytes:
-                self._log(db, story.id, "error", "Failed to compose story image")
+                self._persist_story_outcome(
+                    story_id, status="error", message="Failed to compose story image"
+                )
                 return False
 
             try:
-                preview_path = self.preview_path_for_post(post.id)
+                preview_path = self.preview_path_for_post(post_id or story_id)
                 with open(preview_path, "wb") as pf:
                     pf.write(image_bytes)
             except Exception as e:
@@ -368,6 +613,20 @@ class VKStoryPublisher:
             with open(temp_path, "wb") as f:
                 f.write(image_bytes)
 
+            # #region agent log
+            vk_dbg(
+                "A",
+                "story_publisher.py:publish_story",
+                "before_upload",
+                {
+                    "story_id": story_id,
+                    "post_id": post_id,
+                    "vk_post_id": vk_post_id,
+                    "bytes": len(image_bytes),
+                    "has_link": bool(post_link),
+                },
+            )
+            # #endregion
             story_data = await asyncio.to_thread(
                 self._upload_photo_story,
                 temp_path,
@@ -378,23 +637,54 @@ class VKStoryPublisher:
             vk_story_id = int(story_data.get("id"))
             link = story_url(owner_id, vk_story_id)
 
-            story.is_published = True
-            story.published_at = datetime.now(timezone.utc)
-            story.post_link = link
-            story.model_name = model_name or story.model_name
-            story.price = price or story.price
-            self._log(db, story.id, "success", f"Published to VK: {link}")
-            db.commit()
+            persisted = self._persist_story_outcome(
+                story_id,
+                status="success",
+                message=f"Published to VK: {link}",
+                link=link,
+                model_name=model_name,
+                price=price,
+            )
+            if not persisted:
+                # Сторис уже в VK — не врать «fail» без следа; лог ошибки отдельно.
+                logger.error(
+                    "Story %s uploaded to VK (%s) but DB persist failed",
+                    story_id,
+                    link,
+                )
+                # #region agent log
+                vk_dbg(
+                    "F",
+                    "story_publisher.py:publish_story",
+                    "uploaded_but_persist_failed",
+                    {"story_id": story_id, "link": link},
+                )
+                # #endregion
+                return False
+
             logger.info("Story %s published: %s", story_id, link)
+            # #region agent log
+            vk_dbg(
+                "D",
+                "story_publisher.py:publish_story",
+                "success",
+                {"story_id": story_id, "link": link},
+                run_id="post-fix",
+            )
+            # #endregion
             return True
 
         except Exception as e:
             logger.error("Error publishing story %s: %s", story_id, e)
-            try:
-                self._log(db, story_id, "error", str(e))
-                db.commit()
-            except Exception:
-                db.rollback()
+            # #region agent log
+            vk_dbg(
+                "A",
+                "story_publisher.py:publish_story",
+                "error",
+                {"story_id": story_id, **vk_exc_debug_meta(e)},
+            )
+            # #endregion
+            self._persist_story_outcome(story_id, status="error", message=str(e)[:500])
             return False
         finally:
             if temp_path and os.path.exists(temp_path):
@@ -402,17 +692,6 @@ class VKStoryPublisher:
                     os.remove(temp_path)
                 except OSError:
                     pass
-            db.close()
-
-    @staticmethod
-    def _log(db, story_id: str, status: str, message: str) -> None:
-        db.add(
-            StoryPublicationLog(
-                story_id=story_id,
-                status=status,
-                message=message,
-            )
-        )
 
 
 async def publish_story_to_vk(story_id: str) -> bool:
@@ -475,14 +754,39 @@ async def maybe_auto_publish_vk_story(post_id: str) -> bool:
         story_id = await ensure_vk_story_record(post_id)
         if not story_id:
             return False
+        # #region agent log
+        vk_dbg(
+            "D",
+            "story_publisher.py:maybe_auto_publish_vk_story",
+            "auto_start",
+            {"post_id": post_id, "story_id": story_id},
+        )
+        # #endregion
         ok = await publish_story_to_vk(story_id)
         if ok:
             logger.info("Auto VK story published for post %s (story=%s)", post_id, story_id)
         else:
             logger.error("Auto VK story failed for post %s (story=%s)", post_id, story_id)
+        # #region agent log
+        vk_dbg(
+            "D",
+            "story_publisher.py:maybe_auto_publish_vk_story",
+            "auto_done",
+            {"post_id": post_id, "story_id": story_id, "ok": bool(ok)},
+            run_id="post-fix" if ok else "pre",
+        )
+        # #endregion
         return bool(ok)
     except Exception as e:
         logger.error("Auto VK story error for post %s: %s", post_id, e)
+        # #region agent log
+        vk_dbg(
+            "D",
+            "story_publisher.py:maybe_auto_publish_vk_story",
+            "auto_exception",
+            {"post_id": post_id, **vk_exc_debug_meta(e)},
+        )
+        # #endregion
         return False
 
 

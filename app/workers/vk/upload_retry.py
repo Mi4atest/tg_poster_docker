@@ -7,6 +7,8 @@ from typing import Optional
 # 6 попыток; между ними 5 пауз 5–15 с (для flood — чуть длиннее).
 VK_WALL_UPLOAD_ATTEMPTS = 6
 VK_MARKET_UPLOAD_ATTEMPTS = 6
+# Сторис: те же транзиентные сбои upload-серверов VK (405/5xx/go upload error).
+VK_STORY_UPLOAD_ATTEMPTS = 6
 # connect, read: read=120с оставлял бота без ответа по 2 минуты на кадр.
 VK_MARKET_POST_TIMEOUT = (10, 30)
 VK_API_CALL_TIMEOUT = 25.0

@@ -14,13 +14,14 @@ services:
     pids_limit: 256
     tmpfs:
       - /tmp
-      - /app/app/logs
     volumes:
       - ./media:/app/media
       - ./backups:/app/backups
       - ./.env:/app/.env
       - ./alembic.ini:/app/alembic.ini
       - ./migrations:/app/migrations
+      # Живые app-логи (instagram_graph.log и т.п.) — переживают рестарт
+      - ./app/logs:/app/app/logs
       # Debug NDJSON (Cursor session) — writable from read-only container
       - ./.cursor:/app/.cursor
       # Корень проекта на хосте — только чтение (git ls-remote / версия)

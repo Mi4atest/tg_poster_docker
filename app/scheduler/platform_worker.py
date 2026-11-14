@@ -57,6 +57,9 @@ class PlatformWorker:
         self.is_running = False
         self.is_paused = False
         self.last_published_at: Optional[datetime] = None
+        # Часы антифлуда: двигаем после ЛЮБОЙ попытки (успех/фейл),
+        # иначе после первого IG fail очередь «прошивает» все pending за секунды.
+        self.last_attempt_at: Optional[datetime] = None
         self.current_task: Optional[asyncio.Task] = None
         self._vk_flood_logged = False
 
@@ -71,13 +74,48 @@ class PlatformWorker:
             return self.INTERVALS.get(self.platform, 3 * 60)
 
     def _retry_delay_seconds(self) -> int:
+        """Пауза перед requeue конкретного failed-элемента.
+
+        Остальная очередь не блокируется: следующий pending берётся после
+        пользовательского интервала (last_attempt_at). Точный слот не критичен —
+        важна последовательная выгрузка; при URI/rate-limit даём этому посту
+        чуть дольше остыть, без растягивания на десятки минут сверх нужды.
+        """
         interval = self._platform_interval_seconds()
         if self.platform == "vk":
             return max(
                 self.VK_RETRY_DELAY_MIN_SECONDS,
                 min(self.VK_RETRY_DELAY_MAX_SECONDS, interval),
             )
+        if self.platform == "instagram":
+            try:
+                from app.workers.instagram.publisher import last_instagram_publish_error
+
+                err = (last_instagram_publish_error() or "").lower()
+            except Exception:
+                err = ""
+            # Meta не скачала URI / application request limit — не долбить сразу.
+            if any(
+                marker in err
+                for marker in (
+                    "uri",
+                    "media type",
+                    "9004",
+                    "2207052",
+                    "извлечь медиафайл",
+                    "rate limit",
+                    "request limit",
+                )
+            ):
+                # 2× интервал пользователя, в коридоре 5–12 мин.
+                return max(5 * 60, min(12 * 60, interval * 2))
+            # Прочий fail — тот же интервал, что задал пользователь.
+            return max(30, interval)
         return interval
+
+    def _pacing_anchor(self) -> Optional[datetime]:
+        """Якорь интервала между попытками в очереди: last attempt, иначе last success."""
+        return self.last_attempt_at or self.last_published_at
 
     def _instagram_already_published(self, post_id: str) -> bool:
         """Быстрая проверка флага — не requeue, если Meta-пост уже зафиксирован."""
@@ -150,7 +188,7 @@ class PlatformWorker:
         """
         try:
             logger.info(f"Publishing post {post_id} to {self.platform}")
-            
+
             # Вызываем соответствующий publisher
             if self.platform == "vk":
                 success = await publish_post_to_vk(post_id, signature_enabled=self.signature_enabled)
@@ -168,9 +206,13 @@ class PlatformWorker:
                 logger.error(f"Unknown platform: {self.platform}")
                 return False
 
+            now = datetime.now(timezone.utc)
+            # Двигаем pacing после любой попытки: иначе после fail очередь
+            # прошивается без интервала (шторм Meta URI fetch).
+            self.last_attempt_at = now
             if success:
                 self.queue_manager.mark_as_completed(queue_item_id)
-                self.last_published_at = datetime.now(timezone.utc)
+                self.last_published_at = now
                 logger.info(f"Successfully published post {post_id} to {self.platform}")
             else:
                 error_msg = f"Failed to publish post {post_id} to {self.platform}"
@@ -182,16 +224,18 @@ class PlatformWorker:
         except Exception as e:
             error_msg = f"Error publishing post {post_id} to {self.platform}: {str(e) or type(e).__name__}"
             logger.error(error_msg)
+            self.last_attempt_at = datetime.now(timezone.utc)
             self._handle_publish_failure(queue_item_id, post_id, error_msg)
             return False
 
     async def wait_for_interval(self) -> bool:
-        """Ожидание интервала между публикациями.
+        """Ожидание интервала между попытками публикации (успех или fail).
 
         Returns:
             True если интервал истёк и можно публиковать, False если пауза прервала ожидание.
         """
-        if self.last_published_at is None:
+        anchor = self._pacing_anchor()
+        if anchor is None:
             return not self._is_effectively_paused()
 
         interval = self._platform_interval_seconds()
@@ -199,7 +243,7 @@ class PlatformWorker:
             if self._is_effectively_paused():
                 logger.info("Interval wait for %s aborted by pause", self.platform)
                 return False
-            elapsed = (datetime.now(timezone.utc) - self.last_published_at).total_seconds()
+            elapsed = (datetime.now(timezone.utc) - anchor).total_seconds()
             remaining = interval - elapsed
             if remaining <= 0:
                 return not self._is_effectively_paused()

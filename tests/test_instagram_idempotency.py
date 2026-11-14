@@ -106,6 +106,54 @@ class PlatformWorkerIgRequeueGuardTest(unittest.TestCase):
         qm.requeue_for_retry.assert_not_called()
         qm.mark_as_failed.assert_not_called()
 
+    def test_fail_bumps_last_attempt_at_for_pacing(self):
+        from datetime import datetime, timezone, timedelta
+
+        from app.scheduler.platform_worker import PlatformWorker
+
+        qm = MagicMock()
+        qm.requeue_for_retry = MagicMock(return_value=True)
+        worker = PlatformWorker("instagram", qm)
+        worker.last_published_at = datetime.now(timezone.utc) - timedelta(seconds=600)
+
+        with patch(
+            "app.scheduler.platform_worker.publish_post_to_instagram",
+            new=AsyncMock(return_value=False),
+        ), patch.object(
+            worker, "_platform_interval_seconds", return_value=180
+        ), patch.object(
+            worker, "_instagram_already_published", return_value=False
+        ):
+            ok = asyncio.run(worker.publish_post(1, "p-fail"))
+
+        self.assertFalse(ok)
+        self.assertIsNotNone(worker.last_attempt_at)
+        # Якорь pacing — последняя попытка, не старый успех.
+        self.assertEqual(worker._pacing_anchor(), worker.last_attempt_at)
+        elapsed = (
+            datetime.now(timezone.utc) - worker._pacing_anchor()
+        ).total_seconds()
+        self.assertLess(elapsed, 2)
+
+    def test_ig_uri_retry_longer_than_user_interval(self):
+        from app.scheduler.platform_worker import PlatformWorker
+
+        worker = PlatformWorker("instagram", MagicMock())
+        with patch.object(worker, "_platform_interval_seconds", return_value=180), patch(
+            "app.workers.instagram.publisher.last_instagram_publish_error",
+            return_value="Only photo or video | Не удалось извлечь медиафайл по URI",
+        ):
+            delay = worker._retry_delay_seconds()
+        # 2×3мин = 6мин, в коридоре 5–12.
+        self.assertEqual(delay, 360)
+
+        with patch.object(worker, "_platform_interval_seconds", return_value=180), patch(
+            "app.workers.instagram.publisher.last_instagram_publish_error",
+            return_value="timeout talking to graph",
+        ):
+            delay_plain = worker._retry_delay_seconds()
+        self.assertEqual(delay_plain, 180)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -62,6 +62,9 @@ COLOR_EMOJI_MAP: Dict[str, str] = {
     # Titanium модели (специфичные)
     "Natural Titanium": "🔘",  # Для Pro моделей (iPhone 16 Pro и т.д.)
     "Space Gray": "🔘",  # Apple Watch и старые модели (iPhone 8/SE)
+
+    "Dark Bronze": "🟤",  # Apple Watch 12
+    "Olive": "🟤",
 }
 
 

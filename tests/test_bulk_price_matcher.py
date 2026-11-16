@@ -139,6 +139,53 @@ def test_match_watch_se3():
     assert results[0].product_id == 30
 
 
+def test_match_watch_12_custom_dark_bronze():
+    catalog = [
+        {
+            "id": 40,
+            "name": "Apple Watch 12 42mm Dark Bronze",
+            "display_label": None,
+            "price": "35900₽",
+            "collection_name": "custom",
+            "custom_button_id": 101,
+        },
+        {
+            "id": 41,
+            "name": "Apple Watch 12 42mm Black",
+            "display_label": None,
+            "price": "34900₽",
+            "collection_name": "custom",
+            "custom_button_id": 102,
+        },
+        {
+            "id": 42,
+            "name": "Apple Watch 12 46mm Light Gold",
+            "display_label": None,
+            "price": "37900₽",
+            "collection_name": "custom",
+            "custom_button_id": 103,
+        },
+    ]
+    bronze = match_bulk_lines(
+        [BulkPriceLine("12 42 мм, Dark Bronze (olive)", 35900, 36100, 1)],
+        catalog,
+    )
+    assert bronze[0].status == MatchStatus.MATCHED
+    assert bronze[0].product_id == 40
+
+    black = match_bulk_lines(
+        [BulkPriceLine("12 42 мм, Black", 34900, 35000, 2)],
+        catalog,
+    )
+    assert black[0].product_id == 41
+
+    gold = match_bulk_lines(
+        [BulkPriceLine("12 46 мм, Light Gold", 37900, 38000, 3)],
+        catalog,
+    )
+    assert gold[0].product_id == 42
+
+
 def test_match_ipad_air_gray():
     catalog = [
         {

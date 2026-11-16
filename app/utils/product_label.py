@@ -20,7 +20,7 @@ from app.utils.iphone_parser import (
 from app.utils.price_change import price_string_to_int_rub
 
 COLOR_PALETTE = (
-    "🟣", "🟢", "🔵", "⚪️", "⚫️", "🟠", "🟡", "🌸", "🔴", "⭐", "🔘",
+    "🟣", "🟢", "🔵", "⚪️", "⚫️", "🟠", "🟡", "🌸", "🔴", "⭐", "🔘", "🟤",
 )
 
 APPLE_COLLECTIONS = frozenset({"iPhone новые", "Airpods", "Apple Watch", "iPad"})
@@ -73,6 +73,8 @@ def resolve_color_emoji(name: str, overrides: Optional[Dict[str, str]] = None) -
         return "⚪️"
     if "space gray" in low or "space grey" in low:
         return "🔘"
+    if "dark bronze" in low or "bronze" in low or "olive" in low:
+        return "🟤"
     if "midnight" in low:
         return "⚫️"
     if "blue" in low:
@@ -158,8 +160,11 @@ def _parse_watch_category(name: str) -> Optional[str]:
         return "SE 3"
     if "se 2" in nl or "se2" in nl:
         return "SE 2"
-    if "11" in nl and ("watch" in nl or "aw" in nl):
-        return "11"
+    # Series 11 / 12 (и кастомные «Apple Watch 12 …» из конструктора).
+    if "watch" in nl or re.search(r"\baw\b", nl) or "series" in nl:
+        m = re.search(r"\b(11|12)\b", nl)
+        if m:
+            return m.group(1)
     return None
 
 

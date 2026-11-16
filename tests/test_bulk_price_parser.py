@@ -174,6 +174,22 @@ def test_parse_label_watch_11():
     assert p.color == "⚫️"
 
 
+def test_parse_label_watch_12_dark_bronze():
+    p = parse_label("12 42 мм, Dark Bronze (olive)")
+    assert p.category == "watch"
+    assert p.model == "AW 12"
+    assert p.size == "42mm"
+    assert p.color == "🟤"
+
+
+def test_parse_label_watch_12_light_gold():
+    p = parse_label("12 46 мм, Light Gold")
+    assert p.category == "watch"
+    assert p.model == "AW 12"
+    assert p.size == "46mm"
+    assert p.color == "🟡"
+
+
 def test_parse_label_17e_cyrillic():
     p = parse_label("17е 256 ⚫️ (esim) -")
     assert p.model == "17E"

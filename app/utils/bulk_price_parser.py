@@ -24,12 +24,17 @@ _MEMORY_RE = re.compile(
     re.IGNORECASE,
 )
 _WATCH_SIZE_RE = re.compile(r"\b(40|41|42|44|45|46)\b")
-_COLOR_EMOJI = ["🟣", "🟢", "🔵", "⚪️", "⚫️", "🟠", "🟡", "🌸", "🔴", "⭐", "🔘", "💛"]
+_COLOR_EMOJI = ["🟣", "🟢", "🔵", "⚪️", "⚫️", "🟠", "🟡", "🌸", "🔴", "⭐", "🔘", "💛", "🟤"]
 _STORAGE_ESIM_RE = re.compile(r"\(\s*esim\s*\)", re.IGNORECASE)
 _STORAGE_11_RE = re.compile(r"\(\s*1\s*\+\s*1\s*\)", re.IGNORECASE)
 _STORAGE_SIM_ESIM_RE = re.compile(r"\bsim\s*\+\s*esim\b", re.IGNORECASE)
 _WATCH_SE_RE = re.compile(r"^se\s*([23])\b", re.IGNORECASE)
-_WATCH_S11_RE = re.compile(r"^11\s+(40|41|42|44|45|46)\b")
+_WATCH_SERIES_RE = re.compile(r"^(11|12)\s+(40|41|42|44|45|46)\b")
+_DARK_BRONZE_RE = re.compile(
+    r"\bdark\s*bronze\b(?:\s*\(\s*olive\s*\))?|\bolive\b",
+    re.IGNORECASE,
+)
+_LIGHT_GOLD_RE = re.compile(r"\blight\s*gold\b", re.IGNORECASE)
 _CONDITION_TRADEIN_RE = re.compile(
     r"\(\s*обменк[аa]\s*\)|\bобменк[аa]\b",
     re.IGNORECASE,
@@ -111,6 +116,8 @@ def _color_word_to_emoji(color_word: str) -> str:
         return "🔘"
     if w == "rose":
         return "🌸"
+    if w in ("bronze", "olive") or "bronze" in w:
+        return "🟤"
     return resolve_color_emoji(color_word)
 
 
@@ -120,6 +127,14 @@ def _extract_color(label: str) -> tuple[str, Optional[str]]:
             cleaned = label.replace(em, " ")
             mapped = "🟡" if em == "💛" else em
             return cleaned, mapped
+    m_bronze = _DARK_BRONZE_RE.search(label)
+    if m_bronze:
+        cleaned = label[: m_bronze.start()] + label[m_bronze.end() :]
+        return cleaned, "🟤"
+    m_lg = _LIGHT_GOLD_RE.search(label)
+    if m_lg:
+        cleaned = label[: m_lg.start()] + label[m_lg.end() :]
+        return cleaned, "🟡"
     m = re.search(
         r"\b(blue|yellow|gray|grey|black|white|purple|green|orange|pink|gold|silver|rose|midnight|starlight)\b",
         label,
@@ -199,8 +214,14 @@ def _parse_watch_label(raw: str) -> Optional[ParsedLabel]:
         ver = se_m.group(1)
         return ParsedLabel(category="watch", model=f"AW SE {ver}", size=size, color=color)
 
-    if _WATCH_S11_RE.match(_normalize_homoglyphs(raw).lower().strip()):
-        return ParsedLabel(category="watch", model="AW 11", size=size, color=color)
+    series_m = _WATCH_SERIES_RE.match(_normalize_homoglyphs(raw).lower().strip())
+    if series_m:
+        return ParsedLabel(
+            category="watch",
+            model=f"AW {series_m.group(1)}",
+            size=size,
+            color=color,
+        )
 
     fake_name = norm
     if "watch" not in low and " aw " not in f" {low} ":
@@ -305,7 +326,7 @@ def _detect_category(raw_label: str, model: str) -> str:
         return "ipad"
     if "airpod" in low:
         return "airpods"
-    if _WATCH_SE_RE.match(low.strip()) or _WATCH_S11_RE.match(low.strip()):
+    if _WATCH_SE_RE.match(low.strip()) or _WATCH_SERIES_RE.match(low.strip()):
         return "watch"
     if re.search(r"\b(air|\d+e|\d+)\b", model.lower()):
         return "iphone"

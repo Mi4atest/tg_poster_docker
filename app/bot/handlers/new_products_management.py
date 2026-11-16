@@ -46,6 +46,7 @@ from app.utils.iphone_parser import (
 from app.db.database import SessionLocal, run_db
 from app.api.models.product import Product
 from app.services import menu_constructor_service as mcs
+from app.utils.custom_branch_header import build_custom_branch_header
 from app.utils.product_label import availability_line_for_product, button_label_for_product
 
 from app.bot.handlers.product_management import (
@@ -926,31 +927,20 @@ async def new_custom_branch(callback: CallbackQuery, state: FSMContext):
                 return None
             path = mcs.custom_node_path(bid)
             nodes = mcs.get_merged_menu_nodes(db, path, editor=False)
-            prods = mcs.list_products_for_custom_leaf(db, bid)
-            prods = _sort_products_by_price(prods)
+            leaf_prods = mcs.list_products_for_custom_leaf(db, bid)
+            leaf_prods = _sort_products_by_price(leaf_prods)
+            # Шапка: всё поддерево (включая товары на дочерних кнопках), не только этот лист.
+            subtree_prods = mcs.list_custom_products_for_path(db, path)
+            subtree_prods = _sort_iphone_products(subtree_prods)
             back_cb = mcs.back_callback_for_custom_parent(btn.parent_path)
-            if not nodes and len(prods) == 1:
-                return {"kind": "card", "product_id": prods[0]["id"], "back": back_cb}
-            title = f"🆕 <b>{escape(btn.label)}</b>\n\n"
-            lines = []
-            for p in prods:
-                price = _normalize_price_display(p.get("price"))
-                vk = p.get("vk_product_link", "")
-                nm_safe = escape(_compact_label_for_product(p))
-                if vk:
-                    lines.append(f"{nm_safe} — {price} <a href=\"{vk}\">ВК</a>")
-                else:
-                    lines.append(f"{nm_safe} — {price}")
-            if lines:
-                title += "\n".join(lines) + "\n\n"
-            available_custom = _available_only(prods)
-            if available_custom:
-                title += "🟢 В наличии:\n\n"
-                title += _format_available_lines(available_custom) + "\n\n"
-            if nodes:
-                title += "Подменю:"
-            elif not prods:
-                title += "Пока пусто. Добавьте подкнопки или товары в Настройках → Меню новые."
+            if not nodes and len(leaf_prods) == 1:
+                return {"kind": "card", "product_id": leaf_prods[0]["id"], "back": back_cb}
+            title = build_custom_branch_header(
+                btn.label,
+                subtree_products=subtree_prods,
+                has_child_nodes=bool(nodes),
+                has_leaf_products=bool(leaf_prods),
+            )
             b_rows = []
             for n in nodes:
                 if n.kind == "custom" and n.custom_id is not None:
@@ -962,7 +952,7 @@ async def new_custom_branch(callback: CallbackQuery, state: FSMContext):
                             )
                         ]
                     )
-            for p in prods:
+            for p in leaf_prods:
                 lbl = _compact_label_for_product(p)
                 if len(lbl) > 40:
                     lbl = lbl[:37] + "..."
@@ -991,13 +981,7 @@ async def new_custom_branch(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Товар не найден", show_alert=True)
         return
     await state.update_data(new_products_back=f"new_custom_{bid}")
-    await safe_edit_message(
-        callback.message,
-        data["title"],
-        reply_markup=data["kb"],
-        parse_mode="HTML",
-        disable_link_preview=True,
-    )
+    await _send_html_nav_message(callback, data["title"], data["kb"])
     await callback.answer()
 
 

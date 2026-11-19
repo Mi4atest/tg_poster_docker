@@ -507,12 +507,12 @@ async def _resolve_search_url(
         _avito_url_cache[cache_key] = (time.monotonic(), api_url)
         return api_url
     except SpfaError as exc:
-        logger.warning("SPFA avito-url failed, fallback to local URL: %s", exc)
-        return (
-            build_market_mobile_api_url(query)
-            if prefer_mobile
-            else build_market_search_url(query)
+        # Runtime: SPFA 500 → m.avito давал 403; www /web/1/js/items с теми же
+        # mobile cookies давал HTTP 200 (13 Pro Max). Не падаем на m.avito.
+        logger.warning(
+            "SPFA avito-url failed, fallback to www search URL: %s", exc
         )
+        return build_market_search_url(query)
 
 
 async def _handle_block(
@@ -696,19 +696,29 @@ async def _fetch_via_spfa_browser(
 
     host = _urlparse(final_url or search_url).hostname
     # #region agent log
+    try:
+        from urllib.parse import parse_qs
+
+        qs = parse_qs(_urlparse(search_url).query)
+        q_param = (qs.get("q") or qs.get("query") or [""])[0][:80]
+    except Exception:
+        q_param = ""
     agent_dbg(
-        "E",
+        "A",
         "market_search.py:_fetch_via_spfa_browser",
         "Avito response",
         {
             "status": status,
             "host": host,
             "path_prefix": (_urlparse(final_url or search_url).path or "")[:40],
+            "q_param": q_param,
             "cookie_id": cookies_obj.cookie_id,
             "impersonate": cookies_obj.impersonate,
             "body_prefix": (text or "")[:80],
             "attempt": 1,
+            "body_len": len(text or ""),
         },
+        run_id="probe",
     )
     # #endregion
     log_market(
@@ -736,10 +746,11 @@ async def _fetch_via_spfa_browser(
             spfa=spfa, cookies_obj=cookies_obj, detail=f"HTTP {status}"
         )
         if egress_ok:
-            # Один повтор на новом sticky-session + обновлённых cookies.
+            # SPFA /unblock/ асинхронный (202 Accepted, таймаут у SPFA ~30 с):
+            # даём воркеру SPFA завершить разлочку на fresh_proxy без гонки с того же IP.
             import asyncio
 
-            await asyncio.sleep(8)
+            await asyncio.sleep(25)
             refreshed = spfa._load_cache() or cookies_obj
             settings = get_settings_service()
             retry_proxy = proxy_url(settings.get_avito_market_proxy()) or proxy
@@ -756,7 +767,7 @@ async def _fetch_via_spfa_browser(
                         "error": type(exc).__name__,
                         "detail": str(exc)[:160],
                     },
-                    run_id="wl",
+                    run_id="post-fix",
                 )
                 # #endregion
                 raise _block(
@@ -766,7 +777,7 @@ async def _fetch_via_spfa_browser(
                 ) from exc
             # #region agent log
             agent_dbg(
-                "E",
+                "H2",
                 "market_search.py:_fetch_via_spfa_browser:retry",
                 "Avito retry after egress rotate",
                 {
@@ -775,7 +786,9 @@ async def _fetch_via_spfa_browser(
                     "cookie_id": refreshed.cookie_id,
                     "attempt": 2,
                     "first_status": status,
+                    "wait_sec": 25,
                 },
+                run_id="post-fix",
             )
             # #endregion
             log_market(
@@ -802,6 +815,35 @@ async def _fetch_via_spfa_browser(
                     )
             status, text, final_url = status2, text2, final_url2
             if status in {403, 429, 439}:
+                # Разлочка+новый IP не помогли: куку считаем «протухшей» для следующей попытки.
+                # Покупка — только через get_cookies() при пустом кэше (не чаще TTL/ручного сброса).
+                try:
+                    age_h = (time.time() - float(cookies_obj.purchased_at or 0)) / 3600.0
+                except Exception:
+                    age_h = 0.0
+                # Сбрасываем кэш только у конца 12ч окна: мобильную покупку сейчас часто
+                # режет «change your proxy», а без кэша watchlist встаёт полностью.
+                if age_h >= 11.0:
+                    spfa.invalidate_cookie_cache()
+                    # #region agent log
+                    agent_dbg(
+                        "H6",
+                        "market_search.py:_fetch_via_spfa_browser:invalidate",
+                        "invalidate near-TTL cookie after double block",
+                        {
+                            "cookie_id": cookies_obj.cookie_id,
+                            "age_h": round(age_h, 2),
+                            "status": status,
+                        },
+                        run_id="post-fix",
+                    )
+                    # #endregion
+                    logger.warning(
+                        "Avito HTTP %s×2 after unblock; invalidate near-TTL cookie id=%s age=%.1fh",
+                        status,
+                        cookies_obj.cookie_id,
+                        age_h,
+                    )
                 raise _block(
                     f"Avito вернул HTTP {status}",
                     code=code_from_http_status(status),
@@ -858,6 +900,32 @@ async def fetch_market_listings(
         log_market("note", CODE_NO_PROXY, use_spfa=1, prefer_mobile=0)
     search_url = await _resolve_search_url(query, spfa, prefer_mobile=prefer_mobile)
     proxy = proxy_url(market_proxy) or None
+    # #region agent log
+    try:
+        from urllib.parse import parse_qs, urlparse
+
+        from app.integrations.avito.debug_agent_log import agent_dbg
+
+        qs = parse_qs(urlparse(search_url).query)
+        agent_dbg(
+            "C",
+            "market_search.py:fetch_market_listings",
+            "live search start",
+            {
+                "cache_key": query.cache_key,
+                "search_text": query.search_text,
+                "q_param": (qs.get("q") or qs.get("query") or [""])[0][:80],
+                "use_spfa": bool(use_spfa),
+                "prefer_mobile": prefer_mobile,
+                "has_proxy": has_proxy,
+                "host": urlparse(search_url).hostname,
+                "path": (urlparse(search_url).path or "")[:60],
+            },
+            run_id="probe",
+        )
+    except Exception:
+        pass
+    # #endregion
     log_market(
         "start",
         CODE_LIVE,

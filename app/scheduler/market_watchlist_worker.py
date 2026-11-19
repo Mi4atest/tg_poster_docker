@@ -7,8 +7,10 @@ import random
 from datetime import UTC, datetime, timedelta
 
 from app.config.settings import (
+    AVITO_MARKET_MIN_REQUEST_INTERVAL_SEC,
     AVITO_MARKET_WL_BLOCK_PAUSE_SEC,
     AVITO_MARKET_WL_LIVE_INTERVAL_SEC,
+    AVITO_MARKET_WL_SOFT_STREAK_PAUSE,
     AVITO_MARKET_WL_TICK_SEC,
 )
 from app.db.avito_market_watchlist_queries import get_due_watchlist_item
@@ -28,6 +30,7 @@ def _utcnow() -> datetime:
 class MarketWatchlistWorker:
     def __init__(self) -> None:
         self.is_running = False
+        self._soft_stale_streak = 0
 
     def stop(self) -> None:
         self.is_running = False
@@ -53,6 +56,36 @@ class MarketWatchlistWorker:
             await asyncio.sleep(step)
             remaining -= step
 
+    def _global_pause(self, now: datetime, *, reason: str) -> str:
+        until = now + timedelta(seconds=AVITO_MARKET_WL_BLOCK_PAUSE_SEC)
+        self._set_pause(until)
+        self._soft_stale_streak = 0
+        logger.warning(
+            "Watchlist global pause %ss until %s (%s)",
+            AVITO_MARKET_WL_BLOCK_PAUSE_SEC,
+            until,
+            reason,
+        )
+        # #region agent log
+        try:
+            from app.integrations.avito.debug_agent_log import agent_dbg
+
+            agent_dbg(
+                "E",
+                "market_watchlist_worker.py:global_pause",
+                "wl global pause",
+                {
+                    "pause_sec": AVITO_MARKET_WL_BLOCK_PAUSE_SEC,
+                    "until": until.isoformat(),
+                    "reason": reason[:80],
+                },
+                run_id="post-fix",
+            )
+        except Exception:
+            pass
+        # #endregion
+        return "blocked"
+
     async def _handle_due(self) -> str:
         settings = get_settings_service()
         if not settings.is_avito_market_watchlist_enabled():
@@ -71,15 +104,10 @@ class MarketWatchlistWorker:
                 source="watchlist",
             )
         except MarketTemporarilyUnavailable:
-            until = now + timedelta(seconds=AVITO_MARKET_WL_BLOCK_PAUSE_SEC)
-            self._set_pause(until)
-            logger.warning("Watchlist refresh unavailable, pause until %s", until)
-            return "blocked"
+            return self._global_pause(now, reason="unavailable")
         except Exception:
-            until = now + timedelta(seconds=AVITO_MARKET_WL_BLOCK_PAUSE_SEC)
-            self._set_pause(until)
             logger.exception("Watchlist refresh failed id=%s", item.get("id"))
-            return "blocked"
+            return self._global_pause(now, reason="exception")
 
         logger.info(
             "Watchlist refresh id=%s model=%s %s outcome=%s",
@@ -89,11 +117,92 @@ class MarketWatchlistWorker:
             outcome,
         )
         if outcome == "stale":
-            until = now + timedelta(seconds=AVITO_MARKET_WL_BLOCK_PAUSE_SEC)
-            self._set_pause(until)
-            return "blocked"
+            live_tried = bool(
+                estimate
+                and (
+                    getattr(estimate, "live_attempted", False)
+                    or estimate.live_fetched
+                )
+            )
+            if not live_tried:
+                reason = str(getattr(estimate, "stale_reason", "") or "")
+                # Суточный лимит: не крутить все 60 позиций каждую минуту — спать до окна.
+                if "лимит" in reason.lower():
+                    until = now + timedelta(seconds=AVITO_MARKET_WL_BLOCK_PAUSE_SEC)
+                    self._set_pause(until)
+                    # #region agent log
+                    try:
+                        from app.integrations.avito.debug_agent_log import agent_dbg
+
+                        agent_dbg(
+                            "H5",
+                            "market_watchlist_worker.py:daily_limit_pause",
+                            "wl pause on daily limit",
+                            {
+                                "item_id": item.get("id"),
+                                "pause_sec": AVITO_MARKET_WL_BLOCK_PAUSE_SEC,
+                                "until": until.isoformat(),
+                            },
+                            run_id="post-fix",
+                        )
+                    except Exception:
+                        pass
+                    # #endregion
+                    logger.warning(
+                        "Watchlist daily limit hit, pause %ss until %s",
+                        AVITO_MARKET_WL_BLOCK_PAUSE_SEC,
+                        until,
+                    )
+                    return "daily_limit"
+                # #region agent log
+                try:
+                    from app.integrations.avito.debug_agent_log import agent_dbg
+
+                    agent_dbg(
+                        "H3",
+                        "market_watchlist_worker.py:local_cooldown",
+                        "wl stale without network attempt",
+                        {
+                            "item_id": item.get("id"),
+                            "streak": self._soft_stale_streak,
+                        },
+                        run_id="post-fix",
+                    )
+                except Exception:
+                    pass
+                # #endregion
+                return "cooldown"
+            # Реальная сетевая неудача: одна ошибка ≠ стоп всего списка.
+            self._soft_stale_streak += 1
+            # #region agent log
+            try:
+                from app.integrations.avito.debug_agent_log import agent_dbg
+
+                agent_dbg(
+                    "H3",
+                    "market_watchlist_worker.py:stale_continue",
+                    "wl soft stale continue next",
+                    {
+                        "item_id": item.get("id"),
+                        "streak": self._soft_stale_streak,
+                        "streak_limit": AVITO_MARKET_WL_SOFT_STREAK_PAUSE,
+                        "next_gap_sec": AVITO_MARKET_MIN_REQUEST_INTERVAL_SEC,
+                    },
+                    run_id="post-fix",
+                )
+            except Exception:
+                pass
+            # #endregion
+            if self._soft_stale_streak >= AVITO_MARKET_WL_SOFT_STREAK_PAUSE:
+                return self._global_pause(
+                    now, reason=f"soft_streak_{self._soft_stale_streak}"
+                )
+            jitter = random.randint(0, 60)
+            await self._sleep(AVITO_MARKET_MIN_REQUEST_INTERVAL_SEC + jitter)
+            return "stale"
         if outcome == "live":
-            jitter = random.randint(0, 120)
+            self._soft_stale_streak = 0
+            jitter = random.randint(0, 90)
             await self._sleep(AVITO_MARKET_WL_LIVE_INTERVAL_SEC + jitter)
             return "live"
         return outcome

@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Optional
 
 from app.config.settings import (
-    AVITO_MARKET_WL_BLOCK_PAUSE_SEC,
+    AVITO_MARKET_SOFT_BLOCK_COOLDOWN_SEC,
     AVITO_MARKET_WL_TIER_DAILY_SEC,
     AVITO_MARKET_WL_TIER_SLOW_SEC,
 )
@@ -261,7 +261,13 @@ class IphoneMarketWatchlistService:
             )
             return updated, estimate, "live"
         if estimate.is_stale:
-            nxt = now + timedelta(seconds=AVITO_MARKET_WL_BLOCK_PAUSE_SEC)
+            # Если в сеть реально не ходили (ещё тикает локальный интервал/cooldown) —
+            # не отодвигаем модель надолго, иначе очередь искусственно простаивает.
+            live_tried = bool(
+                getattr(estimate, "live_attempted", False) or estimate.live_fetched
+            )
+            delay_sec = AVITO_MARKET_SOFT_BLOCK_COOLDOWN_SEC if live_tried else 60
+            nxt = now + timedelta(seconds=delay_sec)
             updated = await run_db(
                 update_watchlist_item,
                 int(item_id),

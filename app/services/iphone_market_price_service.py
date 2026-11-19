@@ -16,6 +16,7 @@ from app.config.settings import (
     AVITO_MARKET_MIN_SAMPLE_SIZE,
     AVITO_MARKET_MIN_SELLER_GROUP_SIZE,
     AVITO_MARKET_REGION,
+    AVITO_MARKET_SOFT_BLOCK_COOLDOWN_SEC,
     AVITO_MARKET_SOFT_SAMPLE_SIZE,
     AVITO_MARKET_TIMEOUT_SEC,
 )
@@ -93,6 +94,7 @@ class MarketPriceEstimate:
     limit_hint: Optional[str] = None
     listings: tuple[MarketListing, ...] = ()
     live_fetched: bool = False
+    live_attempted: bool = False
     snapshot_id: Optional[int] = None
     quote_as_of: Optional[datetime] = None
     quote_quality: Optional[str] = None
@@ -187,6 +189,7 @@ class IphoneMarketPriceService:
         reason: Optional[str] = None,
         limit_hint: Optional[str] = None,
         live_fetched: bool = False,
+        live_attempted: bool = False,
     ) -> MarketPriceEstimate:
         summary = None
         if snapshot.get("median_rub") is not None:
@@ -226,6 +229,7 @@ class IphoneMarketPriceService:
             limit_hint=limit_hint,
             listings=_listings_from_audit(snapshot.get("listing_audit")),
             live_fetched=live_fetched,
+            live_attempted=live_attempted or live_fetched,
             snapshot_id=snapshot_id_int,
             quote_as_of=quote_as_of if isinstance(quote_as_of, datetime) else None,
             quote_quality=str(quote_quality) if quote_quality else None,
@@ -303,7 +307,10 @@ class IphoneMarketPriceService:
             mins = max(1, int((failed_until - now).total_seconds() / 60) + 1)
             log_market("skip", CODE_FAIL, wait_mins=mins, source="fail_cooldown")
             return user_notice(CODE_FAIL, wait_mins=mins)
-        if daily_count >= AVITO_MARKET_DAILY_REQUEST_LIMIT:
+        if (
+            AVITO_MARKET_DAILY_REQUEST_LIMIT > 0
+            and daily_count >= AVITO_MARKET_DAILY_REQUEST_LIMIT
+        ):
             log_market(
                 "skip",
                 CODE_DAILY_LIMIT,
@@ -314,7 +321,9 @@ class IphoneMarketPriceService:
                 CODE_DAILY_LIMIT,
                 daily_limit=AVITO_MARKET_DAILY_REQUEST_LIMIT,
             )
-        effective_last = last_request_at or self._last_request_at
+        # Интервал — по последней попытке (память) и последнему успеху (БД).
+        candidates = [t for t in (last_request_at, self._last_request_at) if t]
+        effective_last = max(candidates) if candidates else None
         if (
             effective_last
             and now - effective_last
@@ -334,6 +343,8 @@ class IphoneMarketPriceService:
         query: IphoneMarketQuery,
         snapshot: Optional[dict],
         reason: str,
+        *,
+        live_attempted: bool = False,
     ) -> MarketPriceEstimate:
         friendly = user_facing_market_error(reason)
         if snapshot and snapshot.get("status") == "success" and snapshot.get("fetched_at"):
@@ -343,6 +354,7 @@ class IphoneMarketPriceService:
                 stale=True,
                 reason=friendly,
                 limit_hint=friendly,
+                live_attempted=live_attempted,
             )
         raise MarketTemporarilyUnavailable(friendly)
 
@@ -431,9 +443,10 @@ class IphoneMarketPriceService:
                     # #endregion
                     return self._fallback_or_raise(query, snapshot, reason)
 
+                # Счётчик суток — только успешные 200 (иначе 429 сжигают лимит 40).
+                # Интервал между попытками держим в памяти даже при блоке.
                 self._last_request_at = now
                 self._request_times.append(now)
-                await run_db(record_live_request, key, source=source)
                 try:
                     listings = await self._fetcher(query)
                     analysis = await self._analyze(query, listings)
@@ -446,6 +459,21 @@ class IphoneMarketPriceService:
                         ttl_seconds=AVITO_MARKET_CACHE_TTL_SEC,
                         source=source,
                     )
+                    await run_db(record_live_request, key, source=source)
+                    # #region agent log
+                    try:
+                        from app.integrations.avito.debug_agent_log import agent_dbg
+
+                        agent_dbg(
+                            "H5",
+                            "iphone_market_price_service.py:success_counted",
+                            "daily limit counts successful live only",
+                            {"source": source, "key": key[:80]},
+                            run_id="post-fix",
+                        )
+                    except Exception:
+                        pass
+                    # #endregion
                     try:
                         await self._harvest_bonus_listings(query, listings)
                     except Exception:
@@ -454,7 +482,9 @@ class IphoneMarketPriceService:
                 except AvitoMarketBlockedError as exc:
                     soft = bool(getattr(exc, "soft", False))
                     cooldown = (
-                        20 * 60 if soft else AVITO_MARKET_BLOCK_COOLDOWN_SEC
+                        AVITO_MARKET_SOFT_BLOCK_COOLDOWN_SEC
+                        if soft
+                        else AVITO_MARKET_BLOCK_COOLDOWN_SEC
                     )
                     self._blocked_until = _utcnow() + timedelta(seconds=cooldown)
                     code = getattr(exc, "code", None) or CODE_AVITO_BLOCK
@@ -523,6 +553,25 @@ class IphoneMarketPriceService:
                     except Exception:
                         pass
                     # #endregion
+                except (TimeoutError, asyncio.CancelledError, asyncio.TimeoutError) as exc:
+                    # Таймаут/обрыв при 429-retry не должен жечь 15 мин на модель + streak.
+                    cooldown = AVITO_MARKET_SOFT_BLOCK_COOLDOWN_SEC
+                    self._blocked_until = _utcnow() + timedelta(seconds=cooldown)
+                    wait_mins = max(1, int(cooldown / 60))
+                    reason = user_notice(CODE_FAIL, wait_mins=wait_mins)
+                    retry_after_seconds = cooldown
+                    log_market(
+                        "cooldown",
+                        CODE_FAIL,
+                        soft=1,
+                        cooldown_sec=cooldown,
+                        source=source,
+                    )
+                    logger.warning(
+                        "Avito market timeout/cancel soft cooldown=%ss: %s",
+                        cooldown,
+                        type(exc).__name__,
+                    )
                 except Exception:
                     self._failed_until[key] = _utcnow() + timedelta(minutes=15)
                     reason = user_notice(CODE_FAIL, wait_mins=15)
@@ -547,7 +596,9 @@ class IphoneMarketPriceService:
                     )
                 except Exception:
                     logger.exception("Failed to record Avito market error")
-                return self._fallback_or_raise(query, snapshot, reason)
+                return self._fallback_or_raise(
+                    query, snapshot, reason, live_attempted=True
+                )
 
     async def get_cached_report(self, snapshot_id: int) -> MarketPriceEstimate:
         """Открыть сохранённый отчёт без запроса к Avito."""

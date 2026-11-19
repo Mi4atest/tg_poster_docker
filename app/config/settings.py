@@ -179,9 +179,14 @@ AVITO_MARKET_CACHE_TTL_SEC = int(os.getenv("AVITO_MARKET_CACHE_TTL_SEC", "43200"
 AVITO_MARKET_MIN_REQUEST_INTERVAL_SEC = int(
     os.getenv("AVITO_MARKET_MIN_REQUEST_INTERVAL_SEC", "360")
 )
-AVITO_MARKET_DAILY_REQUEST_LIMIT = int(os.getenv("AVITO_MARKET_DAILY_REQUEST_LIMIT", "40"))
+# 0 = без суточного потолка (лимит был условностью; важны успешные выдачи на живых куках).
+AVITO_MARKET_DAILY_REQUEST_LIMIT = int(os.getenv("AVITO_MARKET_DAILY_REQUEST_LIMIT", "0"))
 # После HTTP 439 — общая пауза на все модели (не жечь новый cookie сразу).
-AVITO_MARKET_BLOCK_COOLDOWN_SEC = int(os.getenv("AVITO_MARKET_BLOCK_COOLDOWN_SEC", "3600"))
+AVITO_MARKET_BLOCK_COOLDOWN_SEC = int(os.getenv("AVITO_MARKET_BLOCK_COOLDOWN_SEC", "1800"))
+# Soft 429/403/439 после rotate IP + бесплатного /unblock/: 6 мин (обычный шаг, без 20-мин комы).
+AVITO_MARKET_SOFT_BLOCK_COOLDOWN_SEC = int(
+    os.getenv("AVITO_MARKET_SOFT_BLOCK_COOLDOWN_SEC", "360")
+)
 AVITO_MARKET_TIMEOUT_SEC = int(os.getenv("AVITO_MARKET_TIMEOUT_SEC", "20"))
 # «Надёжная» выборка; ниже — мягкий ориентир (см. SOFT).
 AVITO_MARKET_MIN_SAMPLE_SIZE = int(os.getenv("AVITO_MARKET_MIN_SAMPLE_SIZE", "10"))
@@ -191,8 +196,9 @@ AVITO_MARKET_MIN_SELLER_GROUP_SIZE = int(
 )
 # Watchlist: тик worker, пауза между живыми запросами, интервалы tier.
 AVITO_MARKET_WL_TICK_SEC = int(os.getenv("AVITO_MARKET_WL_TICK_SEC", "60"))
+# Между УСПЕШНЫМИ live: ~6 мин (телефонный ритм 4–10 мин).
 AVITO_MARKET_WL_LIVE_INTERVAL_SEC = int(
-    os.getenv("AVITO_MARKET_WL_LIVE_INTERVAL_SEC", "1800")
+    os.getenv("AVITO_MARKET_WL_LIVE_INTERVAL_SEC", "360")
 )
 AVITO_MARKET_WL_TIER_DAILY_SEC = int(
     os.getenv("AVITO_MARKET_WL_TIER_DAILY_SEC", "86400")
@@ -200,8 +206,13 @@ AVITO_MARKET_WL_TIER_DAILY_SEC = int(
 AVITO_MARKET_WL_TIER_SLOW_SEC = int(
     os.getenv("AVITO_MARKET_WL_TIER_SLOW_SEC", "259200")
 )
+# Глобальная пауза всего списка — только после серии РЕАЛЬНЫХ сетевых фейлов (30 мин).
 AVITO_MARKET_WL_BLOCK_PAUSE_SEC = int(
-    os.getenv("AVITO_MARKET_WL_BLOCK_PAUSE_SEC", "7200")
+    os.getenv("AVITO_MARKET_WL_BLOCK_PAUSE_SEC", "1800")
+)
+# Сколько реальных сетевых soft-stale подряд → тогда глобальная пауза.
+AVITO_MARKET_WL_SOFT_STREAK_PAUSE = int(
+    os.getenv("AVITO_MARKET_WL_SOFT_STREAK_PAUSE", "5")
 )
 # SPFA / прокси для оценки рынка: основной источник — Настройки бота (БД).
 # Переменные ниже — только одноразовый bootstrap в encrypted_secrets при старте.

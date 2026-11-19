@@ -74,7 +74,7 @@ class SpfaClient:
         *,
         proxy: str = "",
         cache_path: Optional[Path] = None,
-        cookie_ttl_sec: int = 11 * 3600,
+        cookie_ttl_sec: int = 12 * 3600,
     ) -> None:
         self.api_key = api_key.strip()
         self.proxy = (proxy or "").strip()
@@ -226,16 +226,45 @@ class SpfaClient:
         )
         self._save_cache(item)
         logger.info("SPFA cookies purchased id=%s mobile=%s", item.cookie_id, item.mobile)
+        # #region agent log
+        try:
+            from app.integrations.avito.debug_agent_log import agent_dbg
+
+            agent_dbg(
+                "H1",
+                "spfa_client.py:purchase_cookies",
+                "purchased new spfa cookie",
+                {"cookie_id": item.cookie_id, "mobile": item.mobile},
+                run_id="post-fix",
+            )
+        except Exception:
+            pass
+        # #endregion
         return item
 
     async def get_cookies(self, *, prefer_mobile: bool) -> SpfaCookies:
         cached = self._load_cache()
         if cached is not None:
+            # Не выбрасываем рабочий desktop-кэш, если mobile-покупка с нашего IP падает.
             if prefer_mobile and not cached.mobile and self.proxy:
-                pass
-            else:
-                return cached
-        return await self.purchase_cookies(mobile=prefer_mobile and bool(self.proxy))
+                try:
+                    return await self.purchase_cookies(mobile=True)
+                except SpfaError as exc:
+                    logger.warning(
+                        "SPFA mobile cookies unavailable (%s); keep cached desktop id=%s",
+                        exc,
+                        cached.cookie_id,
+                    )
+                    return cached
+            return cached
+        want_mobile = prefer_mobile and bool(self.proxy)
+        try:
+            return await self.purchase_cookies(mobile=want_mobile)
+        except SpfaError:
+            if want_mobile:
+                logger.warning("SPFA mobile purchase failed; fallback to desktop cookies")
+                return await self.purchase_cookies(mobile=False)
+            raise
 
     def invalidate_cookie_cache(self) -> None:
         """Сбросить локальный кэш cookies."""

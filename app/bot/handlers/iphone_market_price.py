@@ -716,6 +716,11 @@ async def _intro_text() -> str:
 
     status = await load_market_account_status_html(detailed=False)
     status_block = f"\n\n{status}" if status else ""
+    limit_line = (
+        f" В сутки не больше {AVITO_MARKET_DAILY_REQUEST_LIMIT} успешных выдач."
+        if AVITO_MARKET_DAILY_REQUEST_LIMIT > 0
+        else " Суточного потолка нет — берём столько успешных выдач, сколько дают живые cookies."
+    )
     return (
         "<b>Оценка рынка Avito</b>\n\n"
         "Напишите модель и память одной строкой.\n"
@@ -724,9 +729,8 @@ async def _intro_text() -> str:
         f"Регион: {html.escape(AVITO_MARKET_REGION)}. Учитываются б/у телефоны.\n\n"
         f"Повтор того же запроса в течение ~{cache_hours} ч берётся из памяти "
         "(без нового обращения к Avito).\n"
-        f"Между <b>новыми</b> поисками пауза {AVITO_MARKET_MIN_REQUEST_INTERVAL_SEC} сек, "
-        f"в сутки не больше {AVITO_MARKET_DAILY_REQUEST_LIMIT} свежих запросов — "
-        "чтобы не перегружать Avito."
+        f"Между <b>новыми</b> поисками пауза {AVITO_MARKET_MIN_REQUEST_INTERVAL_SEC} сек."
+        f"{limit_line}"
         f"{status_block}"
     )
 
